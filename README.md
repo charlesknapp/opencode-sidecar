@@ -65,7 +65,10 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 
 ## Getting started
 
-1. Install **Sidecar for OpenCode** from the Extensions view.
+1. Install **Sidecar for OpenCode** (`cadogy.opencode-sidecar`):
+   - **VS Code:** search for it in the Extensions view, or get it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cadogy.opencode-sidecar).
+   - **Cursor, Windsurf, VSCodium and other VS Code-based editors:** install it from [Open VSX](https://open-vsx.org/extension/cadogy/opencode-sidecar), which their Extensions view uses.
+   - **Offline:** download the `.vsix` from [Releases](https://github.com/charlesknapp/opencode-sidecar/releases) and run **Extensions: Install from VSIX…**.
 2. Click the **Sidecar** icon in the Activity Bar or the Status Bar.
 3. Follow the setup card if something is missing. **Install OpenCode** opens [the official install guide](https://opencode.ai/docs#install), **Start OpenCode** runs `opencode service start`, and **Sign in to OpenCode** runs OpenCode's own sign-in in a terminal. The card disappears once everything is ready, so if you already use OpenCode you won't see it.
 4. Pick a model in the model pill and start chatting.

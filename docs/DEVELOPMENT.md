@@ -22,7 +22,7 @@ Press **F5** (launch configuration "Run Extension" in `.vscode/launch.json`) to 
 | `npm run test:acceptance` | End-to-end scenarios in a real VS Code against the local OpenCode service   |
 | `npm run package`         | `dist-vsix/opencode-sidecar-<version>.vsix` (never publishes)               |
 
-CI (`.github/workflows/ci.yml`) runs all of these except the acceptance harness, on Linux, and uploads the VSIX as an artifact.
+CI (`.github/workflows/ci.yml`) runs all of these except the acceptance harness, on Linux, and uploads the VSIX as an artifact. Pushing a `v<version>` tag runs `.github/workflows/release.yml`, which repeats the checks, creates the GitHub release and publishes to the Visual Studio Marketplace and Open VSX (see `docs/marketplace/MARKETPLACE.md`).
 
 ## Unit tests
 

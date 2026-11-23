@@ -1,0 +1,98 @@
+# Releases a version when its tag is pushed (git tag v0.1.0 && git push origin v0.1.0):
+# runs every check, packages the VSIX, creates the GitHub release with the VSIX and the
+# CHANGELOG section attached, then publishes to each store whose token is set as a secret:
+#   VSCE_PAT  Visual Studio Marketplace (Azure DevOps token, Marketplace > Manage scope)
+#   OVSX_PAT  Open VSX (access token from open-vsx.org/user-settings/tokens)
+# A store without its secret is skipped. Every step is safe to re-run: an existing release
+# gets its VSIX replaced, and a version already on a store is skipped.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Check the tag matches package.json
+        id: meta
+        run: |
+          version=$(node -p "require('./package.json').version")
+          publisher=$(node -p "require('./package.json').publisher")
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${version}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "publisher=${publisher}" >> "$GITHUB_OUTPUT"
+          echo "vsix=dist-vsix/opencode-sidecar-${version}.vsix" >> "$GITHUB_OUTPUT"
+
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test
+      - name: Webview interaction tests (headless Chrome)
+        run: npm run test:webview
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+      - run: npm run package
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="${{ steps.meta.outputs.version }}" '
+            $0 ~ "^## " v "( |$)" { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md || { echo "No CHANGELOG section for ${{ steps.meta.outputs.version }}" >&2; exit 1; }
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${{ steps.meta.outputs.vsix }}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${{ steps.meta.outputs.vsix }}" \
+              --title "Sidecar for OpenCode ${{ steps.meta.outputs.version }}" \
+              --notes-file release-notes.md --verify-tag
+          fi
+
+      - name: Publish to the Visual Studio Marketplace
+        if: env.VSCE_PAT != ''
+        run: npx vsce publish --packagePath "${{ steps.meta.outputs.vsix }}" --skip-duplicate
+
+      - name: Publish to Open VSX
+        if: env.OVSX_PAT != ''
+        run: |
+          # The namespace is created once; later runs find it already exists.
+          npx ovsx create-namespace "${{ steps.meta.outputs.publisher }}" || true
+          npx ovsx publish --packagePath "${{ steps.meta.outputs.vsix }}" --skip-duplicate
+
+      - name: Summary
+        run: |
+          {
+            echo "### Sidecar for OpenCode ${{ steps.meta.outputs.version }}"
+            echo "- GitHub release: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${GITHUB_REF_NAME}"
+            if [ -n "$VSCE_PAT" ]; then echo "- Visual Studio Marketplace: published"; else echo "- Visual Studio Marketplace: skipped (no VSCE_PAT secret)"; fi
+            if [ -n "$OVSX_PAT" ]; then echo "- Open VSX: published"; else echo "- Open VSX: skipped (no OVSX_PAT secret)"; fi
+          } >> "$GITHUB_STEP_SUMMARY"

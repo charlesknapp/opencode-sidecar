@@ -4,17 +4,17 @@ This folder is not shipped in the VSIX.
 
 ## Identity
 
-| Field        | Value                                                                                           |
-| ------------ | ----------------------------------------------------------------------------------------------- |
-| Display name | Sidecar for OpenCode                                                                            |
-| Publisher ID | `charlesknapp` (**placeholder**: replace with the registered publisher before the first upload) |
-| Package name | `opencode-sidecar`                                                                              |
-| Identifier   | `<publisher>.opencode-sidecar`                                                                  |
-| License      | MIT (original copyright kept; see LICENSE)                                                      |
+| Field        | Value                                                                 |
+| ------------ | --------------------------------------------------------------------- |
+| Display name | Sidecar for OpenCode                                                  |
+| Publisher ID | `cadogy` (Visual Studio Marketplace publisher and Open VSX namespace) |
+| Package name | `opencode-sidecar`                                                    |
+| Identifier   | `cadogy.opencode-sidecar`                                             |
+| License      | MIT (see LICENSE)                                                     |
 
-Before the first upload, create the publisher at https://marketplace.visualstudio.com/manage, and set `publisher` in `package.json` (and the manifest test) to its exact, case-sensitive ID. Sidecar's own icons are in `media/` (`icon.png` is rendered from `media/src/icon.svg` with `node scripts/icons.mjs`). After the first upload, never rename `name` or `publisher`: together they form the extension ID that installs and updates track. Setting keys (`opencodeSidecar.*`), command IDs and the view ID are part of users' saved state and must stay stable too.
+The publisher `cadogy` is created at https://marketplace.visualstudio.com/manage, and the Open VSX namespace of the same name by the first release. Sidecar's own icons are in `media/` (`icon.png` is rendered from `media/src/icon.svg` with `node scripts/icons.mjs`). After the first upload, never rename `name` or `publisher`: together they form the extension ID that installs and updates track. Setting keys (`opencodeSidecar.*`), command IDs and the view ID are part of users' saved state and must stay stable too.
 
-The listing must say that the extension is independent and not affiliated with OpenCode (the official extension is `sst-dev.opencode`). `LICENSE` keeps every copyright line it has; the MIT License requires that.
+The listing must say that the extension is independent and not affiliated with OpenCode (the official extension is `sst-dev.opencode`).
 
 ## Screenshots and hero
 
@@ -50,10 +50,21 @@ They are referenced from README.md with relative paths. On the Marketplace, `vsc
 
 `package.json` contains `repository`, `homepage` and `bugs`; packaging runs plain `vsce package` (no `--allow-missing-repository`, no `--skip-license`).
 
-## Manual upload steps (not automated)
+## Releasing
 
-1. Sign in at https://marketplace.visualstudio.com/manage and confirm your publisher exists and matches `publisher` in `package.json` and is owned by you.
-2. Build: `npm ci && npm run package` → `dist-vsix/opencode-sidecar-<version>.vsix` (also attach it to the GitHub release). Upload this file.
-3. Upload with **New extension → Visual Studio Code** in the web portal and choose the `.vsix` file. This needs no personal access token. (Alternatively `vsce publish --packagePath <file>` with a PAT you create yourself; this project never creates one.)
-4. Check the listing: name, icon, README rendering, categories (AI, Chat, Other), license.
-5. Install from the Marketplace in a clean VS Code profile and run the smoke test (connect, models, agents, one prompt, a subagent, a permission request, Copy, Stop).
+`.github/workflows/release.yml` releases a version when its tag is pushed:
+
+1. Set `version` in `package.json` and add its section to `CHANGELOG.md` (`## <version> (<date>)`).
+2. Commit, then `git tag v<version> && git push origin main v<version>`.
+3. The workflow runs every check, packages the VSIX, creates the GitHub release with the VSIX and the CHANGELOG section, and publishes to each store whose secret is set:
+
+| Secret     | Store                     | Token                                                                                                                                                                             |
+| ---------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VSCE_PAT` | Visual Studio Marketplace | Azure DevOps personal access token (https://dev.azure.com, User settings → Personal access tokens): organization **All accessible organizations**, scope **Marketplace → Manage** |
+| `OVSX_PAT` | Open VSX                  | Access token from https://open-vsx.org/user-settings/tokens, after signing in with GitHub and accepting the Eclipse publisher agreement                                           |
+
+Secrets go in the repository's **Settings → Secrets and variables → Actions**; they never pass through the code or the chat. A store without its secret is skipped, and every step is safe to re-run (**Re-run all jobs**): the release keeps its notes and gets the VSIX replaced, and a version already on a store is skipped.
+
+Without a Marketplace token, upload the release's `.vsix` by hand: https://marketplace.visualstudio.com/manage → **cadogy** → **New extension → Visual Studio Code** (or **⋯ → Update** for a later version).
+
+After a release, install from each store in a clean profile and run the smoke test: connect, models, agents, one prompt, a subagent, a permission request, Copy, Stop.
