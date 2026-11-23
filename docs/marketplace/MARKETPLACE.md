@@ -56,15 +56,15 @@ They are referenced from README.md with relative paths. On the Marketplace, `vsc
 
 1. Set `version` in `package.json` and add its section to `CHANGELOG.md` (`## <version> (<date>)`).
 2. Commit, then `git tag v<version> && git push origin main v<version>`.
-3. The workflow runs every check, packages the VSIX, creates the GitHub release with the VSIX and the CHANGELOG section, and publishes to each store whose secret is set:
+3. The workflow runs every check, packages the VSIX, creates the GitHub release with the VSIX and the CHANGELOG section, and publishes to the Visual Studio Marketplace and Open VSX.
 
-| Secret     | Store                     | Token                                                                                                                                                                             |
-| ---------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VSCE_PAT` | Visual Studio Marketplace | Azure DevOps personal access token (https://dev.azure.com, User settings → Personal access tokens): organization **All accessible organizations**, scope **Marketplace → Manage** |
-| `OVSX_PAT` | Open VSX                  | Access token from https://open-vsx.org/user-settings/tokens, after signing in with GitHub and accepting the Eclipse publisher agreement                                           |
+Publishing uses **trusted publishing** (OIDC): no store token exists in the repository or anywhere else. Each store trusts this repository's `release.yml`, and GitHub vouches for each run with a short-lived token (`id-token: write`). Set up once:
 
-Secrets go in the repository's **Settings → Secrets and variables → Actions**; they never pass through the code or the chat. A store without its secret is skipped, and every step is safe to re-run (**Re-run all jobs**): the release keeps its notes and gets the VSIX replaced, and a version already on a store is skipped.
+| Store                     | Where                                                                                  | Trust                                                                                     |
+| ------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Visual Studio Marketplace | https://marketplace.visualstudio.com/manage → **cadogy** → **Trusted Publishing**      | GitHub repository `charlesknapp/opencode-sidecar`, workflow `release.yml`, no environment |
+| Open VSX                  | https://open-vsx.org/user-settings → namespace **cadogy**, then **Trusted Publishers** | The same repository and workflow, no environment                                          |
 
-Without a Marketplace token, upload the release's `.vsix` by hand: https://marketplace.visualstudio.com/manage → **cadogy** → **New extension → Visual Studio Code** (or **⋯ → Update** for a later version).
+Every step is safe to re-run (**Re-run all jobs**): the release keeps its notes and gets the VSIX replaced, and a version already on a store is skipped. If a store rejects a run, check that its trust names exactly this repository and `release.yml`.
 
 After a release, install from each store in a clean profile and run the smoke test: connect, models, agents, one prompt, a subagent, a permission request, Copy, Stop.

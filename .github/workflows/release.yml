@@ -1,10 +1,10 @@
 # Releases a version when its tag is pushed (git tag v0.1.0 && git push origin v0.1.0):
 # runs every check, packages the VSIX, creates the GitHub release with the VSIX and the
-# CHANGELOG section attached, then publishes to each store whose token is set as a secret:
-#   VSCE_PAT  Visual Studio Marketplace (Azure DevOps token, Marketplace > Manage scope)
-#   OVSX_PAT  Open VSX (access token from open-vsx.org/user-settings/tokens)
-# A store without its secret is skipped. Every step is safe to re-run: an existing release
-# gets its VSIX replaced, and a version already on a store is skipped.
+# CHANGELOG section attached, then publishes to the Visual Studio Marketplace and Open VSX.
+# Publishing uses trusted publishing (OIDC): each store trusts this repository's release.yml,
+# and GitHub vouches for each run with a short-lived token, so no store token is stored anywhere.
+# Every step is safe to re-run: an existing release gets its VSIX replaced, and a version
+# already on a store is skipped.
 name: Release
 
 on:
@@ -12,7 +12,8 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: write # create the GitHub release
+  id-token: write # trusted publishing to the stores
 
 concurrency:
   group: release-${{ github.ref }}
@@ -22,9 +23,6 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      VSCE_PAT: ${{ secrets.VSCE_PAT }}
-      OVSX_PAT: ${{ secrets.OVSX_PAT }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -78,21 +76,16 @@ jobs:
           fi
 
       - name: Publish to the Visual Studio Marketplace
-        if: env.VSCE_PAT != ''
-        run: npx vsce publish --packagePath "${{ steps.meta.outputs.vsix }}" --skip-duplicate
+        run: npx vsce publish --oidc --packagePath "${{ steps.meta.outputs.vsix }}" --skip-duplicate
 
       - name: Publish to Open VSX
-        if: env.OVSX_PAT != ''
-        run: |
-          # The namespace is created once; later runs find it already exists.
-          npx ovsx create-namespace "${{ steps.meta.outputs.publisher }}" || true
-          npx ovsx publish --packagePath "${{ steps.meta.outputs.vsix }}" --skip-duplicate
+        run: npx ovsx publish --trusted-publishing --packagePath "${{ steps.meta.outputs.vsix }}" --skip-duplicate
 
       - name: Summary
         run: |
           {
             echo "### Sidecar for OpenCode ${{ steps.meta.outputs.version }}"
             echo "- GitHub release: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${GITHUB_REF_NAME}"
-            if [ -n "$VSCE_PAT" ]; then echo "- Visual Studio Marketplace: published"; else echo "- Visual Studio Marketplace: skipped (no VSCE_PAT secret)"; fi
-            if [ -n "$OVSX_PAT" ]; then echo "- Open VSX: published"; else echo "- Open VSX: skipped (no OVSX_PAT secret)"; fi
+            echo "- Visual Studio Marketplace: https://marketplace.visualstudio.com/items?itemName=${{ steps.meta.outputs.publisher }}.opencode-sidecar"
+            echo "- Open VSX: https://open-vsx.org/extension/${{ steps.meta.outputs.publisher }}/opencode-sidecar"
           } >> "$GITHUB_STEP_SUMMARY"
