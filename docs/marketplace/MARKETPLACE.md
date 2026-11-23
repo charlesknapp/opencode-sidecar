@@ -65,6 +65,8 @@ Publishing uses **trusted publishing** (OIDC): no store token exists in the repo
 | Visual Studio Marketplace | https://marketplace.visualstudio.com/manage → **cadogy** → **Trusted Publishing**      | GitHub repository `charlesknapp/opencode-sidecar`, workflow `release.yml`, no environment |
 | Open VSX                  | https://open-vsx.org/user-settings → namespace **cadogy**, then **Trusted Publishers** | The same repository and workflow, no environment                                          |
 
+Open VSX registers trusted publishers only for a namespace you own, which takes an approved ownership claim (an issue at https://github.com/EclipseFdn/open-vsx.org/issues). Until then, an access token from https://open-vsx.org/user-settings/tokens saved as the repository secret `OVSX_PAT` publishes instead; once the trusted publisher is registered, delete the secret and revoke the token.
+
 Every step is safe to re-run (**Re-run all jobs**): the release keeps its notes and gets the VSIX replaced, and a version already on a store is skipped. If a store rejects a run, check that its trust names exactly this repository and `release.yml`.
 
 After a release, install from each store in a clean profile and run the smoke test: connect, models, agents, one prompt, a subagent, a permission request, Copy, Stop.
