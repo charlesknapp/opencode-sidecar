@@ -1,0 +1,386 @@
+{
+  "name": "opencode-sidecar",
+  "displayName": "Sidecar for OpenCode",
+  "description": "The complete OpenCode coding agent in a VS Code chat panel: a timeline of every step, live subagents, diffs, @ mentions, images, permissions, fork and rewind.",
+  "version": "0.1.0",
+  "publisher": "charlesknapp",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/charlesknapp/opencode-sidecar.git"
+  },
+  "homepage": "https://github.com/charlesknapp/opencode-sidecar#readme",
+  "bugs": {
+    "url": "https://github.com/charlesknapp/opencode-sidecar/issues"
+  },
+  "pricing": "Free",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#0a0a0a",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-ai",
+    "ai",
+    "ai-agent",
+    "agent",
+    "coding-agent",
+    "coding-assistant",
+    "chat",
+    "assistant",
+    "subagents",
+    "llm",
+    "sidebar",
+    "diff",
+    "open-source",
+    "developer-tools"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "OpenCode can read files and run commands in the workspace, so the sidebar requires a trusted workspace."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "opencodeSidecar",
+          "title": "Sidecar for OpenCode",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "opencodeSidecar": [
+        {
+          "type": "webview",
+          "id": "opencodeSidecar.chat",
+          "name": "Sidecar for OpenCode"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "opencodeSidecar.focusChat",
+        "title": "Focus Chat",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.refreshConnection",
+        "title": "Refresh Connection",
+        "category": "Sidecar",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "opencodeSidecar.signIn",
+        "title": "Sign in to OpenCode",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.newSession",
+        "title": "New Session",
+        "category": "Sidecar",
+        "icon": "$(add)"
+      },
+      {
+        "command": "opencodeSidecar.addCurrentFile",
+        "title": "Add Current File",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.addSelection",
+        "title": "Add Selection",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.stop",
+        "title": "Stop",
+        "category": "Sidecar"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "opencodeSidecar.newSession",
+          "when": "view == opencodeSidecar.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "opencodeSidecar.refreshConnection",
+          "when": "view == opencodeSidecar.chat",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "opencodeSidecar.addSelection",
+          "when": "editorHasSelection",
+          "group": "opencodeSidecar@1"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "opencodeSidecar.focusChat",
+        "key": "cmd+alt+o",
+        "when": "isMac"
+      }
+    ],
+    "configuration": {
+      "title": "Sidecar",
+      "properties": {
+        "opencodeSidecar.executablePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Absolute path to the `opencode` executable. Leave empty to search `PATH` and common install locations."
+        },
+        "opencodeSidecar.serverUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "URL of a running OpenCode server, e.g. `http://127.0.0.1:4096`. Leave empty to use the OpenCode background service discovered on this machine. Non-loopback URLs are refused unless `#opencodeSidecar.allowRemoteServer#` is enabled."
+        },
+        "opencodeSidecar.allowRemoteServer": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "markdownDescription": "Allow `#opencodeSidecar.serverUrl#` to point at a non-loopback host. Off by default."
+        },
+        "opencodeSidecar.defaultModel": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional default model as `providerID/modelID` (for example `opencode-go/kimi-k2.7-code`). Used when the workspace has no remembered selection."
+        },
+        "opencodeSidecar.defaultAgent": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional default agent/mode id (for example `build` or `plan`)."
+        },
+        "opencodeSidecar.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Start the OpenCode background service automatically when the sidebar opens and no service is running."
+        },
+        "opencodeSidecar.showUsage": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show context-window and cost figures reported by OpenCode."
+        },
+        "opencodeSidecar.stickyPrompt": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Keep the prompt of the turn you are reading pinned to the top of the chat while you scroll."
+        },
+        "opencodeSidecar.statusWords": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "While the agent works, show a playful word for each run (such as *Riding along…*) next to the animated mark. Off shows *Working…*."
+        },
+        "opencodeSidecar.cacheWarmMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 120,
+          "markdownDescription": "How long your provider keeps a prompt cached, in minutes. The clock in the message box estimates from this when the cache goes cold (OpenCode reports cache tokens, not the timer). `0` hides the clock."
+        },
+        "opencodeSidecar.activity": {
+          "type": "string",
+          "enum": [
+            "detailed",
+            "grouped"
+          ],
+          "enumDescriptions": [
+            "Every tool call on its own row.",
+            "Consecutive tool calls folded into one line (\"Explored · 2 searches, 3 reads\")."
+          ],
+          "default": "detailed",
+          "markdownDescription": "How tool activity shows in the chat."
+        },
+        "opencodeSidecar.showStatusBarItem": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show an **OpenCode** item in the Status Bar that opens the chat and shows the connection state."
+        },
+        "opencodeSidecar.budget.default": {
+          "type": "string",
+          "enum": [
+            "off",
+            "small",
+            "medium",
+            "large",
+            "custom"
+          ],
+          "default": "medium",
+          "markdownDescription": "Task budget used when a workspace has no remembered choice. The budget is a local safety limit per task (one agent run); it only uses cost and step figures reported by OpenCode."
+        },
+        "opencodeSidecar.budget.small": {
+          "type": "object",
+          "default": {
+            "maxCost": 0.1,
+            "maxSteps": 20
+          },
+          "properties": {
+            "maxCost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Maximum task cost in USD (0 disables this metric)."
+            },
+            "maxSteps": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Maximum agent steps per task (0 disables this metric)."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Limits for the **Small** task budget."
+        },
+        "opencodeSidecar.budget.medium": {
+          "type": "object",
+          "default": {
+            "maxCost": 0.3,
+            "maxSteps": 50
+          },
+          "properties": {
+            "maxCost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Maximum task cost in USD (0 disables this metric)."
+            },
+            "maxSteps": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Maximum agent steps per task (0 disables this metric)."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Limits for the **Medium** task budget."
+        },
+        "opencodeSidecar.budget.large": {
+          "type": "object",
+          "default": {
+            "maxCost": 1,
+            "maxSteps": 120
+          },
+          "properties": {
+            "maxCost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Maximum task cost in USD (0 disables this metric)."
+            },
+            "maxSteps": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Maximum agent steps per task (0 disables this metric)."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Limits for the **Large** task budget."
+        },
+        "opencodeSidecar.budget.custom": {
+          "type": "object",
+          "default": {
+            "maxCost": 0.5,
+            "maxSteps": 80
+          },
+          "properties": {
+            "maxCost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Maximum task cost in USD (0 disables this metric)."
+            },
+            "maxSteps": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Maximum agent steps per task (0 disables this metric)."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Limits for the **Custom** task budget."
+        },
+        "opencodeSidecar.budget.warnPercent": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 99,
+          "default": 80,
+          "markdownDescription": "Warn when a task reaches this percentage of its budget."
+        },
+        "opencodeSidecar.budget.contextWarnPercent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 80,
+          "markdownDescription": "Warn when the context window is this full (warning only, never stops the agent). `0` disables the warning."
+        },
+        "opencodeSidecar.notifications.taskComplete": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show a notification when an OpenCode task completes. Not shown while you are watching the chat (view visible and VS Code focused)."
+        },
+        "opencodeSidecar.notifications.needsInput": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show a notification when OpenCode needs your input (a question or a permission request)."
+        },
+        "opencodeSidecar.notifications.taskFailed": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show a notification when an OpenCode task fails."
+        },
+        "opencodeSidecar.notifications.budgetStopped": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show a notification when Budget Guard stops a task."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
+    "lint": "eslint src test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "pretest": "tsc -p tsconfig.test.json",
+    "test": "node --test --test-reporter=spec \"out-test/test/*.test.js\"",
+    "test:acceptance": "npm run build && tsc -p tsconfig.test.json && node out-test/test/acceptance/runAcceptance.js",
+    "package": "node -e \"require('fs').mkdirSync('dist-vsix',{recursive:true})\" && vsce package --out dist-vsix/",
+    "vscode:prepublish": "npm run build",
+    "test:webview": "npm run build && tsc -p tsconfig.test.json && node --test --test-reporter=spec \"out-test/test/webview/*.test.js\""
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "@types/prismjs": "1.26.6",
+    "@types/vscode": "~1.95.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.12.0",
+    "prettier": "^3.9.9",
+    "prismjs": "1.30.0",
+    "puppeteer-core": "^25.12.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.1"
+  }
+}

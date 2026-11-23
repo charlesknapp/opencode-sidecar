@@ -1,0 +1,2913 @@
+/* Sidecar for OpenCode — uses VS Code theme variables only, so dark, light and
+   high-contrast themes are inherited automatically. */
+
+:root {
+  --gap: 6px;
+  --radius: 4px;
+  --border: var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+  --muted: var(--vscode-descriptionForeground);
+  --add: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-terminal-ansiGreen));
+  --del: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-terminal-ansiRed));
+  --warn-bg: var(--vscode-inputValidation-warningBackground);
+  --warn-border: var(--vscode-inputValidation-warningBorder);
+  --err: var(--vscode-errorForeground);
+  --mono: var(--vscode-editor-font-family);
+  /* Timeline: the rail and divider line, the accent for live work, and the dot colours. */
+  --rail: var(
+    --vscode-contrastBorder,
+    var(--vscode-input-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.35)))
+  );
+  --accent: var(--vscode-button-background);
+  --ok: var(--vscode-testing-iconPassed, var(--add));
+  --dot-idle: color-mix(in srgb, var(--vscode-descriptionForeground) 70%, transparent);
+  /* The panel's own colour (opaque), for pinned prompts; bubbles one shade lighter. */
+  --panel-bg: var(--vscode-sideBar-background, var(--vscode-editor-background, Canvas));
+  --bubble-bg: color-mix(in srgb, var(--panel-bg) 94%, var(--vscode-foreground));
+  /* Menus, popovers and tooltips: the editor-widget surface with a thin border. */
+  --menu-bg: var(--vscode-editorWidget-background, var(--vscode-menu-background, var(--panel-bg)));
+  --menu-border: var(--vscode-editorWidget-border, var(--vscode-widget-border, var(--rail)));
+  --menu-hover: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.16));
+  --menu-active: var(--vscode-list-inactiveSelectionBackground, rgba(128, 128, 128, 0.24));
+  /* The message box and the docks that replace it: one small step off the panel's own
+     colour (Dark Modern: #202020 on #181818), set apart by their border rather than a
+     light fill. The theme's input colour is kept for real text fields. */
+  --box-bg: color-mix(in srgb, var(--vscode-input-background, var(--panel-bg)) 28%, var(--panel-bg));
+  /* IN/OUT and diff boxes: a step darker than the panel. */
+  --io-bg: color-mix(in srgb, var(--vscode-sideBar-background, var(--vscode-editor-background)) 78%, #000);
+  /* Raised surface: one step lighter than the panel in dark themes and a touch
+     darker in light themes, so menus and lists read as their own layer instead
+     of blending into the sidebar. Falls back to the theme's menu colour. */
+  --surface-raised: var(--vscode-menu-background, var(--vscode-dropdown-background));
+  --surface-raised: color-mix(
+    in srgb,
+    var(--vscode-menu-background, var(--vscode-dropdown-background, #3c3c3c)) 86%,
+    #ffffff 14%
+  );
+}
+
+body.vscode-light {
+  --io-bg: color-mix(in srgb, var(--vscode-sideBar-background, var(--vscode-editor-background)) 95%, #000);
+  --surface-raised: color-mix(
+    in srgb,
+    var(--vscode-menu-background, var(--vscode-dropdown-background, #ffffff)) 94%,
+    #000000 6%
+  );
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  background: transparent;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  /* Layout follows the panel's own width (sidebar, secondary sidebar or panel). */
+  container: sidecar / inline-size;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 0.9em;
+}
+.mono {
+  font-family: var(--mono);
+}
+
+/* ---------------------------------------------------------------- header */
+
+/* One line: the session title, then History and New session. */
+#app {
+  position: relative;
+}
+.header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.header .grow,
+.box-tools .grow {
+  flex: 1;
+}
+.p-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--vscode-foreground);
+  font: inherit;
+  font-weight: 600;
+}
+.p-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.p-title .i {
+  width: 13px;
+  height: 13px;
+  opacity: 0;
+}
+button.p-title:hover:not(:disabled),
+button.p-title:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+button.p-title:hover .i,
+button.p-title:focus-visible .i {
+  opacity: 0.8;
+}
+.p-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 6px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  font-weight: 600;
+  outline: none;
+}
+.p-icons {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+/* Icon buttons: a 16px icon in a 26px hit area. */
+.ico {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  flex: none;
+}
+.ico:hover:not(:disabled),
+.ico[aria-expanded="true"] {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+.ico:disabled {
+  opacity: 0.4;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.badge {
+  font-size: 0.82em;
+  padding: 0 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  white-space: nowrap;
+}
+.select {
+  width: 100%;
+  min-width: 0;
+  background: var(--surface-raised);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border, var(--border));
+  border-radius: var(--radius);
+  padding: 2px 4px;
+  font: inherit;
+}
+/* Windows/Linux honour option colours if the native popup ever opens (keyboard
+   fallbacks); macOS ignores them, which is why the menu below is custom. */
+.select option,
+.select optgroup {
+  background: var(--surface-raised);
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+}
+
+.select-menu {
+  position: fixed;
+  z-index: 100;
+  max-height: min(320px, 60vh);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--surface-raised);
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+}
+.select-menu:focus {
+  outline: none;
+}
+.select-menu-group {
+  padding: 5px 8px 2px;
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+.select-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.select-menu-item.selected {
+  background: var(--vscode-list-inactiveSelectionBackground);
+}
+.select-menu-item:hover,
+.select-menu-item.active {
+  background: var(--vscode-list-hoverBackground);
+}
+.select-menu-item[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+.select-menu-check {
+  flex: none;
+  width: 1em;
+}
+.select-menu-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.banners {
+  display: flex;
+  flex-direction: column;
+}
+.banner {
+  margin: 6px 10px 0;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  font-size: 0.92em;
+}
+.banner.warn {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+}
+.banner.info {
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+/* -------------------------------------------------------------- buttons */
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.btn {
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: var(--radius);
+  padding: 3px 10px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+.btn:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+.btn.primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+.btn.subtle {
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  padding: 2px 6px;
+}
+.btn.subtle:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+.btn.small {
+  font-size: 0.85em;
+  padding: 0 6px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--vscode-textLink-foreground);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.actions {
+  display: flex;
+  gap: var(--gap);
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+/* ------------------------------------------------------------- history */
+
+/* History popover: a search field and the sessions, under the header. */
+.popover {
+  position: absolute;
+  top: 48px;
+  left: 8px;
+  right: 8px;
+  z-index: 30;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--menu-border);
+  border-radius: 6px;
+  background: var(--menu-bg);
+  color: var(--vscode-foreground);
+  box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+}
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.session-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.session-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.session-item.current {
+  background: var(--vscode-list-inactiveSelectionBackground);
+}
+.session-item-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Each row: the session, then Archive (or Restore) when hovered or focused. */
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.session-row .session-item {
+  flex: 1;
+  min-width: 0;
+}
+.session-act {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  opacity: 0;
+}
+.session-row:hover .session-act,
+.session-act:focus-visible {
+  opacity: 1;
+}
+.session-act:hover {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-foreground);
+}
+@media (hover: none) {
+  .session-act {
+    opacity: 1;
+  }
+}
+.fork-mark .i {
+  width: 12px;
+  height: 12px;
+  margin-right: 4px;
+  vertical-align: -2px;
+  color: var(--muted);
+}
+.history-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 2px;
+  border: 0;
+  border-top: 1px solid var(--menu-border);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.history-switch:hover {
+  color: var(--vscode-foreground);
+}
+.history-switch .i {
+  width: 14px;
+  height: 14px;
+}
+
+/* --------------------------------------------------------- conversation */
+
+.conversation,
+.bottom {
+  --gutter: 16px;
+  /* The chat and the message box share one column. It fills the side bar and is
+     capped only in a wide editor tab. */
+  --column: 1000px;
+}
+@container sidecar (max-width: 359px) {
+  .conversation,
+  .bottom {
+    --gutter: 12px;
+  }
+}
+@container sidecar (min-width: 481px) {
+  .conversation,
+  .bottom {
+    --gutter: 20px;
+  }
+}
+.conversation {
+  flex: 1;
+  overflow-y: auto;
+  /* The scrollbar's room is kept even while it is hidden, so the message box lines
+     up with the chat whether or not the chat scrolls. */
+  scrollbar-gutter: stable;
+  /* No top padding: pinned prompts stick flush to the top edge. The bottom padding
+     is the floating message box's height (with its fade), so the last line can
+     scroll clear of it. */
+  padding: 0 var(--gutter) var(--bottom-space, 140px);
+}
+.empty {
+  padding: 16px 4px;
+}
+.empty h2 {
+  font-size: 1.1em;
+  margin: 0 0 6px;
+}
+.items,
+.empty {
+  max-width: var(--column);
+  margin-inline: auto;
+}
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 8px;
+}
+
+.msg {
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------- prompts */
+
+/* The prompt's time and bubble sit in an opaque wrapper; with stickyPrompt it pins
+   to the top while its turn is on screen and hands over to the next turn's prompt. */
+.prompt {
+  position: relative;
+  z-index: 3;
+  margin-inline: calc(-1 * var(--gutter));
+  padding: 10px var(--gutter) 0;
+  background: var(--panel-bg);
+}
+.sticky-prompts .prompt {
+  position: sticky;
+  top: 0;
+}
+.sticky-prompts .prompt::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 32px;
+  /* The chat fades out as it scrolls under the pinned prompt. */
+  background: linear-gradient(
+    var(--panel-bg) 15%,
+    color-mix(in srgb, var(--panel-bg) 55%, transparent) 55%,
+    transparent
+  );
+  pointer-events: none;
+}
+.bubble {
+  position: relative;
+  padding: 7px 10px;
+  border: 1px solid var(--rail);
+  border-radius: 6px;
+  background: var(--bubble-bg);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.btxt {
+  white-space: pre-wrap;
+  max-height: calc(1.5em * 2);
+  overflow: hidden;
+}
+.bubble.open .btxt {
+  max-height: none;
+}
+.bubble.long {
+  cursor: pointer;
+}
+.bubble.long:not(.open) {
+  padding-bottom: 12px;
+}
+.bubble.long:not(.open) .btxt {
+  -webkit-mask-image: linear-gradient(#000 45%, transparent);
+  mask-image: linear-gradient(#000 45%, transparent);
+}
+.bubble:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/* Fork and Rewind ↺: small muted circles on the bubble's top-right corner, shown
+   while the prompt is hovered or focused. */
+.pacts {
+  position: absolute;
+  top: -9px;
+  right: -7px;
+  display: flex;
+  gap: 3px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.bubble:hover .pacts,
+.bubble:focus-within .pacts {
+  opacity: 1;
+}
+/* Touch screens have no hover: keep these actions visible. */
+@media (hover: none) {
+  .pacts,
+  .answer-actions,
+  .io-copy {
+    opacity: 1 !important;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pacts,
+  .answer-actions,
+  .io-copy {
+    transition: none;
+  }
+}
+.rw {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--panel-bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+.rw:hover:not(:disabled) {
+  color: var(--vscode-foreground);
+}
+.rw:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.rw .i {
+  width: 13px;
+  height: 13px;
+}
+
+/* Line icons */
+.i {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.i .fill {
+  fill: currentColor;
+  stroke: none;
+}
+
+/* ------------------------------------------------------------- timeline */
+
+/* A turn: the prompt (with its time), then the timeline of what the agent did. */
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.prompt {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Right-aligned muted time above a prompt or a block of assistant text. */
+.ts {
+  display: block;
+  height: 18px;
+  line-height: 18px;
+  text-align: right;
+  font-size: 0.85em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Date divider: a wavy hairline either side of the day. The wave is a mask, so it
+   takes the theme's rail colour. */
+.day {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.day::before,
+.day::after {
+  content: "";
+  flex: 1;
+  min-width: 12px;
+  height: 6px;
+  background: var(--rail);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='6'%3E%3Cpath d='M0 3 Q3 0 6 3 T12 3' fill='none' stroke='black' stroke-width='1'/%3E%3C/svg%3E")
+    repeat-x center / 12px 6px;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='6'%3E%3Cpath d='M0 3 Q3 0 6 3 T12 3' fill='none' stroke='black' stroke-width='1'/%3E%3C/svg%3E")
+    repeat-x center / 12px 6px;
+}
+
+/* The rail sits 16px into the text column's gutter side (about 32px from the panel
+   edge with the default gutter); text starts 31px in. Each entry draws the rail from
+   the gap above it to its dot and from its dot to the gap below, leaving 3px either
+   side of the dot, so the rail starts at the first dot, ends at the last one, and
+   never needs to know the panel's background colour. */
+.timeline {
+  --rail-x: 16px;
+  --text-x: 31px;
+  --half-gap: 8px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--half-gap) * 2);
+  padding-left: var(--text-x);
+  line-height: 1.5;
+  min-width: 0;
+}
+.timeline:empty {
+  display: none;
+}
+.tl-item {
+  /* Centre of the first text line (line-height 1.5) minus half the dot. */
+  --dot-y: calc(0.75em - 3.5px);
+  position: relative;
+  min-width: 0;
+}
+.tl-item.has-ts {
+  --dot-y: calc(18px + 0.75em - 3.5px);
+}
+.tl-item::before,
+.tl-item::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--rail-x) - var(--text-x));
+  width: 1px;
+  background: var(--rail);
+}
+.tl-item::before {
+  top: calc(-1 * var(--half-gap));
+  height: calc(var(--dot-y) + var(--half-gap) - 3px);
+}
+.tl-item::after {
+  top: calc(var(--dot-y) + 10px);
+  bottom: calc(-1 * var(--half-gap));
+}
+.tl-item:first-child::before,
+.tl-item:last-child::after {
+  display: none;
+}
+.tl-item > .dot {
+  position: absolute;
+  left: calc(var(--rail-x) - var(--text-x) - 3px);
+  top: var(--dot-y);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dot-idle);
+}
+.dot-ok > .dot {
+  background: var(--ok);
+}
+.dot-run > .dot {
+  background: var(--accent);
+  animation: pulse 0.9s infinite alternate;
+}
+.dot-err > .dot {
+  background: var(--err);
+}
+.dot-none > .dot {
+  display: none;
+}
+/* Entries sit on the rail, so they need no inset of their own. */
+.tl-item > .notice:not(.error) {
+  padding-inline: 0;
+}
+
+/* -------------------------------------------------------------- tool rows */
+
+/* Name in bold, then what the tool worked on; boxes below. */
+.tool {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.th {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tool-name {
+  font-weight: 600;
+  margin-right: 6px;
+}
+.tool .desc {
+  color: var(--muted);
+}
+.tool .desc + .desc {
+  margin-left: 6px;
+}
+.tool .desc.mono {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--vscode-foreground);
+}
+/* File paths: monospace links that wrap anywhere. */
+.plink {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.plink:hover {
+  text-decoration: underline;
+}
+.tool-sub {
+  margin-top: -3px;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+/* "12 lines of output": opens the output in an editor tab. */
+.tool-out {
+  align-self: flex-start;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--muted) 50%, transparent);
+  text-underline-offset: 2px;
+}
+.tool-out:hover {
+  color: var(--vscode-foreground);
+}
+.tool-out:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+.tool-error {
+  color: var(--err);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+
+/* Searches and other tools: the name row opens the output. */
+.activity.tool-fold {
+  font-size: inherit;
+}
+.activity.tool-fold > summary {
+  display: block;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+.activity.tool-fold > summary:hover,
+.activity.tool-fold[open] > summary {
+  background: none;
+}
+.activity.tool-fold > summary::after {
+  content: " ›";
+  color: var(--muted);
+}
+.activity.tool-fold[open] > summary::after {
+  content: " ⌄";
+}
+.activity.tool-fold > .activity-body {
+  margin: 6px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+/* IN / OUT box: a fixed label column, monospace, scrolls sideways inside itself. */
+.io {
+  /* OUT sits a touch lighter than IN. Defined here so it follows the theme's --io-bg. */
+  --io-out-bg: color-mix(in srgb, var(--io-bg) 96%, var(--vscode-foreground));
+  border: 1px solid var(--rail);
+  border-radius: 4px;
+  background: var(--io-bg);
+  font-family: var(--mono);
+  font-size: 0.92em;
+  line-height: 1.5;
+  overflow: hidden;
+  min-width: 0;
+}
+.io-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+}
+.io-row {
+  position: relative;
+}
+/* Copy, at the end of an IN or OUT line while the box is hovered. */
+.io-copy {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 22px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--rail);
+  border-radius: 4px;
+  background: var(--menu-bg);
+  color: var(--muted);
+  font: inherit;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.io-row:hover .io-copy,
+.io-copy:focus-visible,
+.io-copy.done {
+  opacity: 1;
+}
+.io-copy:hover {
+  color: var(--vscode-foreground);
+}
+.io-copy.done {
+  color: var(--vscode-testing-iconPassed, var(--add));
+}
+.io-copy .i {
+  width: 13px;
+  height: 13px;
+}
+.io-row + .io-row {
+  border-top: 1px solid var(--rail);
+  background: var(--io-out-bg);
+}
+.io-k {
+  padding: 5px 0 0 8px;
+  font-size: 0.8em;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  user-select: none;
+}
+.io pre {
+  margin: 0;
+  padding: 4px 8px 4px 0;
+  font: inherit;
+  line-height: inherit;
+  white-space: pre;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.io-in pre {
+  color: var(--vscode-foreground);
+}
+.io-out pre {
+  color: var(--muted);
+}
+/* Long output: three lines that fade out; click to show it all. */
+.io-fold {
+  min-width: 0;
+  cursor: pointer;
+}
+.io-fold:not(.open) > pre {
+  max-height: calc(1.5em * 3 + 8px);
+  overflow-y: hidden;
+  -webkit-mask-image: linear-gradient(#000 55%, transparent);
+  mask-image: linear-gradient(#000 55%, transparent);
+}
+
+/* Inline diff: changed lines on a full-width tint, a marker per line. Click opens
+   VS Code's diff editor. */
+.diff {
+  border: 1px solid var(--rail);
+  border-radius: 4px;
+  background: var(--io-bg);
+  font-family: var(--mono);
+  font-size: 0.92em;
+  line-height: 1.5;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  cursor: pointer;
+  min-width: 0;
+}
+.diff:hover {
+  border-color: var(--vscode-focusBorder);
+}
+.diff.long {
+  max-height: calc(1.5em * 16 + 4px);
+  overflow-y: hidden;
+  -webkit-mask-image: linear-gradient(#000 75%, transparent);
+  mask-image: linear-gradient(#000 75%, transparent);
+}
+.diff-lines {
+  display: grid;
+  min-width: 100%;
+  width: max-content;
+  padding: 2px 0;
+}
+.dl {
+  display: grid;
+  grid-template-columns: 16px auto;
+  padding-right: 8px;
+  white-space: pre;
+}
+.dm {
+  color: var(--muted);
+  text-align: center;
+  user-select: none;
+}
+.dl-add {
+  background: var(--vscode-diffEditor-insertedLineBackground, rgba(155, 185, 85, 0.2));
+}
+.dl-del {
+  background: var(--vscode-diffEditor-removedLineBackground, rgba(255, 0, 0, 0.2));
+}
+/* The marker column takes the stronger change colour, as in VS Code's diff gutter. */
+.dl-add .dm {
+  background: var(--vscode-diffEditor-insertedTextBackground, rgba(155, 185, 85, 0.35));
+  color: var(--vscode-foreground);
+}
+.dl-del .dm {
+  background: var(--vscode-diffEditor-removedTextBackground, rgba(255, 0, 0, 0.35));
+  color: var(--vscode-foreground);
+}
+.diff.written.long {
+  max-height: calc(1.5em * 6 + 4px);
+  -webkit-mask-image: linear-gradient(#000 55%, transparent);
+  mask-image: linear-gradient(#000 55%, transparent);
+}
+.io-fold:focus-visible,
+.diff:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/* Subagent rows: "Agent:" and the task, the prompt in an IN box, a status line. */
+.io-prompt {
+  padding: 4px 8px 4px 0;
+  cursor: pointer;
+  min-width: 0;
+}
+/* One line, clipped at the edge (no ellipsis); click shows the whole prompt. */
+.io-prompt:not(.open) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+}
+.io-prompt:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+.ag-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: -1px;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+.ag-status .d {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dot-idle);
+}
+.ag-running .d,
+.ag-waiting .d {
+  background: var(--accent);
+}
+.ag-failed .d {
+  background: var(--err);
+}
+.ag-line {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ag-link {
+  flex: none;
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.ag-link:hover {
+  text-decoration: underline;
+}
+
+/* Hand-back: a subagent's report, one muted italic line that expands. */
+.activity.handback {
+  font-size: inherit;
+}
+.activity.handback > summary {
+  display: flex;
+  gap: 6px;
+  padding: 0;
+  color: var(--muted);
+  font-style: italic;
+  min-width: 0;
+}
+.activity.handback > summary::after {
+  content: "›";
+  flex: none;
+  font-style: normal;
+}
+.activity.handback[open] > summary::after {
+  content: "⌄";
+}
+.activity.handback > summary:hover,
+.activity.handback[open] > summary {
+  background: none;
+}
+.activity.handback > summary:hover {
+  color: var(--vscode-foreground);
+}
+.hb-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity.handback > .activity-body {
+  margin: 6px 0 0;
+  padding: 0 0 0 10px;
+  border-left: 1px solid var(--rail);
+  color: var(--muted);
+}
+
+/* Grouped activity: a run of calls on one line that opens to the calls. */
+.grp > summary {
+  display: block;
+  list-style: none;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.grp > summary::-webkit-details-marker {
+  display: none;
+}
+.grp > summary .desc {
+  color: var(--muted);
+}
+.grp > summary::after {
+  content: " ›";
+  color: var(--muted);
+}
+.grp[open] > summary::after {
+  content: " ⌄";
+}
+.grp-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+.grp-body > .tl-item::before,
+.grp-body > .tl-item::after,
+.grp-body > .tl-item > .dot {
+  display: none;
+}
+
+/* "Thought for 9s": a muted line that expands to the reasoning. */
+.activity.thought {
+  font-size: inherit;
+}
+.activity.thought > summary {
+  display: inline-flex;
+  padding: 0;
+  color: var(--muted);
+}
+.activity.thought > summary:hover {
+  background: none;
+  color: var(--vscode-foreground);
+}
+.activity.thought[open] > summary {
+  background: none;
+}
+.activity.thought > .activity-body {
+  margin: 4px 0 0;
+  padding: 0 0 0 10px;
+  border-left: 1px solid var(--rail);
+}
+.msg.assistant > :first-child {
+  margin-top: 0;
+}
+.msg.assistant > :last-child {
+  margin-bottom: 0;
+}
+.msg.assistant.streaming > :last-child::after {
+  content: "▍";
+  animation: pulse 0.8s infinite alternate;
+  color: var(--muted);
+}
+.msg p {
+  margin: 0.4em 0;
+}
+.msg h3,
+.msg h4,
+.msg h5,
+.msg h6 {
+  margin: 0.8em 0 0.3em;
+}
+.msg ul,
+.msg ol {
+  margin: 0.3em 0;
+  padding-left: 1.4em;
+}
+.msg blockquote {
+  margin: 0.4em 0;
+  padding-left: 8px;
+  border-left: 3px solid var(--vscode-textBlockQuote-border, var(--border));
+  color: var(--muted);
+}
+.msg a {
+  color: var(--vscode-textLink-foreground);
+}
+.msg hr {
+  border: none;
+  border-top: 1px solid var(--border);
+}
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  background: var(--vscode-textCodeBlock-background);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+.codeblock {
+  margin: 0.5em 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--vscode-textCodeBlock-background);
+  overflow: hidden;
+}
+.codeblock-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1px 4px 1px 8px;
+  border-bottom: 1px solid var(--border);
+}
+pre {
+  margin: 0;
+  padding: 6px 8px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: var(--vscode-editor-font-size, 0.92em);
+  line-height: 1.4;
+}
+pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+.table-wrap {
+  overflow-x: auto;
+  margin: 0.4em 0;
+}
+table {
+  border-collapse: collapse;
+}
+th,
+td {
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+}
+th {
+  background: var(--vscode-keybindingTable-headerBackground, transparent);
+}
+.align-left {
+  text-align: left;
+}
+.align-center {
+  text-align: center;
+}
+.align-right {
+  text-align: right;
+}
+
+/* ------------------------------------------------------------- activity */
+
+.activity {
+  border-radius: var(--radius);
+  font-size: 0.93em;
+}
+.activity > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  list-style: none;
+  min-width: 0;
+}
+.activity > summary::-webkit-details-marker {
+  display: none;
+}
+.activity > summary:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.activity[open] > summary {
+  background: var(--vscode-list-inactiveSelectionBackground);
+}
+.activity-body {
+  margin: 2px 0 4px 18px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.icon {
+  width: 12px;
+  text-align: center;
+  flex: none;
+}
+.reasoning {
+  white-space: pre-wrap;
+  color: var(--muted);
+  font-style: italic;
+}
+.error-text {
+  color: var(--err);
+}
+.adds {
+  color: var(--add);
+  font-variant-numeric: tabular-nums;
+}
+.dels {
+  color: var(--del);
+  font-variant-numeric: tabular-nums;
+}
+
+.file-list {
+  list-style: none;
+  margin: 2px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.file-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 0.93em;
+}
+.file-list .link-btn {
+  flex: 0 1 auto;
+  font-family: var(--mono);
+}
+
+.turn-summary {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+}
+
+/* ----------------------------------------------------------- permission */
+
+.resources {
+  margin: 2px 0;
+  padding-left: 1.2em;
+  overflow-wrap: anywhere;
+}
+.sensitive {
+  margin-top: 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+}
+.sensitive ul {
+  margin: 2px 0 0;
+  padding-left: 1.2em;
+}
+
+.notice {
+  font-size: 0.92em;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+.notice.error {
+  color: var(--err);
+  border: 1px solid var(--vscode-inputValidation-errorBorder, var(--err));
+}
+
+/* -------------------------------------------------------------- changes */
+
+.changes {
+  padding: 4px 10px;
+  border: 1px solid var(--rail);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  max-height: 30vh;
+  overflow-y: auto;
+  font-size: 0.9em;
+  color: var(--muted);
+}
+.changes .row {
+  gap: 6px;
+}
+.changes-toggle {
+  color: var(--vscode-foreground);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------- message box */
+
+/* Status lines (a staged rewind, changes, pending messages) form one strip on the
+   box's top edge, each line set apart by a hairline. */
+.strips {
+  display: flex;
+  flex-direction: column;
+  margin-inline: 10px;
+  border: 1px solid var(--rail);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: var(--menu-bg);
+  overflow: hidden;
+}
+.bottom > .strips {
+  width: auto;
+  max-width: calc(var(--column) - 20px);
+}
+.strips:not(:has(> :not([hidden]))) {
+  display: none;
+}
+.strips > section {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.strips > section:not([hidden]) ~ section:not([hidden]) {
+  border-top: 1px solid var(--rail);
+}
+.bottom:has(.strips > :not([hidden])) {
+  gap: 0;
+}
+
+/* The message box floats over the bottom of the conversation, in the chat's own
+   column. The chat fades out as it scrolls under it, and nothing shows beside or
+   below the box. The overlay stops short of the chat's scrollbar, which stays
+   usable. The box's border takes the accent while the agent works. */
+.bottom {
+  --fade: 32px;
+  position: absolute;
+  left: 0;
+  right: var(--scrollbar, 10px);
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--fade) var(--gutter) 12px;
+  background: linear-gradient(transparent, var(--panel-bg) var(--fade));
+  /* The scroll wheel over the fade still scrolls the chat. */
+  pointer-events: none;
+}
+.bottom > * {
+  width: 100%;
+  max-width: var(--column);
+  margin-inline: auto;
+  pointer-events: auto;
+}
+.box {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--rail);
+  border-radius: 8px;
+  background: var(--box-bg);
+  min-width: 0;
+}
+.box:focus-within {
+  border-color: var(--vscode-focusBorder);
+}
+.box.active {
+  border-color: var(--accent);
+}
+/* Attachments, the text and the controls are set apart by hairlines. */
+.box > .chips {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--rail);
+}
+.input {
+  width: 100%;
+  min-height: 46px;
+  max-height: min(240px, 40vh);
+  scrollbar-width: thin;
+  resize: none;
+  padding: 9px 12px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  line-height: 1.4;
+  outline: none;
+}
+.input::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+.box-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px;
+  border-top: 1px solid var(--rail);
+  min-width: 0;
+}
+.box-tools .ico {
+  width: 22px;
+  height: 22px;
+}
+.box-tools .ico .i,
+.box-tools .pill .i,
+.box-tools .mode .i {
+  width: 14px;
+  height: 14px;
+}
+/* Pills: 20px tall, fully rounded, 12px text. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  flex: none;
+}
+.pill:hover:not(:disabled),
+.pill[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--vscode-foreground) 16%, transparent);
+  color: var(--vscode-foreground);
+}
+.pill:disabled {
+  opacity: 0.5;
+}
+.pill .pd {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dot-idle);
+  flex: none;
+}
+.pill .pd.live {
+  background: var(--accent);
+}
+.pill.model {
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+.pill.model .mn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pill .v {
+  opacity: 0.7;
+}
+.mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  flex: none;
+}
+.mode:hover:not(:disabled),
+.mode[aria-expanded="true"] {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+.mode .i {
+  width: 13px;
+  height: 13px;
+}
+/* Send ↑ / Stop ■: a 24px accent square. */
+.sq {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  flex: none;
+}
+.sq:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+.sq.idle,
+.sq:disabled {
+  opacity: 0.45;
+}
+.sq .i {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2;
+}
+/* Narrow panels: "● 2" instead of "● 2 agents"; no variant or agent name under 360px. */
+@container sidecar (max-width: 440px) {
+  .pill .pl {
+    display: none;
+  }
+}
+@container sidecar (max-width: 359px) {
+  .pill .v,
+  .mode .ml {
+    display: none;
+  }
+}
+
+/* Menus above the message box (and under the header). */
+.menu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  border: 1px solid var(--menu-border);
+  border-radius: 6px;
+  background: var(--menu-bg);
+  color: var(--vscode-foreground);
+  box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+}
+.menu-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.menu-keys {
+  white-space: nowrap;
+}
+kbd {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--rail);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
+}
+.menu-filter {
+  margin: 2px 2px 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--rail);
+  border-radius: 4px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  outline: none;
+}
+.menu-filter:focus {
+  border-color: var(--vscode-focusBorder);
+}
+.menu-filter::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+.menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.menu-h {
+  margin: 8px 10px 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.menu-list > .menu-h:first-child {
+  margin-top: 4px;
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.menu-item:hover:not(:disabled) {
+  background: var(--menu-hover);
+}
+.menu-item:focus {
+  background: var(--menu-active);
+  outline: none;
+}
+.menu-item:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+.menu-item:disabled {
+  opacity: 0.5;
+}
+.menu-item > .i {
+  color: var(--muted);
+}
+.menu-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-sub {
+  font-size: 12px;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.menu .k {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.menu-item.sel::after {
+  content: "✓";
+  flex: none;
+  color: var(--vscode-foreground);
+}
+.menu-item .md {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dot-idle);
+  flex: none;
+}
+.menu-item .md-live {
+  background: var(--accent);
+}
+.menu-item .md-err {
+  background: var(--err);
+}
+.menu-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 8px;
+  font-variant-numeric: tabular-nums;
+}
+.menu-stat span:first-child,
+.menu-note {
+  color: var(--muted);
+}
+.menu-note {
+  padding: 2px 8px 4px;
+  font-size: 0.9em;
+  line-height: 1.35;
+}
+.menu hr {
+  width: 100%;
+  margin: 4px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* "/" commands: a slash in a small rounded square. */
+.sqico {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 1.4px solid currentColor;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+/* The clock pill has no fill. */
+.pill.clean {
+  padding: 0 4px;
+  background: none;
+}
+.pill.clean .i {
+  width: 12px;
+  height: 12px;
+}
+
+/* Copy and Bookmark under the final answer of a turn: shown while the answer is
+   hovered or focused, and kept while it is bookmarked or just copied. */
+.answer-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+:hover > .answer-actions,
+.answer-actions:focus-within,
+.answer-actions:has(.on, .done, .copy-error) {
+  opacity: 1;
+}
+.ico.act {
+  width: 20px;
+  height: 20px;
+  opacity: 0.85;
+}
+.ico.act .i {
+  width: 14px;
+  height: 14px;
+}
+.ico.act.on {
+  color: var(--vscode-textLink-foreground);
+}
+.ico.act.on .i path {
+  fill: currentColor;
+}
+.ico.act.done {
+  width: auto;
+  padding: 0 4px;
+  color: var(--vscode-testing-iconPassed, var(--add));
+}
+.copied-text {
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+/* An answer opened from a bookmark flashes once. */
+.tl-item.flash > .msg {
+  animation: flash 1.6s ease-out;
+  border-radius: 4px;
+}
+@keyframes flash {
+  from {
+    background: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 200, 0, 0.25));
+  }
+  to {
+    background: transparent;
+  }
+}
+/* Bookmarks popover rows: the excerpt (two lines), its session, and ✕. */
+.bm {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+.bm > .session-item {
+  flex: 1;
+  min-width: 0;
+}
+.bm-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* Fixed rows under a menu's scrolling list (sliders, toggles). */
+.menu-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--menu-border);
+}
+.menu-list hr {
+  width: 100%;
+  margin: 4px 0;
+  border: 0;
+  border-top: 1px solid var(--menu-border);
+}
+.slider-value {
+  color: var(--muted);
+}
+/* A row of dots: one per value, the chosen one larger. */
+.dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+  flex: none;
+}
+.sd {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+  cursor: pointer;
+}
+.sd.on {
+  width: 12px;
+  height: 12px;
+  background: var(--vscode-foreground);
+}
+/* A switch: a track with a knob, accent when on. */
+.sw {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--vscode-foreground) 20%, transparent);
+  flex: none;
+}
+.sw::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--vscode-foreground);
+  transition: left 0.12s;
+}
+.sw.on {
+  background: var(--vscode-button-background);
+}
+.sw.on::after {
+  left: 14px;
+  background: var(--vscode-button-foreground);
+}
+@media (prefers-reduced-motion: reduce) {
+  .sw::after {
+    transition: none;
+  }
+}
+/* IN / OUT values open in an editor tab. */
+.io-open {
+  cursor: pointer;
+}
+.io-open:hover {
+  background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+}
+.io-open:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/* Tooltips for the header and message-box buttons. */
+.tip {
+  position: fixed;
+  z-index: 50;
+  max-width: 240px;
+  padding: 6px 10px;
+  border: 1px solid var(--menu-border);
+  border-radius: 6px;
+  background: var(--menu-bg);
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+  pointer-events: none;
+}
+
+/* "Working…" under the timeline while the agent runs. */
+.working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: var(--column);
+  margin: 16px auto 0;
+  padding-left: 8px;
+  color: var(--muted);
+}
+.working b {
+  color: var(--vscode-foreground);
+  font-weight: 600;
+}
+/* Sidecar's mark turning while the agent works: the disc rides around with the ring's gap. */
+.mark-spin {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  color: var(--accent);
+}
+.mark-spin .i {
+  width: 16px;
+  height: 16px;
+  animation: spin 1.6s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 4px 2px 6px;
+  border: 1px solid var(--rail);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  white-space: nowrap;
+  flex: none;
+}
+.chip .i {
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+}
+.chip-label {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+.chip.static {
+  padding-right: 6px;
+}
+/* Images: a small preview, then the name and the size in pixels. */
+.chip-thumb {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  object-fit: cover;
+  border-radius: 2px;
+}
+.chip-detail {
+  color: var(--muted);
+  font-size: 11px;
+}
+.box.drop {
+  border-style: dashed;
+  border-color: var(--vscode-focusBorder);
+}
+
+/* The `@` list: the menu's look, with the caret left in the message box. */
+.mention-menu {
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.mention-menu .menu-item {
+  cursor: pointer;
+  padding-block: 4px;
+}
+.mention-menu .menu-item.active {
+  background: var(--menu-active);
+}
+
+/* A rewind staged in another client: one line above the message box. */
+.revert-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--rail);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  font-size: 0.92em;
+}
+.revert-bar > .i {
+  color: var(--muted);
+}
+.revert-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.items > .reverted {
+  display: none;
+}
+/* Attachments in a prompt: one row above the text that scrolls sideways. */
+.bubble .chips {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  margin: 0 0 6px;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+.chip-x {
+  background: none;
+  border: none;
+  color: inherit;
+  padding: 0 4px;
+  border-radius: 8px;
+}
+.chip-x:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+@keyframes pulse {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+  }
+}
+
+/* ------------------------------------------------------------------ docks */
+
+/* A permission request or a question takes the message box's place. */
+.dock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 10px 8px;
+  border: 1px solid var(--rail);
+  border-radius: 8px;
+  background: var(--box-bg);
+}
+.dock.collapsed {
+  padding-bottom: 10px;
+}
+.dock-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.dock-head .grow {
+  flex: 1;
+}
+.dock-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dock-title code,
+.opt-row code {
+  font-family: var(--mono);
+}
+.dock-count {
+  flex: none;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+.ico.small {
+  width: 20px;
+  height: 20px;
+}
+.dock .from-subagent {
+  font-size: 0.85em;
+  color: var(--muted);
+}
+.cmd {
+  margin: 0;
+  padding: 0;
+  background: none;
+  font-family: var(--mono);
+  font-size: 0.92em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dock-desc {
+  font-size: 0.92em;
+  color: var(--muted);
+}
+/* Options: full width, numbered; the first (the default) is filled with the accent. */
+.opt-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--rail);
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.opt-row:hover:not(:disabled) {
+  background: var(--vscode-list-hoverBackground);
+}
+.opt-row .n {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.opt-row b {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.opt-row b code {
+  font-weight: 400;
+}
+.opt-row.sel {
+  border-color: var(--vscode-button-background);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+.opt-row.sel .n {
+  color: inherit;
+  opacity: 0.8;
+}
+.opt-row.sel:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+.opt-row:focus-visible,
+.q-opt:focus-visible,
+.submit:focus-visible,
+.tab:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+.tell {
+  min-width: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--rail);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  outline: none;
+}
+.tell:focus {
+  border-color: var(--vscode-focusBorder);
+}
+.tell::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+.esc {
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+/* Question dock: a tab per question, radio rows, Submit. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-width: 0;
+}
+.tab {
+  padding: 2px 2px 3px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.92em;
+}
+.tab.on {
+  border-bottom-color: var(--accent);
+  color: var(--vscode-foreground);
+}
+.dock .q {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.q-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.q-opt {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.q-opt:hover:not(:disabled) {
+  background: var(--vscode-list-hoverBackground);
+}
+.q-opt.sel {
+  border-color: var(--accent);
+}
+.q-opt .n {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+.q-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.l {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.dsc {
+  font-size: 0.85em;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+/* Radio circle (checkbox square for multiple choice). */
+.rc {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+}
+.rc.box {
+  border-radius: 3px;
+}
+.rc.on {
+  border-color: var(--accent);
+}
+.rc.on::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.rc.box.on::after {
+  border-radius: 1px;
+}
+.submit {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+}
+.submit.ready {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+.submit.ready:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+/* Answered question card in the timeline. */
+.qcard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--rail);
+  border-radius: 6px;
+}
+.qa {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.qa .q {
+  font-weight: 600;
+}
+.radio {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.radio.off {
+  opacity: 0.55;
+}
+.tool-request .activity.tool-fold > summary .desc {
+  margin-left: 6px;
+}
+
+/* ------------------------------------------------------- banners and hints */
+
+.hint-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gap);
+  justify-content: space-between;
+}
+.hint-actions {
+  display: inline-flex;
+  gap: var(--gap);
+  flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------ onboarding */
+
+.onboarding {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: var(--vscode-sideBar-background, transparent);
+  white-space: normal;
+}
+.onboarding p {
+  margin: 4px 0;
+  line-height: 1.45;
+}
+.onboarding .banner {
+  margin: 6px 0;
+}
+.checklist {
+  list-style: none;
+  margin: 10px 0 4px;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+}
+.setup-check {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 0;
+}
+.setup-mark {
+  width: 1.1em;
+  text-align: center;
+  font-weight: 600;
+  color: var(--muted);
+}
+.setup-done .setup-mark {
+  color: var(--vscode-testing-iconPassed, var(--add));
+}
+.setup-todo .setup-mark,
+.setup-expired .setup-mark {
+  color: var(--vscode-editorWarning-foreground, var(--warn-border));
+}
+.setup-todo,
+.setup-expired {
+  font-weight: 600;
+}
+.onboarding .help {
+  margin-top: 8px;
+}
+
+.copy-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.copy-btn.copied {
+  color: var(--vscode-testing-iconPassed, var(--add));
+}
+.copy-error {
+  color: var(--err);
+}
+
+.error-card,
+.budget-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+}
+.error-card {
+  border-color: var(--vscode-inputValidation-errorBorder, var(--err));
+}
+.error-title {
+  font-weight: 600;
+  color: var(--err);
+  margin-bottom: 2px;
+}
+.budget-card.budget-warning {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+.budget-card.budget-stopped {
+  border-color: var(--vscode-inputValidation-errorBorder, var(--err));
+}
+.text-input {
+  width: 100%;
+  padding: 3px 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--vscode-input-border, var(--border));
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font: inherit;
+}
+
+.pending {
+  padding: 4px 10px;
+  border: 1px solid var(--rail);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 25vh;
+  overflow-y: auto;
+}
+.pending-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 0.92em;
+}
+.pending-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* ------------------------------------------------------------ subagents */
+
+.subagent-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.subagent-agent {
+  flex: none;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 0 5px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.subagent-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-activity {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.subagent-activity.subagent-waiting {
+  color: var(--vscode-editorWarning-foreground, var(--warn-border));
+}
+.subagent-activity.subagent-failed {
+  color: var(--err);
+}
+.subagent-meta {
+  flex: 1;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-icon.subagent-running {
+  color: var(--vscode-progressBar-background);
+  animation: pulse 0.8s infinite alternate;
+}
+.subagent-icon.subagent-waiting {
+  color: var(--vscode-editorWarning-foreground, var(--warn-border));
+}
+.subagent-icon.subagent-completed {
+  color: var(--vscode-testing-iconPassed, var(--add));
+}
+.subagent-icon.subagent-failed {
+  color: var(--err);
+}
+.subagent-icon.subagent-stopped {
+  color: var(--muted);
+}
+
+/* Requests raised by a subagent name it. */
+.from-subagent {
+  min-width: 0;
+  margin-bottom: 4px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.from-subagent .subagent-agent {
+  display: inline-block;
+  margin: 0 2px;
+}
+
+/* Drill-in: breadcrumb and live status above the subagent's conversation. */
+.subagent-header {
+  padding: 6px 16px 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.subagent-header .subagent-head {
+  background: none;
+}
+.subagent-view-status {
+  font-size: 0.85em;
+  color: var(--muted);
+}
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  font-size: 0.92em;
+}
+.subagent-view-status {
+  flex-wrap: nowrap;
+}
+.subagent-view-status .subagent-activity {
+  flex: 0 1 auto;
+}
+.subagent-view-status .btn {
+  margin-inline-start: auto;
+}
+
+/* --------------------------------------------------- high contrast */
+
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  /* Button backgrounds are the page colour in high contrast; live dots use the focus colour. */
+  --accent: var(--vscode-focusBorder, Highlight);
+  --dot-idle: var(--vscode-descriptionForeground, CanvasText);
+  --io-bg: transparent;
+  --bubble-bg: transparent;
+  --border: var(--vscode-contrastBorder, CanvasText);
+  /* Keep high contrast flat: the border carries the separation. */
+  --surface-raised: var(--vscode-menu-background, var(--vscode-dropdown-background));
+}
+body.vscode-high-contrast .io,
+body.vscode-high-contrast-light .io {
+  --io-out-bg: transparent;
+}
+body.vscode-high-contrast .select-menu,
+body.vscode-high-contrast-light .select-menu {
+  border-width: 2px;
+  box-shadow: none;
+}
+body.vscode-high-contrast .btn,
+body.vscode-high-contrast-light .btn,
+body.vscode-high-contrast .select,
+body.vscode-high-contrast-light .select,
+body.vscode-high-contrast .input,
+body.vscode-high-contrast-light .input,
+body.vscode-high-contrast .text-input,
+body.vscode-high-contrast-light .text-input {
+  border: 1px solid var(--vscode-contrastBorder, CanvasText);
+}
+body.vscode-high-contrast :focus-visible,
+body.vscode-high-contrast-light :focus-visible {
+  outline: 2px solid var(--vscode-contrastActiveBorder, var(--vscode-focusBorder, Highlight));
+  outline-offset: 1px;
+}
+body.vscode-high-contrast .dock,
+body.vscode-high-contrast-light .dock,
+body.vscode-high-contrast .budget-card,
+body.vscode-high-contrast-light .budget-card,
+body.vscode-high-contrast .error-card,
+body.vscode-high-contrast-light .error-card {
+  border-width: 2px;
+}
+body.vscode-high-contrast .badge,
+body.vscode-high-contrast-light .badge,
+body.vscode-high-contrast .subagent-agent,
+body.vscode-high-contrast-light .subagent-agent,
+body.vscode-high-contrast .chip,
+body.vscode-high-contrast-light .chip {
+  border: 1px solid var(--vscode-contrastBorder, CanvasText);
+}
+@media (forced-colors: active) {
+  .btn,
+  .select,
+  .select-menu,
+  .input,
+  .text-input,
+  .chip,
+  .badge {
+    border: 1px solid ButtonText;
+  }
+}
+
+/* High contrast: every control gets a visible border; the chosen option and the
+   send button keep a strong outline since button fills match the page. */
+body.vscode-high-contrast .pill,
+body.vscode-high-contrast-light .pill,
+body.vscode-high-contrast .ico,
+body.vscode-high-contrast-light .ico,
+body.vscode-high-contrast .mode,
+body.vscode-high-contrast-light .mode,
+body.vscode-high-contrast .sq,
+body.vscode-high-contrast-light .sq,
+body.vscode-high-contrast .q-opt,
+body.vscode-high-contrast-light .q-opt,
+body.vscode-high-contrast .submit,
+body.vscode-high-contrast-light .submit,
+body.vscode-high-contrast .menu,
+body.vscode-high-contrast-light .menu,
+body.vscode-high-contrast .popover,
+body.vscode-high-contrast-light .popover,
+body.vscode-high-contrast .tip,
+body.vscode-high-contrast-light .tip {
+  border: 1px solid var(--vscode-contrastBorder, CanvasText);
+}
+body.vscode-high-contrast .opt-row.sel,
+body.vscode-high-contrast-light .opt-row.sel,
+body.vscode-high-contrast .q-opt.sel,
+body.vscode-high-contrast-light .q-opt.sel,
+body.vscode-high-contrast .submit.ready,
+body.vscode-high-contrast-light .submit.ready,
+body.vscode-high-contrast .box.active,
+body.vscode-high-contrast-light .box.active {
+  border: 2px solid var(--vscode-contrastActiveBorder, Highlight);
+}
+body.vscode-high-contrast .pill,
+body.vscode-high-contrast-light .pill,
+body.vscode-high-contrast .submit,
+body.vscode-high-contrast-light .submit {
+  background: transparent;
+  color: var(--vscode-foreground);
+}
+
+/* ---------------------------------------------------------------- dialog */
+
+/* Confirmation for destructive actions, centered over the panel. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--panel-bg) 35%, rgba(0, 0, 0, 0.55));
+}
+.modal {
+  width: min(400px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--menu-border);
+  border-radius: 8px;
+  background: var(--menu-bg);
+  color: var(--vscode-foreground);
+  box-shadow: 0 12px 32px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.45));
+}
+.modal h2 {
+  margin: 0;
+  font-size: 1.05em;
+  font-weight: 600;
+}
+.modal p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.modal-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.modal-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid var(--menu-border);
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.modal-choice:hover {
+  background: var(--menu-hover);
+}
+.modal-choice:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+.modal-choice.danger .modal-label {
+  color: var(--vscode-errorForeground, var(--err));
+}
+.modal-label {
+  font-weight: 600;
+}
+.modal-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* --------------------------------------------------------- syntax colors */
+
+/* Prism token classes (src/webview/highlight.ts) on theme colors that every VS Code
+   theme defines, so light, dark and high-contrast themes all read well. */
+.tk-comment,
+.tk-prolog,
+.tk-doctype,
+.tk-cdata {
+  color: var(--muted);
+  font-style: italic;
+}
+.tk-keyword,
+.tk-boolean,
+.tk-atrule,
+.tk-important,
+.tk-tag,
+.tk-selector {
+  color: var(--vscode-debugTokenExpression-boolean);
+}
+.tk-string,
+.tk-char,
+.tk-attr-value,
+.tk-template-string,
+.tk-regex,
+.tk-url {
+  color: var(--vscode-debugTokenExpression-string);
+}
+.tk-number,
+.tk-constant,
+.tk-symbol,
+.tk-unit {
+  color: var(--vscode-debugTokenExpression-number);
+}
+.tk-function,
+.tk-function-variable,
+.tk-method {
+  color: var(--vscode-charts-yellow);
+}
+.tk-class-name,
+.tk-builtin,
+.tk-namespace,
+.tk-maybe-class-name {
+  color: var(--vscode-terminal-ansiCyan);
+}
+.tk-property,
+.tk-attr-name,
+.tk-variable,
+.tk-parameter {
+  color: var(--vscode-symbolIcon-variableForeground);
+}
+.tk-punctuation {
+  color: color-mix(in srgb, var(--vscode-foreground) 75%, transparent);
+}
+.tk-inserted {
+  color: var(--add);
+}
+.tk-deleted {
+  color: var(--err);
+}
+.tk-bold {
+  font-weight: 600;
+}
+.tk-italic {
+  font-style: italic;
+}

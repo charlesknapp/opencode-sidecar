@@ -1,0 +1,28 @@
+# Dependencies and build output
+node_modules/
+dist/
+dist-vsix/
+out-test/
+coverage/
+.vscode-test/
+*.vsix
+*.tgz
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local environment and secrets
+.env
+.env.*
+
+# Editors and assistants: keep the shared launch config only
+.vscode/*
+!.vscode/launch.json
+.idea/
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

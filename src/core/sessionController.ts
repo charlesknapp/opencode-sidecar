@@ -1,0 +1,1730 @@
+// Session-level behaviour (sessions, model/agent/variant selection, prompting,
+// steering/queueing, streaming, permissions, forms, cancellation, budget guard,
+// agent changes, usage) on top of the OpenCodeClient adapter. Free of VS Code
+// APIs so it can be unit-tested.
+
+import { BudgetTracker, nextLevel, type BudgetSettings } from "./budget";
+import { buildPrompt, type PromptPayload, type ResolvedMention } from "./context";
+import {
+  CONTINUE_TEXT,
+  deriveTaskFromHistory,
+  summarizeTask,
+  type TaskNotice,
+  type TaskRecord,
+  type TaskStatus,
+} from "./currentTask";
+import { classifyError, describeForLog } from "./errors";
+import { summarizeAnswer, validateAnswer } from "./forms";
+import { reconstructSides, type FileSides } from "./patch";
+import { MAX_SUBAGENTS, SubagentTracker } from "./subagents";
+import { displayTitle, isUsableTitle } from "./titles";
+import { OpenCodeHttpError, type FoundFile, type OpenCodeClient } from "../opencode/client";
+import { describeSensitive, EventNormalizer, historyToEvents } from "../opencode/events";
+import type {
+  CommandInfo,
+  AccountStatus,
+  AgentOption,
+  BudgetLevel,
+  BudgetView,
+  ContextAttachment,
+  FileChange,
+  FormAnswer,
+  InboxDelivery,
+  ModelOption,
+  PendingInboxItem,
+  PermissionDecision,
+  SessionSummary,
+  SkillOption,
+  SubagentView,
+  TokenUsage,
+  TranscriptItem,
+  UiEvent,
+  UsageInfo,
+} from "../shared/model";
+import { stampTime, Transcript } from "../shared/transcript";
+
+export interface KeyValueStore {
+  get<T>(key: string): T | undefined;
+  update(key: string, value: unknown): Thenable<void> | Promise<void>;
+}
+
+export interface ControllerLog {
+  info(message: string): void;
+  warn(message: string): void;
+  error(message: string, error?: unknown): void;
+}
+
+export interface ControllerSink {
+  onEvents(events: UiEvent[]): void;
+  onTranscriptReset(items: TranscriptItem[]): void;
+  onStateChanged(): void;
+  /** Live task milestones (never emitted for replayed history). */
+  onTaskNotice?(notice: TaskNotice): void;
+  /** Full transcript of the subagent conversation the user opened (empty while it loads). */
+  onSubagentTranscript?(sessionID: string, items: TranscriptItem[]): void;
+  /** Live events of the subagent conversation the user opened. */
+  onSubagentEvents?(sessionID: string, events: UiEvent[]): void;
+}
+
+/** What the sidebar shows for the Current / Last Task. */
+export interface TaskView {
+  id: string;
+  label: "current" | "last";
+  summary: string;
+  status: TaskStatus | "waiting" | null;
+  steer: string | null;
+  next: { summary: string; more: number } | null;
+  chars: number;
+  lines: number;
+}
+
+export interface ControllerDefaults {
+  model: string;
+  agent: string;
+  /** Budget level used when the workspace has no remembered choice. */
+  budgetLevel?: BudgetLevel;
+  budget?: BudgetSettings;
+  /** Warn when the context window is this full (0–100; 0 disables). */
+  contextWarnPercent?: number;
+  /** Localized UI strings for controller-generated messages. */
+  strings?: Partial<ControllerStrings>;
+}
+
+export interface ControllerStrings {
+  budgetWarning: string;
+  budgetStopped: string;
+  contextWarning: (percent: number) => string;
+}
+
+const EN_STRINGS: ControllerStrings = {
+  budgetWarning: "Task budget is nearly exhausted.",
+  budgetStopped: "Task budget reached. The agent was stopped.",
+  contextWarning: (p) => `The context window is ${p}% full. Consider starting a new session.`,
+};
+
+/** Agent-attributed changes from OpenCode's session snapshots. */
+export type AgentChanges =
+  { status: "none" } | { status: "ok"; files: FileChange[] } | { status: "unavailable"; reason: string };
+
+export const HISTORY_LIMIT = 400;
+const SESSION_LIST_LIMIT = 30;
+
+export function contextTokens(t: TokenUsage): number {
+  return t.input + t.cacheRead + t.cacheWrite + t.output;
+}
+
+export function friendlyError(e: unknown, fallback: string): string {
+  if (e instanceof OpenCodeHttpError) {
+    if (e.status === 401) return "OpenCode rejected the connection credentials.";
+    if (e.status === 404) return `${fallback} (not found).`;
+    return `${fallback}: ${e.message}`;
+  }
+  if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError"))
+    return `${fallback}: OpenCode did not respond in time.`;
+  if (e instanceof TypeError) return `${fallback}: could not reach OpenCode.`;
+  return fallback + ".";
+}
+
+export class SessionController {
+  readonly transcript = new Transcript();
+  directory: string | null = null;
+  models: ModelOption[] | null = null;
+  agents: AgentOption[] | null = null;
+  /** Account / provider connection evidence; null = not checked yet or could not be checked. */
+  account: AccountStatus | null = null;
+  /** True while the model/agent catalog for the current folder is loading. */
+  catalogLoading = false;
+  /** The catalog for the current folder has been published at least once. */
+  catalogLoaded = false;
+  selectedModel: string | null = null;
+  selectedAgent: string | null = null;
+  /** Selected variant for the selected model; null = model default. */
+  selectedVariant: string | null = null;
+  sessions: SessionSummary[] = [];
+  current: SessionSummary | null = null;
+  busy = false;
+  stopping = false;
+  /** Agent changes for the whole session (snapshot attribution). */
+  agentChanges: AgentChanges = { status: "none" };
+  /** Steering/queued messages OpenCode has accepted but not yet delivered. */
+  pending: PendingInboxItem[] = [];
+  /** Completed agent steps in this session. */
+  steps = 0;
+  readonly budget: BudgetTracker;
+  private patches = new Map<string, { patch: string; status: FileChange["status"] }>();
+  private lastStep: { tokens: TokenUsage; modelKey: string | null; at: number | null } | null = null;
+  /** OpenCode's slash commands for the open folder. */
+  commands: CommandInfo[] = [];
+  /** Subagents and skills a prompt can mention with `@`. */
+  mentionAgents: AgentOption[] = [];
+  skills: SkillOption[] = [];
+  /** Archived sessions, loaded when the history's Archived view opens; null until then. */
+  archivedSessions: SessionSummary[] | null = null;
+  private sessionCost: number | null = null;
+  private contextWarned = false;
+  private lastPayload: PromptPayload | null = null;
+  private deliveredEarly = new Set<string>();
+  /**
+   * Subagent sessions started (directly or through other subagents) by the open session.
+   * Their progress is summarized for the subagent cards; their permission requests and
+   * questions block the open session's run, so they are shown in its conversation.
+   */
+  private readonly subagents: SubagentTracker;
+  /** Subagent conversation the user opened, kept in its own transcript. */
+  private viewer: { id: string; transcript: Transcript; loading: boolean } | null = null;
+  private viewerToken = 0;
+  private titleCache = new Map<string, string | null>();
+  private firstUserText: string | null = null;
+  private readonly normalizer = new EventNormalizer();
+  private sessionsTimer: ReturnType<typeof setTimeout> | undefined;
+  private changesTimer: ReturnType<typeof setTimeout> | undefined;
+  private stopTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Reloads the open session after a rewind made elsewhere. */
+  private revertTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Sidecar's own rewind is running (it reloads by itself). */
+  private rewinding = false;
+  /** Retries the command list while a fresh OpenCode instance is still starting. */
+  private commandsTimer: ReturnType<typeof setTimeout> | undefined;
+  private loadToken = 0;
+  private errorSeq = 0;
+  private budgetSeq = 0;
+  private disposed = false;
+  /** Current / last task (see src/core/currentTask.ts). */
+  task: TaskRecord | null = null;
+  /** True between session.execution.started and its idle marker (from OpenCode events). */
+  private execActive = false;
+  private execSeq = 0;
+  private taskStopReason: "budget" | null = null;
+  /** Whether a pending inbox item will start a new task when delivered. */
+  private pendingStartsTask = new Map<string, boolean>();
+  private notified = new Set<string>();
+  /** Folder whose catalog is currently being loaded (guards against duplicate reloads). */
+  private loadingDirectory: string | null = null;
+  private catalogGeneration = 0;
+  /** Bumped by every user selection, so a catalog load that raced with it keeps the choice. */
+  private selectionVersion = 0;
+  private catalogTimer: ReturnType<typeof setTimeout> | undefined;
+  private catalogRefresh: Promise<void> | null = null;
+  private catalogRefreshAgain = false;
+  /** Controller-generated events (budget/context) raised while applying a batch; flushed after it. */
+  private deferred: UiEvent[] = [];
+
+  constructor(
+    private readonly client: OpenCodeClient,
+    private readonly store: KeyValueStore,
+    private readonly sink: ControllerSink,
+    private readonly log: ControllerLog,
+    private readonly defaults: () => ControllerDefaults,
+    private readonly timing: {
+      debounceMs: number;
+      stopCheckMs: number;
+      modelRetryMs: number;
+      catalogDebounceMs?: number;
+      /** Clock for subagent timing (tests). */
+      now?: () => number;
+    } = { debounceMs: 400, stopCheckMs: 15_000, modelRetryMs: 1500 },
+  ) {
+    this.subagents = new SubagentTracker(timing.now ?? Date.now);
+    this.budget = new BudgetTracker(() => {
+      const d = this.defaults();
+      return (
+        d.budget ?? {
+          presets: {
+            small: { maxCost: 0.1, maxSteps: 20 },
+            medium: { maxCost: 0.3, maxSteps: 50 },
+            large: { maxCost: 1, maxSteps: 120 },
+            custom: { maxCost: 0.5, maxSteps: 80 },
+          },
+          warnAt: 0.8,
+        }
+      );
+    });
+    this.budget.level = this.defaults().budgetLevel ?? "off";
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    clearTimeout(this.sessionsTimer);
+    clearTimeout(this.changesTimer);
+    clearTimeout(this.stopTimer);
+    clearTimeout(this.catalogTimer);
+    clearTimeout(this.revertTimer);
+    clearTimeout(this.commandsTimer);
+  }
+
+  /**
+   * Reloads OpenCode's commands for the folder. A fresh OpenCode instance answers
+   * with an empty list until it has started, so an empty answer is retried twice.
+   */
+  async refreshCommands(attempt = 0): Promise<void> {
+    const dir = this.directory;
+    if (!dir) return;
+    clearTimeout(this.commandsTimer);
+    const list = await this.client.listCommands(dir).catch(() => null);
+    if (this.disposed || dir !== this.directory) return;
+    if (list && JSON.stringify(list) !== JSON.stringify(this.commands)) {
+      this.commands = list;
+      this.sink.onStateChanged();
+    }
+    if ((!list || list.length === 0) && attempt < 2)
+      this.commandsTimer = setTimeout(() => void this.refreshCommands(attempt + 1), 2000 * (attempt + 1));
+  }
+
+  private strings(): ControllerStrings {
+    return { ...EN_STRINGS, ...(this.defaults().strings ?? {}) };
+  }
+
+  usage(contextLimitFallback = true): UsageInfo | null {
+    const step = this.lastStep;
+    const tokens = step ? contextTokens(step.tokens) : null;
+    const modelKey = step?.modelKey ?? (contextLimitFallback ? this.selectedModel : null);
+    const limit = this.models?.find((m) => m.key === modelKey)?.contextLimit ?? null;
+    if (tokens === null && this.sessionCost === null) return null;
+    const t = step?.tokens;
+    const fed = t ? t.input + t.cacheRead + t.cacheWrite : 0;
+    return {
+      contextTokens: tokens,
+      contextLimit: tokens === null ? null : limit,
+      cost: this.sessionCost,
+      cacheHit: t && fed > 0 ? t.cacheRead / fed : null,
+      lastStepAt: step?.at ?? null,
+    };
+  }
+
+  budgetView(): BudgetView {
+    return this.budget.view();
+  }
+
+  /** Title shown for the current session (OpenCode's when usable, else a local fallback). */
+  currentTitle(): string | null {
+    if (!this.current) return null;
+    return displayTitle(this.current.title, this.firstUserText ?? this.firstTranscriptUserText());
+  }
+
+  private firstTranscriptUserText(): string | null {
+    const u = this.transcript.items.find((i) => i.kind === "user");
+    return u?.kind === "user" ? u.text : null;
+  }
+
+  /** Session list with cleaned-up titles. Bad titles get a fallback fetched lazily. */
+  displaySessions(): SessionSummary[] {
+    return this.sessions.map((s) => {
+      if (isUsableTitle(s.title)) return s;
+      if (s.id === this.current?.id) return { ...s, title: this.currentTitle() ?? "Untitled session" };
+      if (!this.titleCache.has(s.id)) {
+        this.titleCache.set(s.id, null);
+        this.client
+          .firstUserText(s.id)
+          .then((t) => {
+            this.titleCache.set(s.id, t);
+            this.sink.onStateChanged();
+          })
+          .catch(() => undefined);
+      }
+      return { ...s, title: displayTitle(s.title, this.titleCache.get(s.id)) };
+    });
+  }
+
+  // ---------------------------------------------------------------- catalog
+
+  /** Switches to a workspace directory: loads models, agents and sessions for it. */
+  async setDirectory(directory: string | null): Promise<void> {
+    // Same folder: nothing to do if its catalog is loaded or still loading.
+    if (this.directory === directory && (this.models !== null || this.loadingDirectory === directory)) return;
+    this.directory = directory;
+    this.loadingDirectory = directory;
+    this.clearSession();
+    this.sessions = [];
+    this.models = null;
+    this.agents = null;
+    this.account = null;
+    this.archivedSessions = null;
+    this.catalogLoaded = false;
+    const remembered = this.store.get<BudgetLevel>(this.key("budget"));
+    this.budget.setLevel(remembered ?? this.defaults().budgetLevel ?? "off");
+    this.sink.onStateChanged();
+    if (!directory) {
+      this.loadingDirectory = null;
+      return;
+    }
+    try {
+      await Promise.all([this.loadCatalog(), this.refreshSessions()]);
+    } finally {
+      if (this.loadingDirectory === directory) this.loadingDirectory = null;
+    }
+    const rememberedSession = this.store.get<string>(this.key("session"));
+    if (rememberedSession && this.sessions.some((s) => s.id === rememberedSession))
+      await this.openSession(rememberedSession);
+  }
+
+  private key(kind: "model" | "agent" | "session" | "budget"): string {
+    return `opencodeSidecar.${kind}:${this.directory ?? ""}`;
+  }
+
+  private variantKey(modelKey: string): string {
+    return `opencodeSidecar.variant:${this.directory ?? ""}:${modelKey}`;
+  }
+
+  /**
+   * Loads models, agents and account status for the current folder. With `keepSelection`
+   * (a refresh), the current model, variant and agent stay selected while they still exist.
+   */
+  async loadCatalog(options: { keepSelection?: boolean } = {}): Promise<void> {
+    const dir = this.directory;
+    if (!dir) return;
+    const generation = ++this.catalogGeneration;
+    const selection = this.selectionVersion;
+    this.catalogLoading = true;
+    this.sink.onStateChanged();
+    try {
+      const accountP = this.client.accountStatus(dir).catch((e: unknown) => {
+        this.log.error("Checking OpenCode connections failed", e);
+        return null;
+      });
+      let models: ModelOption[] | null;
+      try {
+        models = await this.client.listModels(dir);
+        // A location that OpenCode has not loaded yet briefly reports no models. Refreshes
+        // (after the first load) report what OpenCode lists right away.
+        const retries = options.keepSelection ? 0 : 2;
+        for (let i = 0; i < retries && models.length === 0; i++) {
+          await delay(this.timing.modelRetryMs);
+          models = await this.client.listModels(dir);
+        }
+      } catch (e) {
+        this.log.error("Loading models failed", e);
+        models = null;
+      }
+      let agents: AgentOption[] | null;
+      try {
+        agents = await this.client.listAgents(dir);
+      } catch (e) {
+        this.log.error("Loading agents failed", e);
+        agents = null;
+      }
+      const [commands, mentionAgents, skills] = await Promise.all([
+        this.client.listCommands(dir).catch((e: unknown) => {
+          this.log.warn(`Loading commands failed: ${e instanceof Error ? e.message : String(e)}`);
+          return [] as CommandInfo[];
+        }),
+        this.client.listSubagents(dir).catch(() => [] as AgentOption[]),
+        this.client.listSkills(dir).catch(() => [] as SkillOption[]),
+      ]);
+      const account = await accountP;
+      const picked = await this.pickDefaults(dir, models ?? [], agents ?? []);
+      if (dir !== this.directory || generation !== this.catalogGeneration || this.disposed) return;
+      // Publish the catalog and the defaults together, so a selection made by the user can
+      // never be overwritten by defaults that were still being resolved.
+      const keep = options.keepSelection || selection !== this.selectionVersion;
+      const prevModel = keep && models?.some((m) => m.key === this.selectedModel) ? this.selectedModel : null;
+      const prevAgent = keep && agents?.some((a) => a.id === this.selectedAgent) ? this.selectedAgent : null;
+      const prevVariant = this.selectedVariant;
+      this.models = models;
+      this.agents = agents;
+      this.commands = commands;
+      this.mentionAgents = mentionAgents;
+      this.skills = skills;
+      if (!commands.length) this.commandsTimer = setTimeout(() => void this.refreshCommands(1), 2000);
+      this.account = account;
+      this.catalogLoaded = true;
+      this.selectedModel = prevModel ?? picked.model;
+      const variants = models?.find((m) => m.key === this.selectedModel)?.variants ?? [];
+      this.selectedVariant =
+        prevModel && (prevVariant === null || variants.includes(prevVariant))
+          ? prevVariant
+          : this.rememberedVariant(this.selectedModel);
+      this.selectedAgent = prevAgent ?? picked.agent;
+    } finally {
+      if (generation === this.catalogGeneration) this.catalogLoading = false;
+      this.sink.onStateChanged();
+    }
+  }
+
+  /** Re-checks models, agents and account status without touching the open session. */
+  async refreshCatalog(): Promise<void> {
+    clearTimeout(this.catalogTimer);
+    if (!this.directory) return;
+    // Refreshes requested while one is running are coalesced into one more run, so frequent
+    // triggers (events, the sign-in poll) can never keep superseding each other.
+    if (this.catalogRefresh) {
+      this.catalogRefreshAgain = true;
+      return this.catalogRefresh;
+    }
+    this.catalogRefresh = (async () => {
+      try {
+        do {
+          this.catalogRefreshAgain = false;
+          await this.loadCatalog({ keepSelection: true });
+        } while (this.catalogRefreshAgain && !this.disposed);
+      } finally {
+        this.catalogRefresh = null;
+      }
+    })();
+    return this.catalogRefresh;
+  }
+
+  /** OpenCode reports provider / model / integration changes, e.g. after `opencode auth login`. */
+  private scheduleCatalogRefresh(): void {
+    clearTimeout(this.catalogTimer);
+    this.catalogTimer = setTimeout(() => void this.refreshCatalog(), this.timing.catalogDebounceMs ?? 1000);
+  }
+
+  private async pickDefaults(
+    dir: string,
+    models: ModelOption[],
+    agents: AgentOption[],
+  ): Promise<{ model: string | null; agent: string | null }> {
+    const d = this.defaults();
+    const has = (k: string | null | undefined): k is string => !!k && models.some((m) => m.key === k);
+    let model: string | null = this.store.get<string>(this.key("model")) ?? null;
+    if (!has(model)) model = has(d.model) ? d.model : null;
+    if (!model) {
+      try {
+        const def = await this.client.defaultModel(dir);
+        if (has(def)) model = def;
+      } catch {
+        // fall through
+      }
+    }
+    if (!model && models.length) model = models[0].key;
+
+    const hasAgent = (a: string | null | undefined): a is string => !!a && agents.some((x) => x.id === a);
+    let agent: string | null = this.store.get<string>(this.key("agent")) ?? null;
+    if (!hasAgent(agent))
+      agent = hasAgent(d.agent) ? d.agent : hasAgent("build") ? "build" : (agents[0]?.id ?? null);
+    return { model, agent };
+  }
+
+  /** Last valid variant remembered for this workspace + model, or null (model default). */
+  private rememberedVariant(modelKey: string | null): string | null {
+    if (!modelKey) return null;
+    const model = this.models?.find((m) => m.key === modelKey);
+    const v = this.store.get<string>(this.variantKey(modelKey));
+    return v && model?.variants.includes(v) ? v : null;
+  }
+
+  async refreshSessions(): Promise<void> {
+    const dir = this.directory;
+    if (!dir) return;
+    try {
+      const sessions = await this.client.listSessions(dir, SESSION_LIST_LIMIT);
+      if (dir !== this.directory) return;
+      this.sessions = sessions;
+      if (this.current) {
+        const fresh = sessions.find((s) => s.id === this.current?.id);
+        if (fresh) this.current = { ...fresh, cost: fresh.cost ?? this.current.cost };
+      }
+      if (this.archivedSessions) this.archivedSessions = await this.listArchived(dir);
+      this.sink.onStateChanged();
+    } catch (e) {
+      this.log.error("Listing sessions failed", e);
+    }
+  }
+
+  private async listArchived(dir: string): Promise<SessionSummary[]> {
+    return this.client.listSessions(dir, SESSION_LIST_LIMIT, true).catch((e: unknown) => {
+      this.log.error("Listing archived sessions failed", e);
+      return [];
+    });
+  }
+
+  /** Loads this folder's archived sessions for the history's Archived view. */
+  async loadArchived(): Promise<void> {
+    const dir = this.directory;
+    if (!dir) return;
+    const list = await this.listArchived(dir);
+    if (dir !== this.directory) return;
+    this.archivedSessions = list;
+    this.sink.onStateChanged();
+  }
+
+  /**
+   * Archives a session (OpenCode keeps it, but leaves it out of the history) or restores
+   * it. Archiving the open session starts a new one.
+   */
+  async setArchived(id: string, archived: boolean): Promise<void> {
+    try {
+      await this.client.setArchived(id, archived);
+      this.log.info(`${archived ? "Archived" : "Restored"} session ${id}`);
+    } catch (e) {
+      this.log.error("Archiving failed", e);
+      const what = archived ? "archive" : "restore";
+      this.emit([
+        { type: "notice", level: "error", text: friendlyError(e, `Could not ${what} the session`) },
+      ]);
+      return;
+    }
+    if (archived && this.current?.id === id) await this.newSession();
+    await this.refreshSessions();
+  }
+
+  private scheduleSessionsRefresh(): void {
+    clearTimeout(this.sessionsTimer);
+    this.sessionsTimer = setTimeout(() => void this.refreshSessions(), this.timing.debounceMs);
+  }
+
+  // --------------------------------------------------------------- sessions
+
+  private clearSession(): void {
+    this.current = null;
+    this.busy = false;
+    this.stopping = false;
+    this.agentChanges = { status: "none" };
+    this.patches.clear();
+    this.pending = [];
+    this.steps = 0;
+    this.lastStep = null;
+    this.sessionCost = null;
+    this.contextWarned = false;
+    this.lastPayload = null;
+    this.firstUserText = null;
+    this.deliveredEarly.clear();
+    this.subagents.reset();
+    this.viewer = null;
+    this.viewerToken++;
+    this.task = null;
+    this.execActive = false;
+    this.taskStopReason = null;
+    this.pendingStartsTask.clear();
+    this.budget.reset();
+    clearTimeout(this.stopTimer);
+    this.transcript.reset();
+    this.sink.onTranscriptReset([]);
+  }
+
+  /** Starts a fresh conversation. The OpenCode session is created lazily on first send. */
+  async newSession(): Promise<void> {
+    this.loadToken++;
+    this.clearSession();
+    if (this.directory) await this.store.update(this.key("session"), undefined);
+    this.sink.onStateChanged();
+  }
+
+  /** Continues an existing OpenCode session: replays history, pending permissions, forms and queue. */
+  async openSession(id: string): Promise<boolean> {
+    const token = ++this.loadToken;
+    try {
+      const [summary, messages, rootPermissions, rootForms, inbox, active, subagents] = await Promise.all([
+        this.client.getSession(id),
+        this.client.listMessages(id, HISTORY_LIMIT),
+        this.client.listPermissions(id).catch(() => []),
+        this.client.listForms(id).catch(() => []),
+        this.client.listInbox(id).catch(() => []),
+        this.client.activeSessions().catch(() => new Set<string>()),
+        this.listSubagents(id),
+      ]);
+      // Only a running subagent can be waiting for an answer.
+      const waiting = await Promise.all(
+        subagents
+          .map((s) => s.summary.id)
+          .filter((s) => active.has(s))
+          .map((s) =>
+            Promise.all([
+              this.client.listPermissions(s).catch(() => []),
+              this.client.listForms(s).catch(() => []),
+            ]),
+          ),
+      );
+      const permissions = [...rootPermissions, ...waiting.flatMap(([p]) => p)];
+      const forms = [...rootForms, ...waiting.flatMap(([, f]) => f)];
+      if (token !== this.loadToken) return false;
+      this.clearSession();
+      this.subagents.restore(subagents, active);
+      for (const request of permissions)
+        this.subagents.apply(request.sessionID, [{ type: "permission.requested", request, sensitive: [] }]);
+      for (const form of forms) this.subagents.apply(form.sessionID, [{ type: "form.requested", form }]);
+      this.current = summary;
+      this.sessionCost = summary.cost;
+      this.busy = active.has(id);
+      for (const ev of historyToEvents(messages)) this.applyLocal(ev, true);
+      // Pending requests are restored silently: reopening never replays notifications.
+      for (const request of permissions) {
+        this.applyLocal(
+          { type: "permission.requested", request, sensitive: describeSensitive(request.resources) },
+          true,
+        );
+      }
+      for (const form of forms) this.applyLocal({ type: "form.requested", form }, true);
+      this.pending = inbox;
+      this.execActive = this.busy;
+      this.task = deriveTaskFromHistory(messages, this.busy);
+      for (const item of inbox) this.pendingStartsTask.set(item.id, item.delivery === "queue");
+      if (this.busy) this.budget.startTask(this.sessionCost);
+      if (summary.modelKey && this.models?.some((m) => m.key === summary.modelKey)) {
+        this.selectedModel = summary.modelKey;
+        const model = this.models.find((m) => m.key === summary.modelKey);
+        this.selectedVariant =
+          summary.variant && model?.variants.includes(summary.variant) ? summary.variant : null;
+      }
+      if (summary.agent && this.agents?.some((a) => a.id === summary.agent))
+        this.selectedAgent = summary.agent;
+      if (this.directory) await this.store.update(this.key("session"), id);
+      this.sink.onTranscriptReset(this.transcript.items);
+      this.sink.onStateChanged();
+      void this.refreshChanges();
+      return true;
+    } catch (e) {
+      this.log.error(`Opening session ${id} failed`, e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not open the session") }]);
+      return false;
+    }
+  }
+
+  /** All subagent sessions below `root`, breadth-first (parents first), bounded by MAX_SUBAGENTS. */
+  private async listSubagents(root: string): Promise<Array<{ summary: SessionSummary; parentID: string }>> {
+    const found = new Map<string, { summary: SessionSummary; parentID: string }>();
+    let level = [root];
+    while (level.length > 0 && found.size < MAX_SUBAGENTS) {
+      const children = await Promise.all(
+        level.map(async (parentID) => ({
+          parentID,
+          list: await this.client.listChildSessions(parentID).catch(() => []),
+        })),
+      );
+      level = [];
+      for (const { parentID, list } of children) {
+        for (const summary of list) {
+          if (summary.id === root || found.has(summary.id) || found.size >= MAX_SUBAGENTS) continue;
+          found.set(summary.id, { summary, parentID });
+          level.push(summary.id);
+        }
+      }
+    }
+    return [...found.values()];
+  }
+
+  // -------------------------------------------------------------- subagents
+
+  /** Progress of the open session's subagents, parents before their own subagents. */
+  subagentViews(): SubagentView[] {
+    return this.subagents.views();
+  }
+
+  /** The subagent conversation the user opened, if any. */
+  viewingSubagent(): { id: string; loading: boolean } | null {
+    return this.viewer ? { id: this.viewer.id, loading: this.viewer.loading } : null;
+  }
+
+  subagentItems(): TranscriptItem[] {
+    return this.viewer?.transcript.items ?? [];
+  }
+
+  /** Opens a subagent's conversation: its history, then its live events. */
+  async openSubagent(id: string): Promise<boolean> {
+    if (!this.current || !this.subagents.has(id)) return false;
+    const token = ++this.viewerToken;
+    this.viewer = { id, transcript: new Transcript(), loading: true };
+    this.sink.onSubagentTranscript?.(id, []);
+    this.sink.onStateChanged();
+    try {
+      const messages = await this.client.listMessages(id, HISTORY_LIMIT);
+      if (token !== this.viewerToken || !this.viewer) return false;
+      const t = this.viewer.transcript;
+      t.reset();
+      for (const ev of historyToEvents(messages)) t.apply(ev);
+      // Requests the subagent is waiting on are already in the conversation; show them here too.
+      for (const item of this.transcript.items) {
+        if (item.kind === "permission" && item.request.sessionID === id) t.upsert(item);
+        else if (item.kind === "form" && item.form.sessionID === id) t.upsert(item);
+      }
+      this.viewer.loading = false;
+      this.sink.onSubagentTranscript?.(id, t.items);
+      this.sink.onStateChanged();
+      return true;
+    } catch (e) {
+      if (token !== this.viewerToken) return false;
+      this.log.error(`Opening subagent ${id} failed`, e);
+      this.closeSubagent();
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not open the subagent") }]);
+      return false;
+    }
+  }
+
+  closeSubagent(): void {
+    if (!this.viewer) return;
+    this.viewerToken++;
+    this.viewer = null;
+    this.sink.onStateChanged();
+  }
+
+  /** Stops one subagent (OpenCode interrupt on its session); the rest of the task continues. */
+  async stopSubagent(id: string): Promise<void> {
+    if (!this.subagents.has(id)) return;
+    try {
+      await this.client.interrupt(id);
+      this.log.info(`Subagent ${id} interrupted`);
+    } catch (e) {
+      this.log.error(`Stopping subagent ${id} failed`, e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not stop the subagent") }]);
+    }
+  }
+
+  /** True while a subagent of the open session is still working. */
+  private subagentsActive(): boolean {
+    return this.subagents.views().some((v) => v.status === "running" || v.status === "waiting");
+  }
+
+  private modelRef(): { providerID: string; id: string; variant?: string } | undefined {
+    const model = this.models?.find((m) => m.key === this.selectedModel);
+    if (!model) return undefined;
+    return {
+      providerID: model.providerID,
+      id: model.id,
+      ...(this.selectedVariant ? { variant: this.selectedVariant } : {}),
+    };
+  }
+
+  async selectModel(key: string): Promise<void> {
+    const model = this.models?.find((m) => m.key === key);
+    if (!model) return;
+    this.selectionVersion++;
+    this.selectedModel = key;
+    // Restore this model's last valid variant for the workspace.
+    this.selectedVariant = this.rememberedVariant(key);
+    if (this.directory) await this.store.update(this.key("model"), key);
+    this.sink.onStateChanged();
+    await this.pushModel("Model unavailable");
+  }
+
+  /** Selects a model variant (null = model default). Only variants OpenCode lists are accepted. */
+  async selectVariant(variant: string | null): Promise<void> {
+    const model = this.models?.find((m) => m.key === this.selectedModel);
+    if (!model) return;
+    if (variant !== null && !model.variants.includes(variant)) return;
+    this.selectionVersion++;
+    this.selectedVariant = variant;
+    if (this.directory) await this.store.update(this.variantKey(model.key), variant ?? undefined);
+    this.sink.onStateChanged();
+    await this.pushModel("Could not switch the model variant");
+  }
+
+  private async pushModel(failure: string): Promise<void> {
+    const ref = this.modelRef();
+    if (!this.current || !ref) return;
+    try {
+      await this.client.switchModel(this.current.id, ref);
+    } catch (e) {
+      this.log.error("Switching model failed", e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, failure) }]);
+    }
+  }
+
+  async selectAgent(id: string): Promise<void> {
+    if (!this.agents?.some((a) => a.id === id)) return;
+    this.selectionVersion++;
+    this.selectedAgent = id;
+    if (this.directory) await this.store.update(this.key("agent"), id);
+    this.sink.onStateChanged();
+    if (this.current) {
+      try {
+        await this.client.switchAgent(this.current.id, id);
+      } catch (e) {
+        this.log.error("Switching agent failed", e);
+        this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not switch agent") }]);
+      }
+    }
+  }
+
+  async selectBudget(level: BudgetLevel): Promise<void> {
+    this.budget.setLevel(level);
+    if (this.directory) await this.store.update(this.key("budget"), level);
+    this.sink.onStateChanged();
+    this.checkBudget(this.budget.evaluate());
+    this.flushDeferred();
+  }
+
+  private flushDeferred(): void {
+    const d = this.deferred.splice(0);
+    if (d.length) this.emit(d);
+  }
+
+  // ---------------------------------------------------------------- prompts
+
+  /**
+   * Sends a prompt. While the agent is running, `delivery` decides how OpenCode
+   * handles it: "steer" (injected at the next step) or "queue" (after the task).
+   * Returns false when nothing was sent (caller may restore the input).
+   */
+  async send(
+    text: string,
+    attachments: readonly ContextAttachment[],
+    delivery?: InboxDelivery,
+    mentions: readonly ResolvedMention[] = [],
+  ): Promise<boolean> {
+    if (!this.directory) {
+      this.emit([{ type: "notice", level: "error", text: "Open a folder to start an OpenCode session." }]);
+      return false;
+    }
+    if (this.busy && (!delivery || !this.current)) return false;
+    const payload = buildPrompt(text, attachments, mentions);
+    if (!payload.text) {
+      if (payload.files.length) {
+        this.emit([
+          { type: "notice", level: "info", text: "Type a message to send with the attached files." },
+        ]);
+      }
+      return false;
+    }
+    return this.dispatch(payload, this.busy ? delivery : undefined);
+  }
+
+  /** The open session, created on first use (like the first prompt does). */
+  private async ensureSession(): Promise<SessionSummary> {
+    if (this.current) return this.current;
+    const created = await this.client.createSession({
+      directory: this.directory!,
+      agent: this.selectedAgent ?? undefined,
+      model: this.modelRef(),
+    });
+    this.current = created;
+    this.sessionCost = created.cost ?? 0;
+    this.loadToken++;
+    await this.store.update(this.key("session"), created.id);
+    this.log.info(`Created session ${created.id}`);
+    this.scheduleSessionsRefresh();
+    return created;
+  }
+
+  /** Runs an OpenCode slash command; its arguments go as the command's text. */
+  async runCommand(name: string, text: string, delivery?: InboxDelivery): Promise<void> {
+    if (!this.directory) return;
+    if (!this.commands.some((c) => c.name === name)) {
+      this.emit([{ type: "notice", level: "error", text: `Unknown command /${name}.` }]);
+      return;
+    }
+    try {
+      const s = await this.ensureSession();
+      await this.client.runCommand(s.id, name, text, this.busy ? delivery : undefined);
+      this.log.info(`Command /${name} sent to ${s.id}`);
+    } catch (e) {
+      this.log.error(`Command /${name} failed`, e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, `Could not run /${name}`) }]);
+    }
+  }
+
+  /** Asks OpenCode to summarize the conversation so far (it runs at the next step boundary). */
+  async compact(): Promise<void> {
+    if (!this.current) {
+      this.emit([{ type: "notice", level: "info", text: "Nothing to compact yet." }]);
+      return;
+    }
+    try {
+      await this.client.compact(this.current.id);
+      this.log.info(`Compaction requested for ${this.current.id}`);
+    } catch (e) {
+      this.log.error("Compaction request failed", e);
+      this.emit([
+        { type: "notice", level: "error", text: friendlyError(e, "Could not compact the conversation") },
+      ]);
+    }
+  }
+
+  /** Runs `!command` in the session's working directory; output shows as a shell row. */
+  async runShell(command: string): Promise<void> {
+    if (!this.directory || !command.trim()) return;
+    if (this.busy) {
+      this.emit([
+        {
+          type: "notice",
+          level: "info",
+          text: "Wait for the agent to finish before running a shell command.",
+        },
+      ]);
+      return;
+    }
+    try {
+      const s = await this.ensureSession();
+      await this.client.runShell(s.id, command.trim());
+      this.log.info(`Shell command sent to ${s.id} (${command.length} chars)`);
+    } catch (e) {
+      this.log.error("Shell command failed", e);
+      this.emit([
+        { type: "notice", level: "error", text: friendlyError(e, "Could not run the shell command") },
+      ]);
+    }
+  }
+
+  private async dispatch(payload: PromptPayload, delivery?: InboxDelivery): Promise<boolean> {
+    const wasBusy = this.busy;
+    if (!wasBusy) {
+      this.busy = true;
+      this.sink.onStateChanged();
+    }
+    try {
+      const session = await this.ensureSession();
+      const res = await this.client.prompt(session.id, {
+        ...payload,
+        ...(delivery ? { delivery } : {}),
+      });
+      this.lastPayload = payload;
+      this.log.info(
+        `Prompt sent to ${session.id} (${payload.text.length} chars, ${payload.files.length} file attachment(s)${delivery ? `, ${delivery}` : ""})`,
+      );
+      // The server echoes the message as session.inbox.enqueued/delivered; this covers missed events.
+      if (res.id && !this.transcript.has(`user:${res.id}`) && !this.pending.some((p) => p.id === res.id)) {
+        const [ev] = historyToEvents([
+          { type: "user", id: res.id, text: payload.text, files: payload.files },
+        ]);
+        if (ev?.type === "user.message") {
+          if (this.deliveredEarly.has(res.id) || !wasBusy) {
+            this.deliveredEarly.delete(res.id);
+            this.trackUserMessage(res.id, payload.text, !wasBusy || delivery === "queue");
+            this.emit([{ ...ev, raw: payload.text }]);
+          } else
+            this.emit([
+              {
+                type: "inbox.enqueued",
+                id: ev.id,
+                text: ev.text,
+                attachments: ev.attachments,
+                delivery: delivery ?? "steer",
+              },
+            ]);
+        }
+      }
+      return true;
+    } catch (e) {
+      if (!wasBusy) this.busy = false;
+      this.log.error("Sending prompt failed", e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Session failed") }]);
+      this.sink.onStateChanged();
+      return false;
+    }
+  }
+
+  /** Re-sends the last prompt after a failure (explicit user action). */
+  async retry(): Promise<boolean> {
+    if (this.busy || !this.lastPayload || !this.directory) return false;
+    return this.dispatch(this.lastPayload);
+  }
+
+  /** Removes a pending steering/queued message before OpenCode delivers it. Returns its text. */
+  async cancelPending(id: string): Promise<string | null> {
+    const item = this.pending.find((p) => p.id === id);
+    if (!this.current || !item) return null;
+    try {
+      await this.client.cancelInbox(this.current.id, id);
+      this.applyInbox({ type: "inbox.cancelled", id });
+      this.sink.onStateChanged();
+      return item.text;
+    } catch (e) {
+      this.log.warn(`Cancelling queued message failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.emit([
+        { type: "notice", level: "info", text: "That message was already delivered to the agent." },
+      ]);
+      return null;
+    }
+  }
+
+  /** Cancels the active execution through OpenCode's interrupt API. */
+  async stop(): Promise<void> {
+    if (!this.current || !this.busy) return;
+    const id = this.current.id;
+    this.stopping = true;
+    this.sink.onStateChanged();
+    try {
+      const interrupted = await this.client.interrupt(id);
+      this.log.info(`Interrupt ${id}: ${interrupted ? "accepted" : "nothing running"}`);
+      if (!interrupted) {
+        this.busy = false;
+        this.stopping = false;
+        this.budget.endTask();
+        this.sink.onStateChanged();
+        return;
+      }
+      clearTimeout(this.stopTimer);
+      this.stopTimer = setTimeout(() => void this.verifyStopped(id), this.timing.stopCheckMs);
+    } catch (e) {
+      this.stopping = false;
+      this.log.error("Interrupt failed", e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not stop the session") }]);
+      this.sink.onStateChanged();
+    }
+  }
+
+  private async verifyStopped(id: string): Promise<void> {
+    if (this.current?.id !== id || !this.stopping) return;
+    try {
+      const active = await this.client.activeSessions();
+      if (!active.has(id)) {
+        this.busy = false;
+        this.stopping = false;
+        this.budget.endTask();
+        this.sink.onStateChanged();
+      }
+    } catch {
+      // keep current state; the event stream will settle it
+    }
+  }
+
+  /** Renames the open session; the title shows in the header and the history list. */
+  async renameSession(title: string): Promise<void> {
+    const t = title.trim().slice(0, 200);
+    if (!this.current || !t) return;
+    try {
+      await this.client.renameSession(this.current.id, t);
+      this.current = { ...this.current, title: t };
+      this.sink.onStateChanged();
+      void this.refreshSessions();
+    } catch (e) {
+      this.log.error("Rename failed", e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not rename the session") }]);
+    }
+  }
+
+  /**
+   * Forks the open session into a new one and opens it: the conversation before one of
+   * its prompts (`messageID`), or all of it. The original session is left as it was.
+   * Returns the prompt's text, so it can go into the message box, or "" for a full fork;
+   * null when nothing was forked.
+   */
+  async fork(messageID?: string): Promise<string | null> {
+    const item = messageID ? this.transcript.get(`user:${messageID}`) : undefined;
+    if (!this.current || (messageID && item?.kind !== "user")) return null;
+    const from = this.current.id;
+    let forked: SessionSummary;
+    try {
+      forked = await this.client.forkSession(from, messageID);
+      this.log.info(`Forked ${from}${messageID ? ` before ${messageID}` : ""} into ${forked.id}`);
+    } catch (e) {
+      this.log.error("Fork failed", e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not fork the session") }]);
+      return null;
+    }
+    await this.refreshSessions();
+    if (!this.sessions.some((s) => s.id === forked.id)) this.sessions = [forked, ...this.sessions];
+    if (!(await this.openSession(forked.id))) return null;
+    return item?.kind === "user" ? item.text : "";
+  }
+
+  /** Files and folders of the open folder matching `query`, ranked by OpenCode. */
+  async findFiles(query: string, limit: number): Promise<FoundFile[]> {
+    if (!this.directory || !query) return [];
+    return this.client.findFiles(this.directory, query, limit).catch((e: unknown) => {
+      this.log.warn(`File search failed: ${e instanceof Error ? e.message : String(e)}`);
+      return [];
+    });
+  }
+
+  /** A rewind staged in another client and not yet committed, for the open session. */
+  stagedRevert(): { messageID: string; files: number } | null {
+    return this.current?.revert ?? null;
+  }
+
+  /**
+   * Resolves a rewind staged in another client: `apply` commits it (the hidden messages
+   * are removed), `restore` clears it (they come back, and OpenCode may carry on with
+   * anything still queued for the session).
+   */
+  async resolveRevert(action: "apply" | "restore"): Promise<void> {
+    if (!this.current?.revert) return;
+    const id = this.current.id;
+    this.rewinding = true;
+    try {
+      await this.client.resolveRevert(id, action === "apply" ? "commit" : "clear");
+      this.log.info(`${action === "apply" ? "Applied" : "Restored"} the staged rewind of ${id}`);
+    } catch (e) {
+      this.log.error("Resolving the rewind failed", e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not change the rewind") }]);
+      this.rewinding = false;
+      return;
+    }
+    try {
+      await this.openSession(id);
+    } finally {
+      this.rewinding = false;
+    }
+  }
+
+  /**
+   * Rewinds the open session to just before one of its prompts (OpenCode revert),
+   * optionally restoring the files changed since, then reloads the conversation.
+   * Returns the prompt's text so it can go back into the message box, or null.
+   */
+  async rewind(messageID: string, files: boolean): Promise<string | null> {
+    const item = this.transcript.get(`user:${messageID}`);
+    if (!this.current || this.busy || item?.kind !== "user") return null;
+    const id = this.current.id;
+    this.rewinding = true;
+    try {
+      await this.client.revert(id, messageID, files);
+      this.log.info(`Rewound ${id} to before ${messageID}${files ? " (files restored)" : ""}`);
+    } catch (e) {
+      this.log.error("Rewind failed", e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not rewind the session") }]);
+      this.rewinding = false;
+      return null;
+    }
+    try {
+      await this.openSession(id);
+    } finally {
+      this.rewinding = false;
+    }
+    return item.text;
+  }
+
+  async respondPermission(requestId: string, decision: PermissionDecision, message?: string): Promise<void> {
+    const item = this.transcript.get(`perm:${requestId}`);
+    if (!this.current || item?.kind !== "permission" || item.status !== "pending") return;
+    if (decision === "always" && !item.request.canAlways) return;
+    this.emit([{ type: "permission.sending", requestId }]);
+    try {
+      // Reply to the session that asked: a subagent's request belongs to its own session.
+      const feedback = decision === "reject" ? message?.trim() || undefined : undefined;
+      await this.client.replyPermission(item.request.sessionID, requestId, decision, feedback);
+      this.log.info(
+        `Permission ${requestId} (${item.request.action}) answered: ${decision}${feedback ? " with instructions" : ""}`,
+      );
+      this.emit([{ type: "permission.resolved", requestId, decision, ...(feedback ? { feedback } : {}) }]);
+    } catch (e) {
+      if (e instanceof OpenCodeHttpError && e.status === 404) {
+        this.emit([
+          { type: "permission.resolved", requestId, decision: "expired" },
+          { type: "notice", level: "info", text: "Permission request expired." },
+        ]);
+      } else {
+        this.log.error("Permission reply failed", e);
+        // Re-open the card so the user can try again.
+        this.emit([
+          { type: "permission.requested", request: item.request, sensitive: item.sensitive },
+          {
+            type: "notice",
+            level: "error",
+            text: friendlyError(e, "Could not answer the permission request"),
+          },
+        ]);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ forms
+
+  /** Validates and submits an answer to an OpenCode form/question. Returns an error message on failure. */
+  async answerForm(formId: string, answer: FormAnswer): Promise<string | null> {
+    const item = this.transcript.get(`form:${formId}`);
+    if (!this.current || item?.kind !== "form" || item.status !== "pending")
+      return "This question is no longer pending.";
+    const checked = validateAnswer(item.form, answer);
+    if (!checked.ok) return checked.error;
+    this.emit([{ type: "form.sending", formId }]);
+    try {
+      await this.client.replyForm(item.form.sessionID, formId, checked.answer);
+      this.log.info(`Form ${formId} answered (${Object.keys(checked.answer).length} field(s))`);
+      this.emit([{ type: "form.resolved", formId, status: "answered", answer: checked.answer }]);
+      return null;
+    } catch (e) {
+      if (e instanceof OpenCodeHttpError && e.status === 404) {
+        this.emit([
+          { type: "form.resolved", formId, status: "expired", answer: null },
+          { type: "notice", level: "info", text: "This question expired before it was answered." },
+        ]);
+        return null;
+      }
+      this.log.error("Form reply failed", e);
+      this.emit([{ type: "form.resolved", formId, status: "pending", answer: null }]);
+      return friendlyError(e, "Could not send the answer");
+    }
+  }
+
+  async cancelForm(formId: string): Promise<void> {
+    const item = this.transcript.get(`form:${formId}`);
+    if (!this.current || item?.kind !== "form" || item.status !== "pending") return;
+    this.emit([{ type: "form.sending", formId }]);
+    try {
+      await this.client.cancelForm(item.form.sessionID, formId);
+      this.emit([{ type: "form.resolved", formId, status: "cancelled", answer: null }]);
+    } catch (e) {
+      const expired = e instanceof OpenCodeHttpError && e.status === 404;
+      if (!expired) this.log.error("Form cancel failed", e);
+      this.emit([{ type: "form.resolved", formId, status: expired ? "expired" : "pending", answer: null }]);
+    }
+  }
+
+  // ----------------------------------------------------------------- budget
+
+  /** "Continue once": one explicit override for the current task; the workspace budget is unchanged. */
+  async budgetContinueOnce(budgetItemId: string): Promise<boolean> {
+    if (this.busy || !this.current) return false;
+    this.budget.continueOnce();
+    this.emit([{ type: "budget.resolved", id: budgetItemId, resolution: "continued" }]);
+    this.log.info("Budget: continue once (one-time override)");
+    return this.dispatch({ text: CONTINUE_TEXT, files: [] });
+  }
+
+  /** Raises the workspace budget one level and continues the task. */
+  async budgetIncrease(budgetItemId: string): Promise<boolean> {
+    if (this.busy || !this.current) return false;
+    const level = nextLevel(this.budget.level);
+    if (level === this.budget.level) {
+      // Already at the largest preset: behaves like one override.
+      return this.budgetContinueOnce(budgetItemId);
+    }
+    this.budget.increaseTo(level);
+    if (this.directory) await this.store.update(this.key("budget"), level);
+    this.emit([{ type: "budget.resolved", id: budgetItemId, resolution: "increased" }]);
+    this.log.info(`Budget increased to ${level}`);
+    return this.dispatch({ text: CONTINUE_TEXT, files: [] });
+  }
+
+  async budgetNewSession(budgetItemId: string): Promise<void> {
+    this.emit([{ type: "budget.resolved", id: budgetItemId, resolution: "new-session" }]);
+    await this.newSession();
+  }
+
+  private checkBudget(signal: ReturnType<BudgetTracker["evaluate"]>): void {
+    if (signal.kind === "warning") {
+      this.deferred.push({
+        type: "budget",
+        id: `budget:${++this.budgetSeq}`,
+        state: "warning",
+        text: this.strings().budgetWarning,
+      });
+    } else if (signal.kind === "exceeded") {
+      const v = this.budget.view();
+      this.log.warn(
+        `Budget ${v.level} reached (${signal.metric}): cost=${v.taskCost ?? "n/a"} steps=${v.taskSteps}; interrupting`,
+      );
+      this.deferred.push({
+        type: "budget",
+        id: `budget:${++this.budgetSeq}`,
+        state: "stopped",
+        text: this.strings().budgetStopped,
+      });
+      this.taskStopReason = "budget";
+      this.notify("budget-stopped", `budget:${this.current?.id}:${this.budgetSeq}`);
+      if (this.busy && !this.stopping) void this.stop();
+    }
+  }
+
+  // ----------------------------------------------------------------- events
+
+  /** Entry point for every raw event from the OpenCode event stream. */
+  handleRawEvent(raw: unknown): void {
+    if (this.disposed) return;
+    if (isCatalogEvent(raw)) this.scheduleCatalogRefresh();
+    const env = this.normalizer.normalize(raw);
+    if (!env) return;
+    if (env.sessionsChanged && (env.directory === null || env.directory === this.directory))
+      this.scheduleSessionsRefresh();
+    if (!this.current || !env.sessionID) return;
+    const root = this.current.id;
+    if (env.parentID && this.subagents.created(env.sessionID, env.parentID, root, env.created))
+      this.sink.onStateChanged();
+    if (env.events.length === 0) return;
+    if (env.sessionID === root) {
+      this.emit(env.events);
+      return;
+    }
+    if (!this.subagents.has(env.sessionID)) return;
+    const wasActive = this.subagentsActive();
+    if (this.subagents.apply(env.sessionID, env.events)) this.sink.onStateChanged();
+    // A subagent's own output and lifecycle stay in its session; only the requests that
+    // block the open session's run are shown here.
+    const requests = env.events.filter(isInputRequest);
+    if (requests.length > 0) this.emit(requests);
+    if (this.viewer?.id === env.sessionID && !this.viewer.loading) {
+      const now = Date.now();
+      const stamped = env.events.map((ev) => stampTime(ev, now));
+      for (const ev of stamped) this.viewer.transcript.apply(ev);
+      this.sink.onSubagentEvents?.(env.sessionID, stamped);
+    }
+    // The open session can finish its turn while subagents work; report completion once they are done.
+    if (wasActive && !this.subagentsActive() && !this.busy && this.task?.status === "completed")
+      this.notify("completed", `completed:${this.task.id}:${this.execSeq}`);
+  }
+
+  /** Called when the event stream reconnects; resynchronizes the open session. */
+  async resync(): Promise<void> {
+    if (this.current) await this.openSession(this.current.id);
+    else await this.refreshSessions();
+  }
+
+  /** Inbox bookkeeping; returns the events to forward to the transcript. */
+  private applyInbox(ev: Extract<UiEvent, { type: `inbox.${string}` }>): UiEvent[] {
+    switch (ev.type) {
+      case "inbox.enqueued":
+        if (this.transcript.has(`user:${ev.id}`)) return [];
+        if (this.deliveredEarly.delete(ev.id)) {
+          this.trackUserMessage(
+            ev.id,
+            ev.raw ?? ev.text,
+            ev.delivery === "queue" || !this.task || !this.execActive,
+          );
+          return [
+            { type: "user.message", id: ev.id, text: ev.text, attachments: ev.attachments, raw: ev.raw },
+          ];
+        }
+        if (!this.pending.some((p) => p.id === ev.id)) {
+          // Queued items and prompts sent while idle start a task; steering joins the running one.
+          this.pendingStartsTask.set(ev.id, ev.delivery === "queue" || !this.execActive);
+          this.pending = [
+            ...this.pending,
+            { id: ev.id, text: ev.text, raw: ev.raw, attachments: ev.attachments, delivery: ev.delivery },
+          ];
+        }
+        return [];
+      case "inbox.delivered": {
+        const item = this.pending.find((p) => p.id === ev.id);
+        this.pending = this.pending.filter((p) => p.id !== ev.id);
+        if (!item) {
+          this.deliveredEarly.add(ev.id);
+          return [];
+        }
+        const starts = this.pendingStartsTask.get(item.id) ?? (item.delivery === "queue" || !this.task);
+        this.pendingStartsTask.delete(item.id);
+        this.trackUserMessage(item.id, item.raw ?? item.text, starts);
+        return [
+          {
+            type: "user.message",
+            id: item.id,
+            text: item.text,
+            attachments: item.attachments,
+            raw: item.raw,
+          },
+        ];
+      }
+      case "inbox.cancelled":
+        this.pending = this.pending.filter((p) => p.id !== ev.id);
+        this.pendingStartsTask.delete(ev.id);
+        return [];
+      case "inbox.delivery":
+        this.pending = this.pending.map((p) => (p.id === ev.id ? { ...p, delivery: ev.delivery } : p));
+        return [];
+    }
+  }
+
+  private applyLocal(ev: UiEvent, replay = false): UiEvent[] {
+    const out: UiEvent[] = [ev];
+    switch (ev.type) {
+      case "session.busy":
+        this.busy = true;
+        this.execActive = true;
+        this.execSeq++;
+        this.budget.startTask(this.sessionCost ?? 0);
+        break;
+      case "session.idle":
+        this.busy = false;
+        this.stopping = false;
+        this.execActive = false;
+        this.budget.endTask();
+        clearTimeout(this.stopTimer);
+        if (!replay) this.finishTask(ev.outcome);
+        break;
+      case "permission.requested":
+        if (!replay) this.notify("needs-input", `input:${ev.request.id}`);
+        break;
+      case "form.requested":
+        if (!replay) this.notify("needs-input", `input:${ev.form.id}`);
+        break;
+      case "session.renamed":
+        if (this.current) this.current = { ...this.current, title: ev.title };
+        break;
+      case "session.reverted":
+        // Another client rewound the session; Sidecar's own rewind reloads by itself.
+        if (!replay && !this.rewinding && this.current) {
+          const id = this.current.id;
+          clearTimeout(this.revertTimer);
+          this.revertTimer = setTimeout(() => {
+            if (this.current?.id === id && !this.rewinding) void this.openSession(id);
+          }, 300);
+        }
+        break;
+      case "session.selection":
+        // Follow an agent or model chosen in another client (the TUI, another window).
+        if (ev.agent && this.agents?.some((a) => a.id === ev.agent)) this.selectedAgent = ev.agent;
+        if (ev.modelKey && this.models?.some((m) => m.key === ev.modelKey)) {
+          this.selectedModel = ev.modelKey;
+          const variants = this.models.find((m) => m.key === ev.modelKey)?.variants ?? [];
+          this.selectedVariant = ev.variant && variants.includes(ev.variant) ? ev.variant : null;
+        }
+        break;
+      case "user.message":
+        if (this.firstUserText === null) this.firstUserText = ev.text;
+        break;
+      case "usage.step":
+        this.lastStep = {
+          tokens: ev.tokens,
+          modelKey: ev.modelKey,
+          at: ev.time ?? (replay ? null : Date.now()),
+        };
+        this.steps++;
+        if (!replay) {
+          this.checkBudget(this.budget.recordStep());
+          this.checkContext();
+        }
+        break;
+      case "usage.session":
+        this.sessionCost = ev.cost;
+        if (!replay) this.checkBudget(this.budget.recordCost(ev.cost));
+        break;
+      case "session.error": {
+        const model = this.models?.find((m) => m.key === ev.modelKey);
+        const raw = ev.error ?? { type: "unknown", message: ev.message, status: null, body: null };
+        const friendly = classifyError(raw, {
+          modelName: model?.name ?? null,
+          providerName: model?.providerName ?? null,
+        });
+        if (!replay) {
+          this.log.error(
+            `OpenCode run failed: ${describeForLog(raw, { providerID: model?.providerID ?? ev.modelKey?.split("/")[0] ?? null, modelKey: ev.modelKey })}`,
+          );
+        }
+        const actions = friendly.actions.filter(
+          (a) => a !== "retry" || (!replay && this.lastPayload !== null),
+        );
+        const replaced: UiEvent = {
+          type: "error",
+          id: `error:${++this.errorSeq}`,
+          title: friendly.title,
+          detail: friendly.detail,
+          actions,
+        };
+        out[0] = replaced;
+        break;
+      }
+      case "inbox.enqueued":
+      case "inbox.delivered":
+      case "inbox.cancelled":
+      case "inbox.delivery": {
+        const forwarded = this.applyInbox(ev);
+        for (const f of forwarded)
+          if (f.type === "user.message" && this.firstUserText === null) this.firstUserText = f.text;
+        out.splice(0, 1, ...forwarded);
+        break;
+      }
+      case "form.resolved":
+        if (ev.status === "answered" && ev.answer) {
+          const item = this.transcript.get(`form:${ev.formId}`);
+          if (item?.kind === "form")
+            this.log.info(`Form answered: ${summarizeAnswer(item.form, ev.answer).length} chars`);
+        }
+        break;
+      default:
+        break;
+    }
+    // Live events carry no time; stamp them here so the host's and the webview's
+    // transcripts agree. Replayed history keeps OpenCode's stored times.
+    if (!replay) {
+      const now = Date.now();
+      for (let i = 0; i < out.length; i++) out[i] = stampTime(out[i], now);
+    }
+    for (const e of out) this.transcript.apply(e);
+    return out;
+  }
+
+  // ------------------------------------------------------------- current task
+
+  /**
+   * Records a delivered user message: a new task, a steer into the running
+   * task, or a Budget Guard continuation of the same task.
+   */
+  private trackUserMessage(id: string, raw: string, startsTask: boolean): void {
+    if (raw === CONTINUE_TEXT && this.task) {
+      this.task = { ...this.task, status: "running" };
+      this.taskStopReason = null;
+      return;
+    }
+    if (startsTask || !this.task) {
+      this.task = { id, raw, status: "running", steer: null };
+      this.taskStopReason = null;
+    } else {
+      this.task = { ...this.task, steer: raw };
+    }
+  }
+
+  private finishTask(outcome: "succeeded" | "failed" | "interrupted"): void {
+    if (!this.task) return;
+    const status: TaskStatus =
+      outcome === "succeeded"
+        ? "completed"
+        : outcome === "failed"
+          ? "failed"
+          : this.taskStopReason === "budget"
+            ? "budget-stopped"
+            : "stopped";
+    this.task = { ...this.task, status };
+    // While subagents still work the task is not done; they report back and wake the session.
+    if (outcome === "succeeded" && !this.subagentsActive())
+      this.notify("completed", `completed:${this.task.id}:${this.execSeq}`);
+    else if (outcome === "failed") this.notify("failed", `failed:${this.task.id}:${this.execSeq}`);
+    // A user Stop or a budget stop is never reported as completed.
+  }
+
+  private notify(kind: TaskNotice["kind"], key: string): void {
+    if (this.notified.has(key) || !this.sink.onTaskNotice) return;
+    this.notified.add(key);
+    this.sink.onTaskNotice({
+      kind,
+      key,
+      summary: this.task ? summarizeTask(this.task.raw) : "",
+      sessionTitle: this.currentTitle(),
+    });
+  }
+
+  /** View model for the Current / Last Task bar; null for an empty session. */
+  taskView(): TaskView | null {
+    const t = this.task;
+    if (!t) return null;
+    const working = this.busy || this.subagentsActive();
+    const waiting =
+      working &&
+      this.transcript.items.some(
+        (i) =>
+          (i.kind === "permission" && i.status === "pending") ||
+          (i.kind === "form" && i.status === "pending"),
+      );
+    const queued = this.pending.filter((p) => p.delivery === "queue");
+    return {
+      id: t.id,
+      label: working ? "current" : "last",
+      summary: summarizeTask(t.raw) || "(empty prompt)",
+      status: waiting ? "waiting" : working ? "running" : t.status,
+      steer: t.steer ? summarizeTask(t.steer) : null,
+      next: queued.length
+        ? { summary: summarizeTask(queued[0].raw ?? queued[0].text), more: queued.length - 1 }
+        : null,
+      chars: t.raw.length,
+      lines: t.raw.split("\n").length,
+    };
+  }
+
+  private checkContext(): void {
+    const pct = this.defaults().contextWarnPercent ?? 80;
+    const u = this.usage();
+    if (!pct || this.contextWarned || !u?.contextTokens || !u.contextLimit) return;
+    const used = Math.round((u.contextTokens / u.contextLimit) * 100);
+    if (used >= pct) {
+      this.contextWarned = true;
+      this.deferred.push({ type: "notice", level: "info", text: this.strings().contextWarning(used) });
+    }
+  }
+
+  private emit(events: UiEvent[]): void {
+    let stateChanged = false;
+    let changesDirty = false;
+    const forwarded: UiEvent[] = [];
+    for (const ev of events) {
+      if (/^(session\.|usage\.|inbox\.|budget)/.test(ev.type)) stateChanged = true;
+      if (ev.type === "files.changed" || ev.type === "session.idle") changesDirty = true;
+      forwarded.push(...this.applyLocal(ev));
+    }
+    if (forwarded.length) this.sink.onEvents(forwarded);
+    if (stateChanged) this.sink.onStateChanged();
+    if (changesDirty) this.scheduleChangesRefresh();
+    this.flushDeferred();
+  }
+
+  /** Canonical Markdown of an assistant message (for Copy), or null when not copyable yet. */
+  copyText(itemId: string): string | null {
+    const item = this.transcript.get(itemId);
+    if (item?.kind !== "assistant") return null;
+    if (item.streaming && this.busy) return null;
+    return item.text;
+  }
+
+  // ---------------------------------------------------------------- changes
+
+  private scheduleChangesRefresh(): void {
+    clearTimeout(this.changesTimer);
+    this.changesTimer = setTimeout(() => void this.refreshChanges(), this.timing.debounceMs);
+  }
+
+  /** User message ids of the loaded session, oldest first. */
+  private userMessageIds(): string[] {
+    return this.transcript.items.filter((i) => i.kind === "user").map((i) => i.id.slice("user:".length));
+  }
+
+  /** Files the agent reported editing (edit-tool metadata) in this session. */
+  private reportedEdits(): Set<string> {
+    const out = new Set<string>();
+    for (const i of this.transcript.items) {
+      if (i.kind === "tool") for (const f of i.detail.files) out.add(f.path);
+      if (i.kind === "turn-summary") for (const f of i.files) out.add(f.path);
+    }
+    return out;
+  }
+
+  /**
+   * Loads the agent's changes for the whole session from OpenCode's snapshots
+   * (first user turn → last user turn, full-file patches). If the attribution is
+   * not reliable, reports "unavailable" instead of guessing.
+   */
+  async refreshChanges(): Promise<void> {
+    const id = this.current?.id;
+    if (!id) return;
+    const users = this.userMessageIds();
+    const range = users.length
+      ? { from: users[0], to: users.length > 1 ? users[users.length - 1] : undefined, full: true }
+      : { full: true };
+    try {
+      const diff = await this.client.sessionDiff(id, range);
+      if (this.current?.id !== id) return;
+      this.patches.clear();
+      for (const d of diff) this.patches.set(d.file, { patch: d.patch, status: d.status });
+      const files = diff.map((d) => ({
+        path: d.file,
+        additions: d.additions,
+        deletions: d.deletions,
+        status: d.status,
+      }));
+      const reported = this.reportedEdits();
+      if (files.length === 0 && reported.size > 0) {
+        this.agentChanges = {
+          status: "unavailable",
+          reason: "OpenCode did not record snapshots for the agent's edits.",
+        };
+      } else {
+        this.agentChanges = files.length ? { status: "ok", files } : { status: "none" };
+      }
+      this.sink.onStateChanged();
+    } catch (e) {
+      this.log.warn(`Session diff unavailable: ${e instanceof Error ? e.message : String(e)}`);
+      if (this.current?.id !== id) return;
+      this.agentChanges = {
+        status: "unavailable",
+        reason: "OpenCode could not provide the session's snapshot diff.",
+      };
+      this.sink.onStateChanged();
+    }
+  }
+
+  /** Before/after contents of one agent-changed file, or null when they cannot be reconstructed reliably. */
+  agentFileSides(path: string): FileSides | null {
+    const p = this.patches.get(path);
+    if (!p) return null;
+    return reconstructSides(p.patch, p.status);
+  }
+
+  /** Back-compat for v0.1 callers: agent-attributed files (empty when unavailable). */
+  get changes(): FileChange[] {
+    return this.agentChanges.status === "ok" ? this.agentChanges.files : [];
+  }
+}
+
+/** Permission requests and questions, and their resolution: the events that need the user. */
+function isInputRequest(ev: UiEvent): boolean {
+  return (
+    ev.type === "permission.requested" ||
+    ev.type === "permission.resolved" ||
+    ev.type === "form.requested" ||
+    ev.type === "form.resolved"
+  );
+}
+
+/** Events after which models, providers or connections may have changed (e.g. a sign-in). */
+const CATALOG_EVENTS = new Set([
+  "integration.updated",
+  "provider.updated",
+  "model.updated",
+  "models-dev.refreshed",
+]);
+
+export function isCatalogEvent(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const type = (raw as { type?: unknown }).type;
+  return typeof type === "string" && CATALOG_EVENTS.has(type);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
