@@ -79,7 +79,11 @@ jobs:
         run: npx vsce publish --oidc --packagePath "${{ steps.meta.outputs.vsix }}" --skip-duplicate
 
       - name: Publish to Open VSX
-        run: npx ovsx publish --trusted-publishing --packagePath "${{ steps.meta.outputs.vsix }}" --skip-duplicate
+        # Trusted publishing, unless an OVSX_PAT secret is set: Open VSX registers trusted
+        # publishers only for a namespace you own, so a token bridges the time until then.
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish --packagePath "${{ steps.meta.outputs.vsix }}" --skip-duplicate
 
       - name: Summary
         run: |
