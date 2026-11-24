@@ -1,5 +1,6 @@
 import Link from "next/link"
 
+import { guides } from "@/config/guides"
 import { comparison, faq, features, site, steps } from "@/config/site"
 import { formatReleaseDate, loadReleases } from "@/lib/changelog"
 import { buildStructuredData } from "@/lib/structured-data"
@@ -106,11 +107,11 @@ export default function Home() {
                 with a scripted OpenCode on the other end. Send the prompt,
                 then:
               </p>
-              <ul className="mt-8 max-w-md">
+              <ul className="mt-8 max-w-md space-y-4">
                 {tryIt.map((line) => (
                   <li
                     key={line}
-                    className="flex gap-4 border-t border-line py-3.5 text-[15px] leading-relaxed"
+                    className="flex gap-4 text-[15px] leading-relaxed"
                   >
                     <span
                       aria-hidden="true"
@@ -254,6 +255,25 @@ export default function Home() {
                 . Sidecar works with the models you already use in OpenCode,
                 local ones included.
               </p>
+              <p className="mt-10 eyebrow">Guides</p>
+              <ul className="mt-3 max-w-md">
+                {guides.map(({ slug, short }) => (
+                  <li key={slug}>
+                    <Link
+                      href={`/guides/${slug}`}
+                      className="group inline-flex min-h-10 items-center gap-2 text-muted-foreground transition-[color] duration-150 hover:text-foreground"
+                    >
+                      {short}
+                      <span
+                        aria-hidden="true"
+                        className="transition-transform duration-150 group-hover:translate-x-0.5"
+                      >
+                        →
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
             </div>
             <ol className="space-y-9 lg:pt-1">
               {steps.map((step, index) => (

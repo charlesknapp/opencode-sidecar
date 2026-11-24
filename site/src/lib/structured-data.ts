@@ -1,3 +1,4 @@
+import type { Guide } from "@/config/guides"
 import type { FaqEntry, Site } from "@/config/site"
 
 type Question = {
@@ -61,3 +62,47 @@ export const buildStructuredData = ({
     },
   ],
 })
+
+export const buildGuideStructuredData = ({
+  site,
+  guide,
+}: {
+  site: Site
+  guide: Guide
+}): StructuredData => {
+  const url = `${site.url}/guides/${guide.slug}`
+  return {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "TechArticle",
+        headline: guide.title,
+        description: guide.description,
+        url,
+        mainEntityOfPage: url,
+        dateModified: guide.updated,
+        inLanguage: "en",
+        author: { "@type": "Organization", name: site.publisher },
+        publisher: { "@type": "Organization", name: site.publisher },
+        about: {
+          "@type": "SoftwareApplication",
+          name: site.name,
+          url: site.url,
+        },
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: site.url },
+          {
+            "@type": "ListItem",
+            position: 2,
+            name: "Guides",
+            item: `${site.url}/guides`,
+          },
+          { "@type": "ListItem", position: 3, name: guide.short, item: url },
+        ],
+      },
+    ],
+  }
+}

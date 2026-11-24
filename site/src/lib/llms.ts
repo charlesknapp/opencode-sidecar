@@ -1,3 +1,4 @@
+import type { Guide } from "@/config/guides"
 import type { FaqEntry, Feature, Site } from "@/config/site"
 import type { Release } from "@/lib/changelog"
 
@@ -5,11 +6,13 @@ export const buildLlmsTxt = ({
   site,
   faq,
   features,
+  guides = [],
   latest,
 }: {
   site: Site
   faq: readonly FaqEntry[]
   features: readonly Feature[]
+  guides?: readonly Guide[]
   latest: Release
 }): string =>
   [
@@ -30,6 +33,17 @@ export const buildLlmsTxt = ({
     `- [Changelog](${site.url}/changelog): every release, newest first`,
     `- [OpenCode](${site.links.opencode}): the coding agent Sidecar works with`,
     "",
+    ...(guides.length
+      ? [
+          "## Guides",
+          "",
+          ...guides.map(
+            ({ slug, title, description }) =>
+              `- [${title}](${site.url}/guides/${slug}): ${description}`
+          ),
+          "",
+        ]
+      : []),
     "## Features",
     "",
     ...features.map(

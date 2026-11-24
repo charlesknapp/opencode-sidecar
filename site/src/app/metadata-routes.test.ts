@@ -1,3 +1,4 @@
+import { guides } from "@/config/guides"
 import { site } from "@/config/site"
 
 import robots from "./robots"
@@ -12,10 +13,12 @@ describe("crawler files", () => {
     })
   })
 
-  it("lists the home page, the changelog and llms.txt", () => {
+  it("lists the home page, the changelog, the guides and llms.txt", () => {
     expect(sitemap().map((entry) => entry.url)).toEqual([
       site.url,
       `${site.url}/changelog`,
+      `${site.url}/guides`,
+      ...guides.map(({ slug }) => `${site.url}/guides/${slug}`),
       `${site.url}/llms.txt`,
     ])
   })

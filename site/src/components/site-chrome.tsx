@@ -1,5 +1,6 @@
 import Link from "next/link"
 
+import { guides } from "@/config/guides"
 import { site } from "@/config/site"
 import { loadReleases } from "@/lib/changelog"
 import { Mark } from "@/components/mark"
@@ -20,6 +21,12 @@ export function SiteNav() {
           {site.shortName}
         </Link>
         <p className="flex gap-5 text-[15px] text-muted-foreground">
+          <Link
+            href="/guides"
+            className="inline-flex min-h-11 items-center transition-[color] duration-150 hover:text-foreground"
+          >
+            Guides
+          </Link>
           <Link
             href="/changelog"
             className="inline-flex min-h-11 items-center transition-[color] duration-150 hover:text-foreground"
@@ -57,6 +64,10 @@ const footerLinks = [
     ],
   },
   {
+    title: "Guides",
+    links: guides.map(({ slug, short }) => [short, `/guides/${slug}`] as const),
+  },
+  {
     title: "More",
     links: [
       ["OpenCode", site.links.opencode],
@@ -67,7 +78,7 @@ const footerLinks = [
 ] as const
 
 const footerLink =
-  "inline-flex min-h-9 items-center text-muted-foreground transition-[color] duration-150 hover:text-foreground"
+  "inline-block py-1.5 leading-snug text-muted-foreground transition-[color] duration-150 hover:text-foreground"
 
 export function SiteFooter() {
   const [latest] = loadReleases()
@@ -76,7 +87,7 @@ export function SiteFooter() {
       <div className="relative container-page pt-16 pb-10 xl:border-x xl:border-line">
         <Cross side="left" />
         <Cross side="right" />
-        <div className="grid gap-12 md:grid-cols-[1.5fr_repeat(3,1fr)] md:gap-8">
+        <div className="grid gap-12 md:grid-cols-2 md:gap-8 lg:grid-cols-[1.4fr_repeat(4,1fr)]">
           <div>
             <Link
               href="/"

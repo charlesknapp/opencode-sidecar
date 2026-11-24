@@ -7,11 +7,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 export function FeatureCell({
   children,
   className = "",
+  as: Tag = "li",
 }: {
   children: ReactNode
   className?: string
+  as?: "li" | "figure"
 }) {
-  const ref = useRef<HTMLLIElement>(null)
+  const ref = useRef<HTMLElement>(null)
   const [on, setOn] = useState(false)
 
   useEffect(() => {
@@ -26,8 +28,8 @@ export function FeatureCell({
   }, [])
 
   return (
-    <li
-      ref={ref}
+    <Tag
+      ref={ref as never}
       data-on={on ? "true" : "false"}
       onPointerEnter={(event) => {
         if (event.pointerType === "mouse") setOn(true)
@@ -38,6 +40,6 @@ export function FeatureCell({
       className={className}
     >
       {children}
-    </li>
+    </Tag>
   )
 }
