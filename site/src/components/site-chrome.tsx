@@ -35,6 +35,8 @@ export function SiteFooter() {
         <p>
           Sidecar for OpenCode is an independent community project, not
           affiliated with OpenCode. Free and open source under the MIT license.
+          This site counts visits with cookieless Vercel Analytics; the
+          extension itself collects nothing.
         </p>
         <p className="flex gap-5">
           <a href={site.links.opencode} className="hover:text-foreground">

@@ -12,6 +12,7 @@ export const site = {
     marketplace:
       "https://marketplace.visualstudio.com/items?itemName=cadogy.opencode-sidecar",
     openVsx: "https://open-vsx.org/extension/cadogy/opencode-sidecar",
+    openInVsCode: "vscode:extension/cadogy.opencode-sidecar",
     source: "https://github.com/charlesknapp/opencode-sidecar",
     video: "https://www.youtube.com/watch?v=_KMBRo7zrMw",
     issues: "https://github.com/charlesknapp/opencode-sidecar/issues",

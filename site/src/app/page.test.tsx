@@ -24,6 +24,15 @@ describe("home page", () => {
     ).toHaveAttribute("href", site.links.openVsx)
   })
 
+  it("lets people with VS Code open the extension directly", () => {
+    renderHome()
+    expect(
+      within(screen.getByRole("banner")).getByRole("link", {
+        name: /open it in vs code/i,
+      })
+    ).toHaveAttribute("href", "vscode:extension/cadogy.opencode-sidecar")
+  })
+
   it("names the latest release and links to the changelog", () => {
     renderHome()
     const link = within(screen.getByRole("banner")).getByRole("link", {

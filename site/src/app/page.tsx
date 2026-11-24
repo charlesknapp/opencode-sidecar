@@ -54,7 +54,10 @@ export default function Home() {
             </Pill>
           </div>
           <p className="mt-6 text-sm text-subtle-foreground">
-            Free · Open source (MIT) · No telemetry
+            Free · Open source (MIT) · No telemetry ·{" "}
+            <a href={site.links.openInVsCode} className={inlineLink}>
+              Open it in VS Code directly
+            </a>
           </p>
         </div>
       </header>
