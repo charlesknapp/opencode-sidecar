@@ -2,5 +2,12 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "project": [
     "src/**/*.{ts,tsx,css}"
+  ],
+  "entry": [
+    "src/demo/browser/player.ts",
+    "scripts/build-demo.mjs"
+  ],
+  "ignoreDependencies": [
+    "prismjs"
   ]
 }

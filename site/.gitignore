@@ -9,3 +9,8 @@ next-env.d.ts
 
 .vercel
 .env*
+
+# Built by scripts/build-demo.mjs from the extension source
+public/demo/webview.js
+public/demo/player.js
+public/demo/main.css

@@ -15,7 +15,7 @@ const config = [
     },
   },
   {
-    ignores: [".next/**", "node_modules/**", "coverage/**", "next-env.d.ts"],
+    ignores: [".next/**", "node_modules/**", "coverage/**", "next-env.d.ts", "public/demo/**"],
   },
 ]
 

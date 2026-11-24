@@ -14,6 +14,13 @@ const jsonLd = JSON.stringify(buildStructuredData({ site, faq })).replace(
   "\\u003c"
 )
 
+const tryIt = [
+  "Watch each step land on the timeline as the agent works.",
+  "Answer its permission request: Yes, Always, No, or tell it what to do instead.",
+  "Stop a single subagent, or press Stop to halt the whole task.",
+  "Start over with the New session button at the top.",
+] as const
+
 const inlineLink =
   "text-foreground underline decoration-line-hover underline-offset-4 transition-[text-decoration-color] duration-150 hover:decoration-foreground"
 
@@ -77,6 +84,45 @@ export default function Home() {
               Watch the one-minute film
             </a>
           </p>
+        </section>
+
+        <section aria-labelledby="try" className="border-t border-line section">
+          <div className="container-page grid gap-12 lg:grid-cols-[1fr_440px] lg:items-center lg:gap-20">
+            <div>
+              <h2 id="try" className="max-w-lg text-h2">
+                Try the real panel, right here.
+              </h2>
+              <p className="mt-6 max-w-md text-lead text-muted-foreground">
+                This is Sidecar&apos;s actual interface running in your browser,
+                with a scripted OpenCode on the other end. Send the prompt,
+                then:
+              </p>
+              <ul className="mt-8 max-w-md">
+                {tryIt.map((line) => (
+                  <li
+                    key={line}
+                    className="flex gap-4 border-t border-line py-3.5 text-[15px] leading-relaxed"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="mt-[0.65em] size-1 shrink-0 rounded-full bg-muted-foreground"
+                    />
+                    {line}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-6 max-w-md text-sm text-subtle-foreground">
+                No account and no install. The replies come from a script in
+                this page, and nothing is sent anywhere.
+              </p>
+            </div>
+            <iframe
+              src="/demo/index.html"
+              title="Interactive demo of the Sidecar panel"
+              loading="lazy"
+              className="h-[680px] w-full rounded-media border border-line-strong bg-raised"
+            />
+          </div>
         </section>
 
         <section

@@ -50,6 +50,13 @@ describe("home page", () => {
     expect(video).toHaveAttribute("playsinline")
   })
 
+  it("embeds the interactive demo of the real panel", () => {
+    renderHome()
+    expect(
+      screen.getByTitle(/interactive demo of the sidecar panel/i)
+    ).toHaveAttribute("src", "/demo/index.html")
+  })
+
   it("answers the FAQ", () => {
     renderHome()
     faq.forEach(({ question }) =>
