@@ -1,7 +1,7 @@
 export const site = {
   name: "Sidecar for OpenCode",
   shortName: "Sidecar",
-  url: "https://opencodesidecar.com",
+  url: "https://www.opencodesidecar.com",
   title: "Sidecar for OpenCode: the OpenCode chat sidebar for VS Code",
   summary:
     "A free, open-source VS Code extension that gives the OpenCode coding agent a chat panel beside your code: every step on one timeline, live subagents you can stop, and permission requests answered where you type.",
