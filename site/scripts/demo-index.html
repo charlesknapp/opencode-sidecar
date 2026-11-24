@@ -23,6 +23,12 @@
           scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
         }
       }
+      @supports selector(::-webkit-scrollbar) {
+        * {
+          scrollbar-width: auto !important;
+          scrollbar-color: auto !important;
+        }
+      }
       ::-webkit-scrollbar {
         width: 10px;
         height: 10px;

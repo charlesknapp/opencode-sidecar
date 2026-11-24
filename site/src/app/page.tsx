@@ -57,12 +57,18 @@ export default function Home() {
               Install for VS Code
             </Pill>
             <Pill href={site.links.openVsx}>
-              Open VSX: Cursor, Windsurf, VSCodium
+              Open VSX
+              <span className="hidden min-[400px]:inline">
+                : Cursor, Windsurf, VSCodium
+              </span>
             </Pill>
           </div>
           <p className="mt-6 text-sm text-subtle-foreground">
             Free · Open source (MIT) · No telemetry ·{" "}
-            <a href={site.links.openInVsCode} className={inlineLink}>
+            <a
+              href={site.links.openInVsCode}
+              className={`${inlineLink} whitespace-nowrap`}
+            >
               Open it in VS Code directly
             </a>
           </p>
@@ -156,10 +162,13 @@ export default function Home() {
               Sidecar or the official OpenCode extension?
             </h2>
             <p className="mt-6 max-w-2xl text-lead text-muted-foreground">
-              The official extension, sst-dev.opencode, opens OpenCode&apos;s
-              terminal UI in a split terminal. Sidecar is a graphical chat panel
-              instead. Both use the same OpenCode, so you can install both and
-              move between them.
+              The official extension,{" "}
+              <code className="font-mono text-[0.92em] whitespace-nowrap text-foreground">
+                sst-dev.opencode
+              </code>
+              , opens OpenCode&apos;s terminal UI in a split terminal. Sidecar
+              is a graphical chat panel instead. Both use the same OpenCode, so
+              you can install both and move between them.
             </p>
             <dl className="mt-12 md:hidden">
               {comparison.map((row) => (

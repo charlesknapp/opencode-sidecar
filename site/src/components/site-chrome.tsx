@@ -11,16 +11,22 @@ export function SiteNav() {
     >
       <Link
         href="/"
-        className="flex items-center gap-2.5 text-[15px] font-medium"
+        className="flex min-h-11 items-center gap-2.5 text-[15px] font-medium"
       >
         <Mark className="size-7" />
         {site.shortName}
       </Link>
-      <p className="flex gap-6 text-[15px] text-muted-foreground">
-        <Link href="/changelog" className="hover:text-foreground">
+      <p className="flex gap-5 text-[15px] text-muted-foreground">
+        <Link
+          href="/changelog"
+          className="inline-flex min-h-11 items-center transition-[color] duration-150 hover:text-foreground"
+        >
           Changelog
         </Link>
-        <a href={site.links.source} className="hover:text-foreground">
+        <a
+          href={site.links.source}
+          className="inline-flex min-h-11 items-center transition-[color] duration-150 hover:text-foreground"
+        >
           GitHub
         </a>
       </p>
@@ -38,17 +44,29 @@ export function SiteFooter() {
           This site counts visits with cookieless Vercel Analytics; the
           extension itself collects nothing.
         </p>
-        <p className="flex gap-5">
-          <a href={site.links.opencode} className="hover:text-foreground">
+        <p className="-my-3 flex flex-wrap gap-x-5">
+          <a
+            href={site.links.opencode}
+            className="inline-flex min-h-11 items-center transition-[color] duration-150 hover:text-foreground"
+          >
             OpenCode
           </a>
-          <Link href="/changelog" className="hover:text-foreground">
+          <Link
+            href="/changelog"
+            className="inline-flex min-h-11 items-center transition-[color] duration-150 hover:text-foreground"
+          >
             Changelog
           </Link>
-          <a href="/llms.txt" className="hover:text-foreground">
+          <a
+            href="/llms.txt"
+            className="inline-flex min-h-11 items-center transition-[color] duration-150 hover:text-foreground"
+          >
             llms.txt
           </a>
-          <a href={site.links.source} className="hover:text-foreground">
+          <a
+            href={site.links.source}
+            className="inline-flex min-h-11 items-center transition-[color] duration-150 hover:text-foreground"
+          >
             GitHub
           </a>
         </p>

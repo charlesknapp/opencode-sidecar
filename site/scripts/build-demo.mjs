@@ -1,6 +1,7 @@
 // Builds the interactive demo: the real Sidecar webview (bundled from the extension's own
 // source in ../src/webview) plus the scripted host in src/demo, into public/demo/.
-import { copyFileSync, mkdirSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import * as esbuild from "esbuild"
@@ -29,4 +30,13 @@ await esbuild.build({
   alias: { "@": path.join(site, "src") },
 })
 copyFileSync(path.join(repo, "media", "main.css"), path.join(out, "main.css"))
-process.stdout.write("demo built: public/demo/{webview,player}.js, main.css\n")
+
+// Each asset URL carries a hash of its content, so a change is never hidden by a cache.
+const stamp = (file) =>
+  createHash("sha256").update(readFileSync(path.join(out, file))).digest("hex").slice(0, 10)
+const page = ["player.js", "webview.js", "main.css", "theme.css"].reduce(
+  (html, file) => html.replace(`./${file}"`, `./${file}?v=${stamp(file)}"`),
+  readFileSync(path.join(site, "scripts", "demo-index.html"), "utf8")
+)
+writeFileSync(path.join(out, "index.html"), page)
+process.stdout.write("demo built: public/demo/{index.html,webview.js,player.js,main.css}\n")
