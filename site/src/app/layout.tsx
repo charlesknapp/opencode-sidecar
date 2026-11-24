@@ -13,6 +13,9 @@ export const metadata: Metadata = {
   description: site.summary,
   applicationName: site.name,
   alternates: { canonical: "/" },
+  verification: {
+    other: { "msvalidate.01": "1F8B915FB03AF2E92D0C0626E8734ECC" },
+  },
   keywords: [
     "OpenCode",
     "OpenCode VS Code extension",
