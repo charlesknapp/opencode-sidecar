@@ -16,11 +16,12 @@ Sidecar declares `untrustedWorkspaces: { supported: false }`, so it is disabled 
 ## Permissions and actions
 
 - Every OpenCode permission request, including one raised by a subagent, takes the message box's place until you answer it. **Nothing is approved automatically.**
-- **Yes, always allow** is offered only when OpenCode supports it for that request, and OpenCode stores the rule. "Tell the agent what to do instead" rejects the request and hands your text to the agent.
+- **Yes, always allow** is offered only when OpenCode supports it for that request, and OpenCode stores the rule. **/ → Always-allowed actions…** lists the folder's rules, and removing one (after a confirmation) makes OpenCode ask again. "Tell the agent what to do instead" rejects the request and hands your text to the agent.
 - **Sensitive path warnings** are added for `.env` files (templates such as `.env.example` excluded), SSH keys, GnuPG, private keys and certificates (`.pem`, `.key`, …), keystores (`.jks`, `.p12`, …) and common credential files (`.npmrc`, `.netrc`, cloud CLI credentials, …). Attaching such a file yourself asks for confirmation first.
 - **`@` mentions** are checked by the extension, not trusted from the view: a file or folder must exist inside the open folder (sensitive files are confirmed as when attached), and an agent or skill must be one OpenCode lists. Anything else is dropped.
 - **Images** from the view must be base64 PNG, JPEG, GIF or WebP `data:` URIs of at most about 5 MB; other types (SVG included) are refused. Picked image files are read by OpenCode, up to its 20 MB limit.
 - **`!command`** runs a shell command through OpenCode in the session's folder only when you type it and press Enter, and never while the agent is working.
+- **Deleting a session** removes it from OpenCode for good, so it always asks first. **Insert at cursor** writes a code block into your editor only when you click it, as an ordinary edit that Undo reverts; **Open in editor** opens an untitled document and saves nothing.
 - **Rewind**, and **Apply** for a rewind staged in another client, ask for confirmation in a dialog over the chat, because OpenCode removes messages (and, if chosen, undoes the agent's file changes). The choice travels with the message (`files`), and the extension still refuses a rewind while the agent is working.
 
 ## Credentials and logging

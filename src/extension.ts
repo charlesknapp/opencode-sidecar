@@ -29,6 +29,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("opencodeSidecar.addCurrentFile", () => provider.addCurrentFile()),
     vscode.commands.registerCommand("opencodeSidecar.addSelection", () => provider.addSelection()),
     vscode.commands.registerCommand("opencodeSidecar.stop", () => provider.stop()),
+    vscode.commands.registerCommand("opencodeSidecar.showHistory", () => provider.showHistory()),
+    vscode.commands.registerCommand("opencodeSidecar.exportSession", () => provider.exportSession()),
   );
   log.info("Sidecar activated");
   // Exported for the local acceptance harness; not a public API.

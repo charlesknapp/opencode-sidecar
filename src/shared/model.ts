@@ -171,6 +171,28 @@ export interface CommandInfo {
   description: string | null;
 }
 
+/**
+ * A rule OpenCode saved when "Yes, always allow" was chosen: it answers matching
+ * requests in this project without asking. `resource` is the pattern (e.g. `npm test *`).
+ */
+export interface SavedPermission {
+  id: string;
+  action: string;
+  resource: string;
+  /** When it was saved (epoch ms). */
+  created: number;
+}
+
+/** An MCP server OpenCode is configured with for the folder, and how it is doing. */
+export interface McpServerInfo {
+  name: string;
+  /** OpenCode's display title, when it has one. */
+  title?: string;
+  status: "connected" | "pending" | "disabled" | "failed" | "needs_auth";
+  /** Why it failed or needs sign-in. */
+  error?: string;
+}
+
 /** An OpenCode skill, which a prompt can mention as `@id`. */
 export interface SkillOption {
   id: string;

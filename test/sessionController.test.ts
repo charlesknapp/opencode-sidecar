@@ -28,6 +28,57 @@ function setup(defaults = { model: "", agent: "" }) {
 
 const raw = (type: string, data: Record<string, unknown>) => ({ id: "evt", created: 1, type, data });
 
+describe("session controller: always-allowed actions", () => {
+  it("lists the open folder's saved permissions and removes one", async () => {
+    const { c, client } = setup();
+    await c.setDirectory(DIR);
+    client.projects.set(DIR, "prj_here");
+    client.saved = [
+      { id: "ps_1", projectID: "prj_here", action: "bash", resource: "npm test *", created: 2 },
+      { id: "ps_2", projectID: "prj_elsewhere", action: "bash", resource: "rm *", created: 3 },
+    ];
+    assert.deepEqual(await c.savedPermissions(), [
+      { id: "ps_1", action: "bash", resource: "npm test *", created: 2 },
+    ]);
+    await c.removeSavedPermission("ps_1");
+    assert.deepEqual(await c.savedPermissions(), []);
+    await assert.rejects(c.removeSavedPermission("ps_1"), /not found/);
+  });
+
+  it("deletes a session; deleting the open one starts a new session", async () => {
+    const { c, client } = setup();
+    await c.setDirectory(DIR);
+    await c.send("hello", []);
+    const open = c.current!.id;
+    await c.deleteSession(open);
+    assert.deepEqual(client.callsTo("deleteSession")[0].args, [open]);
+    assert.notEqual(c.current?.id ?? null, open, "the deleted session is no longer open");
+    assert.ok(!c.displaySessions().some((s) => s.id === open));
+  });
+
+  it("lists the folder's MCP servers", async () => {
+    const { c, client } = setup();
+    await c.setDirectory(DIR);
+    client.mcp = [{ name: "github", status: "connected" }];
+    assert.deepEqual(await c.mcpServers(), [{ name: "github", status: "connected" }]);
+    assert.equal(client.callsTo("listMcpServers")[0].args[0], DIR);
+  });
+
+  it("exports the open session as Markdown, and nothing without one", async () => {
+    const { c } = setup();
+    await c.setDirectory(DIR);
+    assert.equal(c.exportMarkdown(), null);
+    await c.send("hello", []);
+    assert.match(c.exportMarkdown() ?? "", /^# .*\n[\s\S]*## You · [^\n]+\n\nhello\n$/);
+  });
+
+  it("has none for a folder OpenCode has no project for", async () => {
+    const { c } = setup();
+    await c.setDirectory(DIR);
+    assert.deepEqual(await c.savedPermissions(), []);
+  });
+});
+
 describe("session controller: catalog and selection", () => {
   it("loads models/agents for the workspace and prefers the OpenCode default model", async () => {
     const { c, client } = setup();

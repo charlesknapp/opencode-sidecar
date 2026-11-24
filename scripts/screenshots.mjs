@@ -6,6 +6,7 @@
 //   node scripts/screenshots.mjs --all --out=<folder>       every scene, for review
 //   node scripts/screenshots.mjs 8-timeline --out=<folder>  chosen scenes
 //   ... --scroll-up=<px>                                     scrolled up from the end, to review the box over the chat
+//   ... --menu-scroll=<px>                                   an open menu scrolled down, to review its lower rows
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -825,6 +826,14 @@ for (const [suffix, width] of [
   const state = base({ busy: true, task: null, currentSession: { id: "s", title: "Shared token refresh" } });
   scenes[`9-tools${suffix}`] = { state, items: toolItems, width, scroll: "top" };
   scenes[`9-tools${suffix}-end`] = { state, items: toolItems, width };
+  // The footer's steer/queue switch set to Queue (the box takes the queue colour).
+  scenes[`9-tools${suffix}-queue`] = {
+    state,
+    items: toolItems,
+    width,
+    // Under 360px only the chosen mode shows, and tapping it flips.
+    click: width < 360 ? '[data-testid="delivery-steer"]' : '[data-testid="delivery-queue"]',
+  };
 }
 
 // Docks at the narrowest width.
@@ -837,7 +846,7 @@ const doneItems = timelineItems
   .map((i) => (i.kind === "tool" ? { ...i, status: "completed" } : i));
 const doneState = base({ task: null, currentSession: { id: "s", title: "Random sign-outs" } });
 scenes["10-final-answer"] = { state: doneState, items: doneItems };
-// The message box at the narrowest and a wide width: it wraps the model pill, then stops growing at 640px.
+// The message box at the narrowest and a wide width: it wraps the model pill, then stops growing at 670px.
 scenes["10-final-answer-300"] = { ...scenes["10-final-answer"], width: 300 };
 scenes["10-final-answer-900"] = { ...scenes["10-final-answer"], width: 900 };
 scenes["11-commands"] = { state: doneState, items: doneItems, click: '[data-testid="commands-button"]' };
@@ -928,6 +937,9 @@ scenes["18-mention"] = {
 //   node scripts/screenshots.mjs 8-timeline --out=some/folder
 const args = process.argv.slice(2);
 const outArg = args.find((a) => a.startsWith("--out="));
+const menuScroll = Number(
+  args.find((a) => a.startsWith("--menu-scroll="))?.slice("--menu-scroll=".length) ?? 0,
+);
 const scrollUp = Number(args.find((a) => a.startsWith("--scroll-up="))?.slice("--scroll-up=".length) ?? 0);
 if (outArg) out = path.resolve(outArg.slice("--out=".length));
 fs.mkdirSync(out, { recursive: true });
@@ -961,6 +973,8 @@ for (const [name, scene] of chosen) {
   );
   const page = await browser.newPage();
   await page.setViewport({ width: scene.width ?? 400, height: 860, deviceScaleFactor: 2 });
+  // Still pictures: no stepping cursor on the Working line.
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
   await page.goto("file://" + html);
   await page.evaluate((s) => {
     window.postMessage({ type: "state", state: s.state }, "*");
@@ -987,6 +1001,10 @@ for (const [name, scene] of chosen) {
       (c, px) => (c.scrollTop = c.scrollHeight - c.clientHeight - px),
       scrollUp,
     );
+  if (menuScroll)
+    await page
+      .$eval(".menu-list", (m, px) => (m.scrollTop = px), menuScroll)
+      .catch(() => page.$eval(".menu", (m, px) => (m.scrollTop = px), menuScroll).catch(() => {}));
   await new Promise((r) => setTimeout(r, 200));
   await page.screenshot({ path: path.join(out, `${readmeRun ? README[name] : name}.png`) });
   await page.close();

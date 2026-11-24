@@ -2,7 +2,7 @@
   "name": "opencode-sidecar",
   "displayName": "Sidecar for OpenCode",
   "description": "The complete OpenCode coding agent in a VS Code chat panel: a timeline of every step, live subagents, diffs, @ mentions, images, permissions, fork and rewind.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "cadogy",
   "private": true,
   "license": "MIT",
@@ -115,6 +115,17 @@
         "command": "opencodeSidecar.stop",
         "title": "Stop",
         "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.showHistory",
+        "title": "Show History",
+        "category": "Sidecar",
+        "icon": "$(history)"
+      },
+      {
+        "command": "opencodeSidecar.exportSession",
+        "title": "Export Session to Markdown",
+        "category": "Sidecar"
       }
     ],
     "menus": {
@@ -194,7 +205,7 @@
         "opencodeSidecar.statusWords": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "While the agent works, show a playful word for each run (such as *Riding along…*) next to the animated mark. Off shows *Working…*."
+          "markdownDescription": "While the agent works, show playful words (such as *Riding along…*), a new one every few seconds, next to the animated mark. Off shows *Working…*."
         },
         "opencodeSidecar.cacheWarmMinutes": {
           "type": "number",
@@ -339,7 +350,7 @@
         "opencodeSidecar.notifications.needsInput": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show a notification when OpenCode needs your input (a question or a permission request)."
+          "markdownDescription": "Show a notification when OpenCode needs your input (a question or a permission request), saying what it asks. Not shown while you are watching the chat (view visible and VS Code focused), where the request already takes the message box's place."
         },
         "opencodeSidecar.notifications.taskFailed": {
           "type": "boolean",

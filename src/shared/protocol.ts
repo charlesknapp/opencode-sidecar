@@ -13,7 +13,9 @@ import type {
   FileChange,
   FormAnswer,
   InboxDelivery,
+  McpServerInfo,
   MentionCandidate,
+  SavedPermission,
   ModelOption,
   OnboardingView,
   PendingInboxItem,
@@ -103,6 +105,8 @@ export type HostMessage =
   | { type: "transcript"; items: TranscriptItem[] }
   | { type: "events"; events: UiEvent[] }
   | { type: "focusInput" }
+  /** Open the History popover (the "Show History" command). */
+  | { type: "showHistory" }
   | { type: "copyResult"; requestId: string; ok: boolean }
   | { type: "restoreInput"; text: string }
   | { type: "formError"; formId: string; error: string }
@@ -112,7 +116,11 @@ export type HostMessage =
   /** Scroll to an item (after opening a bookmark). */
   | { type: "revealItem"; itemId: string }
   /** Suggestions for an `@` typed in the message box. */
-  | { type: "mentionResults"; requestId: string; items: MentionCandidate[] };
+  | { type: "mentionResults"; requestId: string; items: MentionCandidate[] }
+  /** The open folder's "always allow" rules; null with `error` when OpenCode could not list them. */
+  | { type: "savedPermissions"; items: SavedPermission[] | null; error?: string }
+  /** The folder's MCP servers; null with `error` when OpenCode could not list them. */
+  | { type: "mcpServers"; items: McpServerInfo[] | null; error?: string };
 
 export type WebviewMessage =
   | { type: "ready" }
@@ -129,6 +137,14 @@ export type WebviewMessage =
   | { type: "archiveSession"; id: string; archived: boolean }
   /** Load the archived sessions for the history's Archived view. */
   | { type: "loadArchived" }
+  | { type: "loadSavedPermissions" }
+  | { type: "deleteSession"; id: string }
+  | { type: "exportSession" }
+  | { type: "loadMcpServers" }
+  /** A finished code block: insert it at the cursor of the last editor, or open it in a new one. */
+  | { type: "insertCode"; text: string }
+  | { type: "openCode"; text: string; lang: string }
+  | { type: "removeSavedPermission"; id: string }
   /** A rewind staged in another client: restore the messages, or apply it. */
   | { type: "resolveRevert"; action: "restore" | "apply" }
   | { type: "stop" }
@@ -163,6 +179,7 @@ export type WebviewMessage =
   | { type: "cancelForm"; formId: string }
   | { type: "editPending"; id: string }
   | { type: "removePending"; id: string }
+  | { type: "setDelivery"; id: string; delivery: InboxDelivery }
   | { type: "openAgentDiff"; path: string }
   | { type: "openAgentDiffAll" }
   | { type: "openWorkspaceDiffAll" }
@@ -263,6 +280,17 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   forkSession: (m) => m.messageID === undefined || isStr(m.messageID),
   archiveSession: (m) => isStr(m.id) && typeof m.archived === "boolean",
   loadArchived: () => true,
+  loadSavedPermissions: () => true,
+  deleteSession: (m) => isStr(m.id),
+  exportSession: () => true,
+  loadMcpServers: () => true,
+  insertCode: (m) => typeof m.text === "string" && m.text.length <= MAX_COPY,
+  openCode: (m) =>
+    typeof m.text === "string" &&
+    m.text.length <= MAX_COPY &&
+    typeof m.lang === "string" &&
+    m.lang.length <= 40,
+  removeSavedPermission: (m) => isStr(m.id, 200),
   resolveRevert: (m) => m.action === "restore" || m.action === "apply",
   stop: () => true,
   newSession: () => true,
@@ -300,6 +328,7 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   cancelForm: (m) => isStr(m.formId),
   editPending: (m) => isStr(m.id),
   removePending: (m) => isStr(m.id),
+  setDelivery: (m) => isStr(m.id) && (m.delivery === "steer" || m.delivery === "queue"),
   openAgentDiff: (m) => isStr(m.path, 4096),
   openAgentDiffAll: () => true,
   openWorkspaceDiffAll: () => true,
@@ -342,6 +371,10 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   attachImage: ["name", "dataUrl", "thumb", "width", "height"],
   forkSession: ["messageID"],
   archiveSession: ["id", "archived"],
+  removeSavedPermission: ["id"],
+  deleteSession: ["id"],
+  insertCode: ["text"],
+  openCode: ["text", "lang"],
   resolveRevert: ["action"],
   selectSession: ["id"],
   selectModel: ["key"],
@@ -359,6 +392,7 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   cancelForm: ["formId"],
   editPending: ["id"],
   removePending: ["id"],
+  setDelivery: ["id", "delivery"],
   openAgentDiff: ["path"],
   openLink: ["href"],
   openOfficial: ["link"],

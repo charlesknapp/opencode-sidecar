@@ -8,6 +8,26 @@ describe("webview message schema", () => {
     assert.deepEqual(parseWebviewMessage({ type: "send", text: "hi" }), { type: "send", text: "hi" });
     assert.ok(parseWebviewMessage({ type: "respondPermission", requestId: "per_1", decision: "once" }));
     assert.ok(parseWebviewMessage({ type: "openAgentDiff", path: "src/a.ts" }));
+    assert.deepEqual(parseWebviewMessage({ type: "loadSavedPermissions" }), { type: "loadSavedPermissions" });
+    for (const m of [
+      { type: "deleteSession", id: "ses_1" },
+      { type: "setDelivery", id: "msg_1", delivery: "queue" },
+      { type: "exportSession" },
+      { type: "loadMcpServers" },
+      { type: "insertCode", text: "x = 1" },
+      { type: "openCode", text: "x = 1", lang: "py" },
+    ])
+      assert.deepEqual(parseWebviewMessage(m), m, m.type);
+    assert.equal(parseWebviewMessage({ type: "deleteSession" }), undefined);
+    assert.equal(parseWebviewMessage({ type: "setDelivery", id: "msg_1", delivery: "later" }), undefined);
+    assert.equal(parseWebviewMessage({ type: "openCode", text: "x", lang: "x".repeat(41) }), undefined);
+    assert.equal(parseWebviewMessage({ type: "insertCode", text: "x", path: "/etc/passwd" }), undefined);
+    assert.deepEqual(parseWebviewMessage({ type: "removeSavedPermission", id: "ps_1" }), {
+      type: "removeSavedPermission",
+      id: "ps_1",
+    });
+    assert.equal(parseWebviewMessage({ type: "removeSavedPermission", id: 3 }), undefined);
+    assert.equal(parseWebviewMessage({ type: "removeSavedPermission", id: "ps_1", all: true }), undefined);
   });
 
   it("rejects unknown types and non-objects", () => {

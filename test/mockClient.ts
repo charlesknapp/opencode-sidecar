@@ -16,7 +16,9 @@ import type {
   ModelOption,
   PendingInboxItem,
   PermissionDecision,
+  McpServerInfo,
   PermissionRequest,
+  SavedPermission,
   SessionSummary,
   SkillOption,
 } from "../src/shared/model";
@@ -148,6 +150,36 @@ export class MockClient implements OpenCodeClient {
   async setArchived(id: string, archived: boolean) {
     this.record("setArchived", id, archived);
     for (const x of this.sessions) if (x.id === id) x.archived = archived || undefined;
+  }
+  async deleteSession(id: string) {
+    this.record("deleteSession", id);
+    this.sessions = this.sessions.filter((x) => x.id !== id);
+  }
+  mcp: McpServerInfo[] = [];
+  async listMcpServers(directory: string) {
+    this.record("listMcpServers", directory);
+    return this.mcp;
+  }
+  /** "Always allow" rules by project; `projects` maps a folder to its project. */
+  projects = new Map<string, string>();
+  saved: Array<SavedPermission & { projectID: string }> = [];
+  async projectId(directory: string) {
+    this.record("projectId", directory);
+    return this.projects.get(directory) ?? null;
+  }
+  async listSavedPermissions(projectID: string) {
+    this.record("listSavedPermissions", projectID);
+    return this.saved
+      .filter((x) => x.projectID === projectID)
+      .map(({ projectID: _p, ...rest }) => rest)
+      .sort((a, b) => b.created - a.created);
+  }
+  async removeSavedPermission(id: string) {
+    this.record("removeSavedPermission", id);
+    const before = this.saved.length;
+    this.saved = this.saved.filter((x) => x.id !== id);
+    if (this.saved.length === before)
+      throw new OpenCodeHttpError(404, "PermissionSavedNotFoundError", "not found");
   }
   async resolveRevert(id: string, action: "commit" | "clear") {
     this.record("resolveRevert", id, action);
@@ -284,6 +316,9 @@ export class MockClient implements OpenCodeClient {
   async listInbox(id: string) {
     this.record("listInbox", id);
     return this.inbox;
+  }
+  async setInboxDelivery(id: string, inboxId: string, delivery: "steer" | "queue") {
+    this.record("setInboxDelivery", id, inboxId, delivery);
   }
   async cancelInbox(id: string, inboxId: string) {
     this.record("cancelInbox", id, inboxId);

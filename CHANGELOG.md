@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.3 (2026-11-23)
+
+**New**
+
+- **Find in the conversation** with Ctrl/Cmd+F: matches highlighted in place, Enter / Shift+Enter to step, Esc to close.
+- **Code blocks** can be inserted at the editor's cursor or opened in a new editor, besides Copy code.
+- **Export to Markdown** (in the / palette and the Command Palette) opens the session as a readable Markdown document.
+- **Delete** a session permanently, from the Archived view of History or the / palette, after a confirmation.
+- The **Git branch** shows beside the session title (from VS Code's Git; a detached HEAD shows its commit).
+- **MCP servers…** in the / palette lists the folder's MCP servers and their state as OpenCode reports them.
+- **Always-allowed actions**: **/ → Always-allowed actions…** lists the rules OpenCode saved for the folder when you chose _Yes, always allow_, and removes one after a confirmation, so OpenCode asks again.
+- A **count on Sidecar's icon** while permission requests or questions wait, so a hidden panel still says it needs you.
+- **↑/↓ in an empty message box** recall this session's earlier prompts, as in a terminal.
+- **Jump to latest**: scrolled up while the agent works, a pill above the box shows how many steps are new and takes you back to the end.
+- New commands: **Sidecar: Show History** and **Sidecar: Export Session to Markdown**, ready to bind to keys.
+
+**Message box**
+
+- **Steer or queue** moved from the agent menu to a two-way switch in the message box's footer, shown while the agent works: steer (blue) or queue (purple, and the box border follows). Under 360px only the chosen mode shows, and a click flips it. **Alt+Enter** sends one message the other way, and each waiting message can be switched between the two before it is delivered.
+- The **variant and Budget Guard sliders** take a click anywhere along the track and follow a drag, picking the nearest step; the choice is sent once, on release. The chosen dot grows in place, so no dot moves under the pointer.
+- A new **permission request or question** closes any open menu, the @ list, Bookmarks and History, so nothing covers it.
+- The message box is a little wider in a wide panel (up to **670px**).
+
+**Look and feel**
+
+- Every action in the **/ palette** has an icon and a line saying what it does, OpenCode's own commands included; the switches sit under **Display** and MCP servers, always-allowed actions and Sidecar's settings under **Settings**.
+- The **Working line** moves to a new word every 8 seconds, a block cursor sweeping across to turn the old word into the new one in about a second, and the mark orbits faster; it sits a little further below the last step. With reduced motion the cursor stays off.
+- **Build** and **Plan** have their own icons (a hammer and a clipboard), in the message box and the agent menu; other agents show a person.
+
+**Notifications**
+
+- **Notifications** for a request now say what is asked (a question, or the permission and what it is for, with credentials redacted), and no longer pop up while you are watching the chat, where the request is already in front of you.
+
 ## 0.1.2 (2026-11-23)
 
 - **Context ring** in the message box: it fills with the context in use (from the tokens OpenCode reports and the model's limit), in the theme's warning colour from 70% and error colour from 90%. Hover for the numbers; click for context, cost, steps, the task budget and Compact.

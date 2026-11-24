@@ -389,6 +389,29 @@ describe(
       await page.click('[data-testid="variant-slider"] [data-value="max"]');
       assert.deepEqual(await lastSent("selectVariant"), { type: "selectVariant", variant: "max" });
       assert.match(await text('[data-testid="variant-slider"]'), /Variant \(Max\)/);
+      // Drag along the track: it follows the pointer and sends one change, on release.
+      const centres = await page.$$eval('[data-testid="variant-slider"] .sd', (d) =>
+        d.map((x) => {
+          const r = x.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }),
+      );
+      await clearSent();
+      await page.mouse.move(centres[2].x, centres[2].y);
+      await page.mouse.down();
+      await page.mouse.move(centres[1].x, centres[1].y, { steps: 4 });
+      await page.mouse.move(centres[0].x + 1, centres[0].y + 3, { steps: 4 });
+      assert.match(await text('[data-testid="variant-slider"]'), /Variant \(Default\)/, "follows the drag");
+      assert.equal(await lastSent("selectVariant"), undefined, "nothing sent mid-drag");
+      await page.mouse.up();
+      assert.deepEqual(
+        (await sent()).filter((m) => m.type === "selectVariant"),
+        [{ type: "selectVariant", variant: "" }],
+        "one change, on release (Default is no variant)",
+      );
+      // A click off the dots, just beside one (Default, None, High, Max), picks the nearest.
+      await page.mouse.click(centres[1].x - 3, centres[1].y + 3);
+      assert.deepEqual(await lastSent("selectVariant"), { type: "selectVariant", variant: "none" });
       await page.focus('[data-testid="budget-slider"]');
       await page.keyboard.press("ArrowLeft");
       assert.deepEqual(await lastSent("selectBudget"), { type: "selectBudget", level: "small" });
@@ -585,8 +608,8 @@ describe(
           };
         });
       const wide = await geometry();
-      // Wide: the box stops growing at 640px, centred under the wider chat, which shows beside it.
-      assert.ok(Math.abs(wide.width - 640) < 1, `640px wide (${wide.width})`);
+      // Wide: the box stops growing at 670px, centred under the wider chat, which shows beside it.
+      assert.ok(Math.abs(wide.width - 670) < 1, `670px wide (${wide.width})`);
       assert.ok(
         wide.left > 20 && Math.abs(wide.left - wide.right) < 1,
         `centred (${wide.left}, ${wide.right})`,
@@ -612,8 +635,16 @@ describe(
       await page.click('[data-testid="commands-button"]');
       assert.deepEqual(
         (await menuTexts()).filter((t) => t?.startsWith("# ")),
-        ["# Context", "# Model", "# Session", "# OpenCode commands", "# Customize"],
+        ["# Context", "# Model", "# Session", "# OpenCode commands", "# Display", "# Settings"],
       );
+      // Every action row has an icon and a line saying what it does; switches and sliders
+      // carry their own control instead.
+      const bare = await page.$$eval(".menu .menu-item:not(.toggle):not(.slider)", (rows) =>
+        rows
+          .filter((r) => !r.querySelector("svg") || !r.querySelector(".menu-sub")?.textContent)
+          .map((r) => r.querySelector(".menu-label")?.textContent),
+      );
+      assert.deepEqual(bare, []);
       await (await page.$$('[data-testid="command-option"]'))[1].click();
       assert.equal(await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).value), "/review ");
       await page.keyboard.type("only src");
@@ -673,6 +704,14 @@ describe(
       await page.click('[data-testid="context-ring"]');
       assert.match(await text('[data-testid="menu"]'), /Context\s*42k \/ 262k \(16%\)/);
       assert.ok(await page.$('[data-testid="compact"]'), "Compact is in the same menu");
+      assert.deepEqual(
+        await page.$eval('[data-testid="compact"]', (b) => [
+          !!b.querySelector("svg"),
+          b.querySelector(".menu-sub")?.textContent,
+        ]),
+        [true, "Summarize the conversation to free context"],
+        "with the icon and line it has in the / palette",
+      );
       await page.keyboard.press("Escape");
       // Near the limit it takes the warning, then the error colour.
       const at = (contextTokens: number) =>
@@ -826,6 +865,242 @@ describe(
     });
     const visible = (sel: string) =>
       page.$eval(sel, (e) => !(e as HTMLElement).hidden && (e as HTMLElement).offsetParent !== null);
+
+    it("a new permission request closes any open menu or popover so nothing covers it", async () => {
+      await page.click('[data-testid="context-ring"]');
+      assert.ok(await page.$('[data-testid="menu"]'), "the usage menu is open");
+      await host({ type: "transcript", items: [PERM()] });
+      assert.equal(await page.$('[data-testid="menu"]'), null, "the menu closed");
+      assert.equal(await text('[data-testid="permission-dock"] .dock-title'), "Allow this shell command?");
+      // A later state update with the same request does not close a menu opened since.
+      await page.click('[data-testid="bookmarks-button"]');
+      await host({ type: "state", state: baseState() });
+      assert.equal(
+        await page.$eval(".bookmarks", (b) => (b as HTMLElement).hidden),
+        false,
+        "Bookmarks stay open",
+      );
+      // The next request closes it.
+      await host({ type: "transcript", items: [PERM(), PERM({ id: "p2" })] });
+      await host({ type: "transcript", items: [PERM({ id: "p2" })] });
+      assert.equal(
+        await page.$eval(".bookmarks", (b) => (b as HTMLElement).hidden),
+        true,
+        "Bookmarks closed",
+      );
+    });
+
+    it("recalls this session's earlier prompts with ↑ and ↓ from an empty box", async () => {
+      await host({
+        type: "transcript",
+        items: [prompt("u1", "first"), prompt("u2", "second"), prompt("u3", "first")],
+      });
+      const value = () => page.$eval("textarea", (t) => (t as HTMLTextAreaElement).value);
+      await page.focus("textarea");
+      await page.keyboard.press("ArrowUp");
+      assert.equal(await value(), "first", "newest first");
+      await page.keyboard.press("ArrowUp");
+      assert.equal(await value(), "second", "repeats appear once");
+      await page.keyboard.press("ArrowUp");
+      assert.equal(await value(), "second", "stays on the oldest");
+      await page.keyboard.press("ArrowDown");
+      assert.equal(await value(), "first");
+      await page.keyboard.press("ArrowDown");
+      assert.equal(await value(), "", "back to the empty box");
+      // Editing a recalled prompt makes it the draft: the arrows move the caret again.
+      await page.keyboard.press("ArrowUp");
+      await page.keyboard.type("!");
+      await page.keyboard.press("ArrowUp");
+      assert.equal(await value(), "first!");
+      // A draft in the box is never replaced.
+      await page.$eval("textarea", (t) => ((t as HTMLTextAreaElement).value = ""));
+      await page.keyboard.type("my draft");
+      await page.keyboard.press("ArrowUp");
+      assert.equal(await value(), "my draft");
+    });
+
+    it("offers Jump to latest while scrolled up, counting what arrived since", async () => {
+      await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+      const long = Array.from({ length: 80 }, (_, i) => `Line ${i}`).join("\n\n");
+      const items: TranscriptItem[] = [
+        prompt("u1", "a prompt"),
+        { kind: "assistant", id: "text:long", text: long, streaming: false },
+      ];
+      await host({ type: "transcript", items });
+      const jump = () =>
+        page.$eval('[data-testid="jump-latest"]', (b) => ((b as HTMLElement).hidden ? null : b.textContent));
+      assert.equal(await jump(), null, "hidden at the end of the chat");
+      await page.$eval(".conversation", (c) => c.scrollTo({ top: 0 }));
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(await jump(), "Jump to latest");
+      // A new step streams in while the reader is up the page.
+      await host({ type: "events", events: [{ type: "assistant.completed", partId: "more", text: "More" }] });
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(await jump(), "1 new");
+      assert.ok(
+        await page.$eval(".conversation", (c) => c.scrollTop < 50),
+        "the reader stays where they are",
+      );
+      await page.click('[data-testid="jump-latest"]');
+      await new Promise((r) => setTimeout(r, 100));
+      assert.ok(
+        await page.$eval(".conversation", (c) => c.scrollHeight - c.scrollTop - c.clientHeight < 2),
+        "at the end",
+      );
+      assert.equal(await jump(), null);
+    });
+
+    it("lists the folder's always-allowed actions and removes one after a confirmation", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="saved-permissions"]');
+      assert.ok(await lastSent("loadSavedPermissions"));
+      assert.match(await text('[data-testid="menu"]'), /Loading…/);
+      await host({
+        type: "savedPermissions",
+        items: [{ id: "ps_1", action: "bash", resource: "npm test *", created: Date.now() - 2 * 3600_000 }],
+      });
+      assert.deepEqual(
+        await page.$$eval('[data-testid="saved-permission"]', (e) =>
+          e.map((x) => [
+            x.querySelector(".menu-label")?.textContent,
+            x.querySelector(".menu-sub")?.textContent,
+          ]),
+        ),
+        [["npm test *", "bash · saved 2h ago · click to remove"]],
+      );
+      await clearSent();
+      await page.click('[data-testid="saved-permission"]');
+      await page.click('[data-testid="saved-remove"]');
+      assert.deepEqual(await lastSent("removeSavedPermission"), {
+        type: "removeSavedPermission",
+        id: "ps_1",
+      });
+      await host({ type: "savedPermissions", items: [] });
+      assert.match(await text('[data-testid="menu"]'), /Nothing is always allowed here/);
+      // Keeping it sends nothing; a failed list says so.
+      await host({ type: "savedPermissions", items: null, error: "OpenCode could not list them." });
+      assert.match(await text('[data-testid="menu"]'), /Couldn't load them: OpenCode could not list them\./);
+    });
+
+    it("shows the Git branch beside the title, a detached HEAD's commit, and nothing without Git", async () => {
+      assert.equal(await text('[data-testid="branch"]'), "main");
+      const ws = baseState().workspace;
+      await host({
+        type: "state",
+        state: baseState({ workspace: { ...ws, branch: null, detachedAt: "abc1234" } }),
+      });
+      assert.equal(await text('[data-testid="branch"]'), "detached at abc1234");
+      await host({
+        type: "state",
+        state: baseState({ workspace: { ...ws, branch: null, detachedAt: null } }),
+      });
+      assert.equal(await page.$('[data-testid="branch"]'), null);
+    });
+
+    it("finds in the conversation with Ctrl+F: counts, steps with Enter and closes with Esc", async () => {
+      await host({
+        type: "transcript",
+        items: [
+          prompt("u1", "Where is the token refreshed?"),
+          {
+            kind: "assistant",
+            id: "text:a",
+            text: "The token is refreshed in auth. A second token check runs later.",
+            streaming: false,
+          },
+        ],
+      });
+      await page.focus("textarea");
+      await page.keyboard.down("Control");
+      await page.keyboard.press("f");
+      await page.keyboard.up("Control");
+      assert.equal(
+        await page.evaluate(() => document.activeElement?.getAttribute("data-testid")),
+        "find-input",
+      );
+      await page.keyboard.type("TOKEN");
+      assert.equal(
+        await text('[data-testid="find-count"]'),
+        "1 of 3",
+        "case-insensitive, prompts and answers",
+      );
+      await page.keyboard.press("Enter");
+      assert.equal(await text('[data-testid="find-count"]'), "2 of 3");
+      await page.keyboard.down("Shift");
+      await page.keyboard.press("Enter");
+      await page.keyboard.up("Shift");
+      assert.equal(await text('[data-testid="find-count"]'), "1 of 3");
+      const marked = await page.evaluate(() => {
+        const reg = (CSS as unknown as { highlights?: Map<string, { size: number }> }).highlights;
+        return reg ? [reg.get("sidecar-find")?.size, reg.get("sidecar-find-current")?.size] : null;
+      });
+      if (marked) assert.deepEqual(marked, [3, 1], "all matches marked, one current");
+      await page.keyboard.type("zzz");
+      assert.equal(await text('[data-testid="find-count"]'), "No results");
+      await page.keyboard.press("Escape");
+      assert.equal(await page.$eval('[data-testid="findbar"]', (b) => (b as HTMLElement).hidden), true);
+      assert.equal(await page.evaluate(() => document.activeElement?.tagName), "TEXTAREA", "back to the box");
+    });
+
+    it("puts a finished code block into the editor: at the cursor or as a new file", async () => {
+      await host({
+        type: "transcript",
+        items: [{ kind: "assistant", id: "text:c", text: "```py\nprint(1)\n```", streaming: false }],
+      });
+      await page.click('[data-testid="insert-code"]');
+      assert.deepEqual(await lastSent("insertCode"), { type: "insertCode", text: "print(1)" });
+      await page.click('[data-testid="open-code"]');
+      assert.deepEqual(await lastSent("openCode"), { type: "openCode", text: "print(1)", lang: "py" });
+      // A block still streaming has only Copy.
+      await host({
+        type: "transcript",
+        items: [{ kind: "assistant", id: "text:s", text: "```py\nprint(1)", streaming: true }],
+      });
+      assert.equal(await page.$('[data-testid="insert-code"]'), null);
+    });
+
+    it("deletes an archived session or the open one, only after a confirmation", async () => {
+      // From the / palette: the open session.
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="command-delete"]');
+      assert.match(await text('[data-testid="dialog"]'), /Delete this session permanently\?/);
+      await page.click('[data-testid="delete-keep"]');
+      assert.equal(await lastSent("deleteSession"), undefined, "keeping it sends nothing");
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="command-delete"]');
+      await page.click('[data-testid="delete-confirm"]');
+      assert.deepEqual(await lastSent("deleteSession"), { type: "deleteSession", id: "ses_1" });
+    });
+
+    it("exports the session, lists MCP servers, and opens History on request", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="command-export"]');
+      assert.ok(await lastSent("exportSession"));
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="mcp-servers"]');
+      assert.ok(await lastSent("loadMcpServers"));
+      await host({
+        type: "mcpServers",
+        items: [
+          { name: "github", title: "GitHub", status: "connected" },
+          { name: "db", status: "failed", error: "spawn ENOENT" },
+        ],
+      });
+      const rows = await page.$$eval('[data-testid="menu"] .menu-stat', (els) =>
+        els.map((e) =>
+          Array.from(e.children)
+            .map((c) => c.textContent)
+            .join(": "),
+        ),
+      );
+      assert.deepEqual(rows, ["GitHub: ● connected", "db: ✕ failed"]);
+      assert.match(await text('[data-testid="menu"]'), /spawn ENOENT/);
+      await host({ type: "mcpServers", items: [] });
+      assert.match(await text('[data-testid="menu"]'), /No MCP servers are configured/);
+      await page.keyboard.press("Escape");
+      await host({ type: "showHistory" });
+      assert.equal(await page.$eval(".sessions", (s) => (s as HTMLElement).hidden), false, "History is open");
+    });
 
     it("a permission request replaces the message box: Yes / always / No, numbered, Yes by default", async () => {
       await host({ type: "transcript", items: [PERM()] });
@@ -1032,11 +1307,42 @@ describe(
       assert.equal(mark.masked, true, "the gap is cut by a mask");
       assert.equal(mark.ringStill, "none", "the ring stays still");
       assert.deepEqual(mark.orbits, ["spin", "spin"], "the gap and the disc orbit together");
+      assert.equal(
+        await page.$eval(
+          '[data-testid="working"] .i-mark .orbit',
+          (g) => getComputedStyle(g).animationDuration,
+        ),
+        "1.1s",
+      );
+      // The word is plain text between changes: no cursor.
+      await new Promise((r) => setTimeout(r, 400));
+      assert.equal(await page.$('[data-testid="status-word"] .cur'), null, "no cursor while the word stays");
+      // Every 8 seconds it moves to another word, never the same one: a block cursor sweeps
+      // across, turning the old letters into the new ones, then goes away.
+      const first = await text('[data-testid="status-word"]');
+      await page.evaluate(() => {
+        const real = Date.now.bind(Date);
+        Date.now = () => real() + 9000;
+      });
+      await page.waitForFunction(() => !!document.querySelector('[data-testid="status-word"] .cur'), {
+        timeout: 3000,
+      });
+      await page.waitForFunction(
+        (w) => {
+          const b = document.querySelector('[data-testid="status-word"]');
+          return !!b && !b.querySelector(".cur") && b.textContent !== w;
+        },
+        { timeout: 3000 },
+        first,
+      );
+      assert.match(await text('[data-testid="status-word"]'), /^[A-Z][a-z ]+…$/);
       await host({
         type: "state",
         state: baseState({ busy: true, prefs: { ...baseState().prefs, statusWords: false } }),
       });
       assert.equal(await text('[data-testid="status-word"]'), "Working…", "plain with the setting off");
+      await new Promise((r) => setTimeout(r, 1200));
+      assert.equal(await text('[data-testid="status-word"]'), "Working…", "and it stays put");
       // A state change during the run redraws the text, not the mark, so its orbit never restarts.
       await page.evaluate(() => {
         (window as unknown as { __mark: Element }).__mark = document.querySelector(
@@ -1062,13 +1368,40 @@ describe(
       assert.ok(await lastSent("stop"));
     });
 
-    it("steers or queues follow-ups while running and shows pending messages with Edit/Remove", async () => {
+    it("steers or queues follow-ups from the footer switch while running, with Alt+Enter for one the other way", async () => {
+      const switchShown = () =>
+        page.$eval(".delivery", (d) => !(d as HTMLElement).hidden && getComputedStyle(d).display !== "none");
+      assert.equal(await switchShown(), false, "nothing to choose while idle");
       await host({ type: "state", state: baseState({ busy: true }) });
+      assert.equal(await switchShown(), true);
       const placeholder = () => page.$eval("textarea", (t) => (t as HTMLTextAreaElement).placeholder);
+      const checked = () =>
+        page.$$eval(".delivery .seg", (b) => b.map((x) => x.getAttribute("aria-checked")));
       assert.equal(await placeholder(), "Steer the agent…");
+      assert.deepEqual(await checked(), ["true", "false"]);
+      // The agent menu is only about agents now.
       await page.click('[data-testid="mode-button"]');
-      await page.click('[data-testid="mode-queue"]');
-      assert.equal(await placeholder(), "Queue another message…");
+      assert.equal(await page.$('[data-testid="mode-queue"]'), null);
+      await page.keyboard.press("Escape");
+      await page.click('[data-testid="delivery-queue"]');
+      assert.deepEqual(await checked(), ["false", "true"]);
+      assert.equal(await placeholder(), "Queue a message for after this task…");
+      assert.equal(
+        await page.$eval(".box", (b) => b.classList.contains("queueing")),
+        true,
+        "the box takes the queue colour",
+      );
+      // Alt+Enter sends this one the other way; the switch stays on Queue.
+      await page.type("textarea", "Also check the logout path.");
+      await page.keyboard.down("Alt");
+      await page.keyboard.press("Enter");
+      await page.keyboard.up("Alt");
+      assert.deepEqual(await lastSent("send"), {
+        type: "send",
+        text: "Also check the logout path.",
+        delivery: "steer",
+      });
+      assert.deepEqual(await checked(), ["false", "true"]);
       await page.type("textarea", "Run only the targeted test after this.");
       assert.equal(
         await page.$eval('[data-testid="send"]', (b) => b.getAttribute("aria-label")),
@@ -1096,13 +1429,102 @@ describe(
         }),
       });
       assert.match(await text('[data-testid="pending-item"]'), /Queued/);
-      const buttons = await page.$$('[data-testid="pending-item"] button');
+      // A waiting message can switch to steering before it is delivered.
+      await page.click('[data-testid="pending-switch"]');
+      assert.deepEqual(await lastSent("setDelivery"), {
+        type: "setDelivery",
+        id: "msg_q",
+        delivery: "steer",
+      });
+      const buttons = await page.$$(
+        '[data-testid="pending-item"] button:not([data-testid="pending-switch"])',
+      );
       await buttons[0].click();
       assert.deepEqual(await lastSent("editPending"), { type: "editPending", id: "msg_q" });
       await buttons[1].click();
       assert.deepEqual(await lastSent("removePending"), { type: "removePending", id: "msg_q" });
       await host({ type: "restoreInput", text: "edited text" });
       assert.equal(await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).value), "edited text");
+    });
+
+    it("shows only the chosen delivery mode at 300px, flips it on a tap, and keeps the footer on one row", async () => {
+      await page.setViewport({ width: 300, height: 900 });
+      await host({ type: "state", state: baseState({ busy: true }) });
+      const shown = () =>
+        page.$$eval(".delivery .seg", (b) =>
+          b.filter((x) => getComputedStyle(x).display !== "none").map((x) => x.getAttribute("data-testid")),
+        );
+      assert.deepEqual(await shown(), ["delivery-steer"]);
+      // One toggle button, not a lone radio: its label and tooltip say what a click does.
+      const a11y = await page.$eval('[data-testid="delivery-steer"]', (b) => ({
+        role: b.getAttribute("role"),
+        checked: b.getAttribute("aria-checked"),
+        label: b.getAttribute("aria-label"),
+        tip: (b as HTMLElement).dataset.tip,
+        group: b.parentElement!.getAttribute("role"),
+      }));
+      assert.equal(a11y.role, null);
+      assert.equal(a11y.checked, null);
+      assert.equal(a11y.group, "group");
+      assert.match(a11y.label ?? "", /Click to switch to Queue$/);
+      assert.match(a11y.tip ?? "", /Click to switch to Queue/);
+      await page.click('[data-testid="delivery-steer"]');
+      assert.deepEqual(await shown(), ["delivery-queue"]);
+      assert.match(
+        (await page.$eval('[data-testid="delivery-queue"]', (b) => b.getAttribute("aria-label"))) ?? "",
+        /Click to switch to Steer$/,
+      );
+      assert.equal(
+        await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).placeholder),
+        "Queue a message for after this task…",
+      );
+      await page.click('[data-testid="delivery-queue"]');
+      assert.deepEqual(await shown(), ["delivery-steer"]);
+      // Stop stays on the tools row, level with the switch.
+      const tops = await page.evaluate(() =>
+        [".delivery", '[data-testid="stop"]'].map((s) =>
+          Math.round(document.querySelector(s)!.getBoundingClientRect().top),
+        ),
+      );
+      assert.ok(Math.abs(tops[0] - tops[1]) <= 3, `switch at ${tops[0]}, stop at ${tops[1]}`);
+    });
+
+    it("gives every model and agent row a second line, even when OpenCode sends no figure or description", async () => {
+      const st = baseState();
+      await host({
+        type: "state",
+        state: {
+          ...st,
+          models: [
+            ...st.models!,
+            { ...st.models![0], key: "x/local", id: "local", name: "Local", contextLimit: null },
+          ],
+          agents: [...st.agents!, { id: "reviewer", name: "Reviewer" }],
+        },
+      });
+      const subs = async (button: string, row: string) => {
+        await page.click(`[data-testid="${button}"]`);
+        const out = await page.$$eval(`[data-testid="${row}"]`, (rows) =>
+          rows.map((r) => [
+            r.querySelector(".menu-label")?.textContent,
+            r.querySelector(".menu-sub")?.textContent,
+          ]),
+        );
+        await page.keyboard.press("Escape");
+        return out;
+      };
+      const models = await subs("model-pill", "model-option");
+      assert.ok(
+        models.every(([, sub]) => !!sub),
+        JSON.stringify(models),
+      );
+      assert.deepEqual(models.at(-1), ["Local", "Context size not reported"]);
+      const agents = await subs("mode-button", "agent-option");
+      assert.ok(
+        agents.every(([, sub]) => !!sub),
+        JSON.stringify(agents),
+      );
+      assert.deepEqual(agents.at(-1), ["Reviewer", "Defined in your OpenCode config"]);
     });
 
     it("Shift+Tab in the message box switches the agent", async () => {
@@ -1408,6 +1830,101 @@ describe(
       assert.equal(await page.$$eval(".day", (d) => d.length), 2);
     });
 
+    for (const width of [300, 400, 900]) {
+      it(`keeps the find bar, code block actions, branch, Jump and box in view at ${width}px`, async () => {
+        await page.setViewport({ width, height: 700 });
+        const long = Array.from({ length: 60 }, (_, i) => `Line ${i}`).join("\n\n");
+        await host({
+          type: "transcript",
+          items: [
+            prompt("u1", "a prompt"),
+            {
+              kind: "assistant",
+              id: "text:code",
+              text: "```typescript\nconst aVeryLongIdentifierName = computeSomethingLong(1, 2, 3);\n```",
+              streaming: false,
+            },
+            { kind: "assistant", id: "text:long", text: long, streaming: false },
+          ],
+        });
+        await page.focus("textarea");
+        await page.keyboard.down("Control");
+        await page.keyboard.press("f");
+        await page.keyboard.up("Control");
+        await page.keyboard.type("line");
+        await page.$eval(".conversation", (c) => c.scrollTo({ top: 0 }));
+        await new Promise((r) => setTimeout(r, 60));
+        const m = await page.evaluate(() => {
+          const r = (sel: string) => {
+            const el = document.querySelector(sel);
+            if (!el || (el as HTMLElement).hidden) return null;
+            const b = el.getBoundingClientRect();
+            return { left: b.left, right: b.right, width: b.width };
+          };
+          const bar = r('[data-id="text:code"] .codeblock-bar')!;
+          const btns = ["insert-code", "open-code", "copy-code"].map((t) =>
+            r(`[data-id="text:code"] [data-testid="${t}"]`)!,
+          );
+          const branch = document.querySelector<HTMLElement>('[data-testid="branch"]');
+          return {
+            overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            find: r('[data-testid="findbar"]')!,
+            jump: r('[data-testid="jump-latest"]'),
+            buttonsInBar: btns.every((b) => b.left >= bar.left - 0.5 && b.right <= bar.right + 0.5),
+            buttonsApart: btns.every((b, i) => i === 0 || b.left >= btns[i - 1].right - 0.5),
+            branchShown: !!branch && getComputedStyle(branch).display !== "none",
+            box: r(".box")!.width,
+          };
+        });
+        assert.ok(m.overflow <= 0, `horizontal overflow ${m.overflow}px`);
+        assert.ok(
+          m.find.left >= 0 && m.find.right <= width,
+          `find bar in view (${m.find.left}–${m.find.right})`,
+        );
+        assert.ok(m.jump && m.jump.left >= 0 && m.jump.right <= width, "Jump to latest in view");
+        assert.ok(m.buttonsInBar && m.buttonsApart, "Insert, Open and Copy fit the bar without overlapping");
+        assert.equal(m.branchShown, width > 340, "the branch gives way in a narrow panel");
+        if (width >= 900) assert.ok(Math.abs(m.box - 670) < 1, `box capped at 670px (${m.box})`);
+        else assert.ok(m.box > width - 60, `box fills a narrow panel (${m.box})`);
+      });
+    }
+
+    it("deletes an archived session from History's Archived view after a confirmation", async () => {
+      await host({
+        type: "state",
+        state: baseState({
+          archivedSessions: [
+            {
+              id: "ses_old",
+              title: "Old work",
+              created: 1,
+              updated: 2,
+              agent: "build",
+              modelKey: null,
+              outcome: null,
+              variant: null,
+              cost: 0,
+              archived: true,
+            },
+          ],
+        }),
+      });
+      await page.click('[data-testid="history-button"]');
+      await page.click('[data-testid="history-archived"]');
+      await page.click('[data-testid="session-delete"]');
+      assert.match(await text('[data-testid="dialog"]'), /Old work/);
+      await page.click('[data-testid="delete-confirm"]');
+      assert.deepEqual(await lastSent("deleteSession"), { type: "deleteSession", id: "ses_old" });
+    });
+
+    it("opens find with Cmd+F too (macOS)", async () => {
+      await page.focus("textarea");
+      await page.keyboard.down("Meta");
+      await page.keyboard.press("f");
+      await page.keyboard.up("Meta");
+      assert.equal(await page.$eval('[data-testid="findbar"]', (b) => (b as HTMLElement).hidden), false);
+    });
+
     for (const width of [300, 400, 520]) {
       it(`fits the timeline at ${width}px with the gutter the spec gives`, async () => {
         await page.setViewport({ width, height: 900 });
@@ -1434,6 +1951,9 @@ describe(
     it("stops the pulse with reduced motion and uses the focus colour for live dots in high contrast", async () => {
       await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
       await host({ type: "transcript", items: TIMELINE });
+      await host({ type: "state", state: baseState({ busy: true }) });
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(await page.$('[data-testid="status-word"] .cur'), null, "no stepping cursor");
       assert.equal(
         await page.$eval(`${entry("tool:t3")} .dot`, (d) => getComputedStyle(d).animationName),
         "none",

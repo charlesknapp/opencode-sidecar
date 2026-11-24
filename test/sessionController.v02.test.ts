@@ -321,6 +321,29 @@ describe("steering and queued messages", () => {
     assert.equal(c.pending.length, 0);
   });
 
+  it("switches a waiting message between queue and steer in OpenCode", async () => {
+    const { c, client } = await running();
+    c.handleRawEvent(
+      raw("session.inbox.enqueued", {
+        sessionID: "ses_1",
+        inboxID: "msg_q",
+        item: { type: "user", payload: { text: "fix it" }, delivery: "queue" },
+      }),
+    );
+    await c.setPendingDelivery("msg_q", "steer");
+    assert.deepEqual(client.callsTo("setInboxDelivery")[0].args, ["ses_1", "msg_q", "steer"]);
+    assert.equal(c.pending[0].delivery, "steer");
+    // Already that way, or unknown: nothing is sent.
+    await c.setPendingDelivery("msg_q", "steer");
+    await c.setPendingDelivery("msg_gone", "queue");
+    assert.equal(client.callsTo("setInboxDelivery").length, 1);
+    // A change made in another client arrives as an event.
+    c.handleRawEvent(
+      raw("session.inbox.delivery.changed", { sessionID: "ses_1", inboxID: "msg_q", delivery: "queue" }),
+    );
+    assert.equal(c.pending[0].delivery, "queue");
+  });
+
   it("reports when a message was already delivered", async () => {
     const { c, client, emitted } = await running();
     c.handleRawEvent(

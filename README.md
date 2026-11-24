@@ -20,22 +20,22 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 
 ## OpenCode coverage
 
-| OpenCode                                   | In Sidecar                                                                                     |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| Sessions                                   | History with search, rename, fork from any prompt, archive and restore, new session            |
-| Prompts and delivery                       | Send, **steer** the running task or **queue** the next message; edit or remove pending ones    |
-| Agents and models                          | Agent switch (Shift+Tab), models by provider, variants, defaults per workspace                 |
-| Tools                                      | A timeline row per call: shell IN/OUT, reads, edits with diffs, writes, searches, and the rest |
-| Subagents                                  | Live rows with prompt, activity, Stop and Open; their requests and reports come back to you    |
-| Permissions                                | Yes, Always allow (when offered), No, or No with an instruction for the agent                  |
-| Questions                                  | A tabbed form with options, an Other answer and descriptions                                   |
-| Commands and skills                        | The `/` palette with OpenCode's commands (yours too), `@skill` and `@agent` mentions           |
-| Context                                    | Files, folders and selections, `@` mentions found by OpenCode's search, pasted images          |
-| Rewind                                     | Rewind with or without code, and Restore or Apply a rewind staged in another client            |
-| Shell, compaction                          | `!command`, `/compact`                                                                         |
-| Usage                                      | Context, cost, steps, cache hits and a prompt-cache estimate                                   |
-| Agent changes                              | Kept apart from your own edits, in VS Code's diff editor                                       |
-| Other clients (terminal UI, other windows) | Followed live: new sessions, renames, rewinds, agent and model choices                         |
+| OpenCode                                   | In Sidecar                                                                                          |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| Sessions                                   | History with search, rename, fork from any prompt, archive and restore, new session                 |
+| Prompts and delivery                       | Send, **steer** the running task or **queue** the next message; switch, edit or remove pending ones |
+| Agents and models                          | Agent switch (Shift+Tab), models by provider, variants, defaults per workspace                      |
+| Tools                                      | A timeline row per call: shell IN/OUT, reads, edits with diffs, writes, searches, and the rest      |
+| Subagents                                  | Live rows with prompt, activity, Stop and Open; their requests and reports come back to you         |
+| Permissions                                | Yes, Always allow (when offered), No, or No with an instruction for the agent                       |
+| Questions                                  | A tabbed form with options, an Other answer and descriptions                                        |
+| Commands and skills                        | The `/` palette with OpenCode's commands (yours too), `@skill` and `@agent` mentions                |
+| Context                                    | Files, folders and selections, `@` mentions found by OpenCode's search, pasted images               |
+| Rewind                                     | Rewind with or without code, and Restore or Apply a rewind staged in another client                 |
+| Shell, compaction                          | `!command`, `/compact`                                                                              |
+| Usage                                      | Context, cost, steps, cache hits and a prompt-cache estimate                                        |
+| Agent changes                              | Kept apart from your own edits, in VS Code's diff editor                                            |
+| Other clients (terminal UI, other windows) | Followed live: new sessions, renames, rewinds, agent and model choices                              |
 
 ## A tour
 
@@ -44,7 +44,7 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 - **Live subagents.** Each one shows its task, prompt, current activity, tool count and time, with **Stop** and **Open ›** into its own conversation. Its report comes back as one line you can expand.
 - **Answer where you type.** Permission requests and questions replace the message box until answered: _1 Yes_, _2 Yes, always allow_ (when OpenCode offers it), _3 No_, or type what the agent should do instead. Nothing is ever approved for you, and sensitive paths get a warning.
 - **A message box with everything at hand.** Type **@** to mention a file, folder, subagent or skill. Paste or drop a screenshot, or use **+** for a file, the selection, a workspace search or an image. **/** opens the action palette: OpenCode's commands, `/compact`, `!command`, model, session and settings. A ring fills with the context in use (click it for context, cost, steps, the task budget and Compact), and the ◷ clock estimates the prompt cache for models that use one. The model pill has variant and Budget Guard sliders. Shift+Tab switches the agent. While the agent works you can **steer** it or **queue** your next message.
-- **Guard rails.** Budget Guard stops runaway tasks at a local cost or step limit. Agent changes are kept apart from your workspace changes. Native notifications tell you when a task completes, needs input, fails or is stopped.
+- **Guard rails.** Budget Guard stops runaway tasks at a local cost or step limit. Agent changes are kept apart from your workspace changes. Native notifications tell you when a task completes, needs input (saying what it asks), fails or is stopped; a count on Sidecar's icon shows answers that are waiting, even with the panel hidden.
 - **Sessions.** **Fork** a conversation from any prompt into a new session, **archive** sessions you are done with, and search **History**. **Copy** and **Bookmark** sit under every final answer.
 
 |                                                                    Timeline                                                                    |                                                               Tool calls                                                               |                                                                           Subagents                                                                            |
@@ -77,25 +77,33 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 
 ## Using Sidecar
 
-| Key                  | Where              | What it does                             |
-| -------------------- | ------------------ | ---------------------------------------- |
-| Enter / Shift+Enter  | Message box        | Send / new line                          |
-| @, ↑/↓, Enter or Tab | Message box        | Mention: open the list, move, pick       |
-| Esc                  | Message box        | Stop the running task                    |
-| Shift+Tab            | Message box        | Switch the agent (Build ↔ Plan)          |
-| 1, 2, 3 / Esc        | Permission request | Pick an answer by its number / No        |
-| 1–9, ←/→, Esc        | Question           | Pick an option, switch questions, cancel |
-| ←/→                  | Slider in a menu   | Change the variant or Budget Guard level |
-| Cmd+Alt+O (macOS)    | Anywhere           | Focus the chat                           |
+| Key                  | Where                              | What it does                                        |
+| -------------------- | ---------------------------------- | --------------------------------------------------- |
+| Enter / Shift+Enter  | Message box                        | Send / new line                                     |
+| Alt+Enter            | Message box, while the agent works | Send this one the other way (steer ↔ queue)         |
+| ↑/↓                  | Empty message box                  | Recall this session's earlier prompts               |
+| @, ↑/↓, Enter or Tab | Message box                        | Mention: open the list, move, pick                  |
+| Esc                  | Message box                        | Stop the running task                               |
+| Shift+Tab            | Message box                        | Switch the agent (Build ↔ Plan)                     |
+| 1, 2, 3 / Esc        | Permission request                 | Pick an answer by its number / No                   |
+| 1–9, ←/→, Esc        | Question                           | Pick an option, switch questions, cancel            |
+| ←/→                  | Slider in a menu                   | Change the variant or Budget Guard level            |
+| Ctrl/Cmd+F           | The chat                           | Find in the conversation (Enter / Shift+Enter, Esc) |
+| Cmd+Alt+O (macOS)    | Anywhere                           | Focus the chat                                      |
 
-On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctrl+Alt types characters on many keyboard layouts).
+On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctrl+Alt types characters on many keyboard layouts). The Command Palette also has **Sidecar: New Session**, **Stop**, **Show History** and **Export Session to Markdown**; bind any of them in Keyboard Shortcuts.
 
+- **Always-allowed actions.** Choosing _Yes, always allow_ makes OpenCode save a rule for the folder. **/ → Always-allowed actions…** lists them, and you can remove any rule so OpenCode asks again.
+- **Jump to latest.** Scroll up while the agent works and a **↓ Jump to latest** pill (with how many steps are new) takes you back to the end.
 - **Mentions.** Type `@` and pick from the list, or keep typing to search: files and folders (found by OpenCode), subagents such as `@explore`, and OpenCode's skills. OpenCode reads mentioned files itself, and a mentioned subagent or skill is passed to the agent as such.
 - **Images.** Paste or drop a PNG, JPEG, GIF or WebP into the message box, or pick image files with **+ → Attach image…**. Very large screenshots are scaled down. Sidecar tells you when the selected model doesn't list image input in OpenCode.
 - **Commands.** Type `/` for the palette, or type `/name arguments` directly. OpenCode's built-in commands (such as `/init` and `/review`) and any you define are listed for the folder. `!git status` runs a shell command through OpenCode.
 - **Rewind.** Hover a prompt for ↺ (and Fork). Rewind asks first in a dialog, then removes that prompt and everything after it from the session. _Rewind conversation and code_ also undoes OpenCode's file changes since then. Rewind cannot be undone and is available while the agent is idle.
-- **Fork and archive.** Hover a prompt and click **Fork** to continue in a new session that has the conversation before that prompt (the prompt goes into the message box). **Fork session** in the `/` palette copies the whole conversation. The original stays as it was. **Archive** a session from History or the palette; History's **Archived sessions** lists them with **Restore**.
-- **Steer and queue.** While the agent works, Enter either adds your instruction at its next step (steer) or runs it after the task (queue), as chosen in the agent menu. Messages not yet delivered are listed above the box with **Edit** and **Remove**.
+- **Fork and archive.** Hover a prompt and click **Fork** to continue in a new session that has the conversation before that prompt (the prompt goes into the message box). **Fork session** in the `/` palette copies the whole conversation. The original stays as it was. **Archive** a session from History or the palette; History's **Archived sessions** lists them with **Restore** and **Delete permanently**. **Delete session…** in the palette removes the open one. Deleting always asks first.
+- **Code blocks.** Besides **Copy code**, a finished block can be **inserted at the cursor** of your editor (an ordinary edit, so Undo reverts it) or **opened in a new editor** in its language.
+- **Export.** **/ → Export to Markdown** (or the command) opens the session as a Markdown document: prompts, answers, tool calls with their commands, decisions and subagent reports, without thinking or long output.
+- **Branch and MCP.** The header shows the Git branch the agent works on (from VS Code's Git). **/ → MCP servers…** shows the folder's MCP servers as OpenCode reports them (connected, failed with the reason, needs sign-in).
+- **Steer and queue.** While the agent works, a switch in the message box's footer chooses what Enter does: **steer** (the agent reads your message at its next step; blue) or **queue** (it is sent when the task ends; purple, and the box border follows). In a narrow panel the switch shows only the chosen mode, and a click flips it. **Alt+Enter** sends one message the other way. Messages not yet delivered are listed above the box, each with a button to switch it between steer and queue, **Edit** and **Remove**.
 - **Budget Guard** is a local per-task limit on cost and steps, set in the model menu. It warns at 80% and then stops the agent through OpenCode's own cancellation, offering **Continue once**, **Increase budget** or **Start new session**. Defaults: Small $0.10 / 20 steps, Medium $0.30 / 50, Large $1.00 / 120, Custom $0.50 / 80. If OpenCode reports no cost, only steps count.
 - **Context ring.** It fills as the context window does, from the tokens OpenCode reports after each step and the model's context limit, and turns to your theme's warning colour from 70% and its error colour from 90%. Hover it for the numbers; click it for the session's usage and **Compact conversation**.
 - **Prompt cache clock.** It counts down `opencodeSidecar.cacheWarmMinutes` (default 5) from the last step, and shows only when that step reported prompt-cache tokens, so a model without a prompt cache (such as most local ones) never shows it. It is an estimate: OpenCode reports cache tokens, not your provider's timer. Set it to `0` to hide the clock.
@@ -116,25 +124,25 @@ On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctr
 
 ### Settings
 
-| Setting                                            | Default    | Description                                                                                                            |
-| -------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `opencodeSidecar.executablePath`                   | empty      | Path to `opencode`; empty searches `PATH` and common install locations.                                                |
-| `opencodeSidecar.serverUrl`                        | empty      | Use a specific OpenCode server instead of the local background service.                                                |
-| `opencodeSidecar.allowRemoteServer`                | `false`    | Allow `serverUrl` to point at a non-loopback host.                                                                     |
-| `opencodeSidecar.defaultModel`                     | empty      | `providerID/modelID` to preselect for new workspaces.                                                                  |
-| `opencodeSidecar.defaultAgent`                     | empty      | Agent to preselect, such as `build` or `plan`.                                                                         |
-| `opencodeSidecar.autoStart`                        | `false`    | Start the OpenCode background service when the view opens.                                                             |
-| `opencodeSidecar.stickyPrompt`                     | `true`     | Keep the prompt of the turn you're reading pinned.                                                                     |
-| `opencodeSidecar.statusWords`                      | `true`     | A playful word per run (such as _Riding along…_) next to the turning mark while the agent works; off shows _Working…_. |
-| `opencodeSidecar.activity`                         | `detailed` | `detailed` shows every tool call; `grouped` folds runs of calls into a line.                                           |
-| `opencodeSidecar.cacheWarmMinutes`                 | `5`        | Your provider's prompt-cache lifetime for the clock; `0` hides it.                                                     |
-| `opencodeSidecar.showUsage`                        | `true`     | Show context, cost and step figures.                                                                                   |
-| `opencodeSidecar.showStatusBarItem`                | `true`     | Show the Sidecar item in the Status Bar.                                                                               |
-| `opencodeSidecar.budget.default`                   | `medium`   | Budget level for workspaces without a saved choice.                                                                    |
-| `opencodeSidecar.budget.small/medium/large/custom` | see above  | `{ "maxCost": USD, "maxSteps": n }`; `0` disables that metric.                                                         |
-| `opencodeSidecar.budget.warnPercent`               | `80`       | Warn at this share of the budget.                                                                                      |
-| `opencodeSidecar.budget.contextWarnPercent`        | `80`       | Warn when the context window is this full; `0` turns it off.                                                           |
-| `opencodeSidecar.notifications.*`                  | `true`     | `taskComplete`, `needsInput`, `taskFailed` and `budgetStopped` notifications.                                          |
+| Setting                                            | Default    | Description                                                                                                                                 |
+| -------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `opencodeSidecar.executablePath`                   | empty      | Path to `opencode`; empty searches `PATH` and common install locations.                                                                     |
+| `opencodeSidecar.serverUrl`                        | empty      | Use a specific OpenCode server instead of the local background service.                                                                     |
+| `opencodeSidecar.allowRemoteServer`                | `false`    | Allow `serverUrl` to point at a non-loopback host.                                                                                          |
+| `opencodeSidecar.defaultModel`                     | empty      | `providerID/modelID` to preselect for new workspaces.                                                                                       |
+| `opencodeSidecar.defaultAgent`                     | empty      | Agent to preselect, such as `build` or `plan`.                                                                                              |
+| `opencodeSidecar.autoStart`                        | `false`    | Start the OpenCode background service when the view opens.                                                                                  |
+| `opencodeSidecar.stickyPrompt`                     | `true`     | Keep the prompt of the turn you're reading pinned.                                                                                          |
+| `opencodeSidecar.statusWords`                      | `true`     | Playful words (such as _Riding along…_), a new one every few seconds, next to the turning mark while the agent works; off shows _Working…_. |
+| `opencodeSidecar.activity`                         | `detailed` | `detailed` shows every tool call; `grouped` folds runs of calls into a line.                                                                |
+| `opencodeSidecar.cacheWarmMinutes`                 | `5`        | Your provider's prompt-cache lifetime for the clock; `0` hides it.                                                                          |
+| `opencodeSidecar.showUsage`                        | `true`     | Show context, cost and step figures.                                                                                                        |
+| `opencodeSidecar.showStatusBarItem`                | `true`     | Show the Sidecar item in the Status Bar.                                                                                                    |
+| `opencodeSidecar.budget.default`                   | `medium`   | Budget level for workspaces without a saved choice.                                                                                         |
+| `opencodeSidecar.budget.small/medium/large/custom` | see above  | `{ "maxCost": USD, "maxSteps": n }`; `0` disables that metric.                                                                              |
+| `opencodeSidecar.budget.warnPercent`               | `80`       | Warn at this share of the budget.                                                                                                           |
+| `opencodeSidecar.budget.contextWarnPercent`        | `80`       | Warn when the context window is this full; `0` turns it off.                                                                                |
+| `opencodeSidecar.notifications.*`                  | `true`     | `taskComplete`, `needsInput`, `taskFailed` and `budgetStopped` notifications (the first two not while you watch the chat).                  |
 
 ## Privacy and security
 

@@ -165,6 +165,75 @@ describe("HTTP OpenCode client", () => {
     assert.equal(q.get("order"), "desc");
   });
 
+  it("lists and removes a folder's saved permissions, scoped to its OpenCode project", async () => {
+    const { fn, captured } = mockFetch({
+      "GET /api/location": () =>
+        json({ directory: "/r", project: { id: "prj_1", directory: "/r", canonical: "/r" } }),
+      "GET /api/permission/saved": () =>
+        json({
+          data: [
+            {
+              id: "ps_old",
+              projectID: "prj_1",
+              action: "bash",
+              resource: "npm test *",
+              time: { created: 1, updated: 1 },
+            },
+            {
+              id: "ps_new",
+              projectID: "prj_1",
+              action: "edit",
+              resource: "src/**",
+              time: { created: 5, updated: 5 },
+            },
+            {
+              id: "ps_other",
+              projectID: "prj_2",
+              action: "bash",
+              resource: "rm *",
+              time: { created: 9, updated: 9 },
+            },
+          ],
+        }),
+      "DELETE /api/permission/saved/ps_old": () => new Response(null, { status: 204 }),
+    });
+    const c = new HttpOpenCodeClient({ url: "http://127.0.0.1:9" }, fn);
+    const project = await c.projectId("/r");
+    assert.equal(project, "prj_1");
+    assert.equal(new URL(captured[0].url).searchParams.get("location[directory]"), "/r");
+    // Newest first, and never another project's rule even if the server returned it.
+    assert.deepEqual(await c.listSavedPermissions("prj_1"), [
+      { id: "ps_new", action: "edit", resource: "src/**", created: 5 },
+      { id: "ps_old", action: "bash", resource: "npm test *", created: 1 },
+    ]);
+    assert.equal(new URL(captured[1].url).searchParams.get("projectID"), "prj_1");
+    await c.removeSavedPermission("ps_old");
+    assert.equal(captured[2].method, "DELETE");
+  });
+
+  it("deletes a session and lists the folder's MCP servers with their state", async () => {
+    const { fn, captured } = mockFetch({
+      "DELETE /api/session/ses_9": () => new Response(null, { status: 204 }),
+      "GET /api/mcp": () =>
+        json({
+          location: { directory: "/r" },
+          data: [
+            { name: "github", status: { status: "connected" }, title: "GitHub" },
+            { name: "db", status: { status: "failed", error: "spawn ENOENT" } },
+            { name: "odd", status: { status: "unknown-state" } },
+          ],
+        }),
+    });
+    const c = new HttpOpenCodeClient({ url: "http://127.0.0.1:9" }, fn);
+    await c.deleteSession("ses_9");
+    assert.equal(captured[0].method, "DELETE");
+    assert.deepEqual(await c.listMcpServers("/r"), [
+      { name: "github", title: "GitHub", status: "connected" },
+      { name: "db", status: "failed", error: "spawn ENOENT" },
+    ]);
+    assert.equal(new URL(captured[1].url).searchParams.get("location[directory]"), "/r");
+  });
+
   it("lists the subagent sessions of a session by parentID", async () => {
     const { fn, captured } = mockFetch({
       "GET /api/session": () =>

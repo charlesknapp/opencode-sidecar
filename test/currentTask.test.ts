@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import {
   CONTINUE_TEXT,
   decideNotification,
+  oneLine,
+  permissionDetail,
   deriveTaskFromHistory,
   summarizeTask,
   type TaskNotice,
@@ -194,8 +196,36 @@ describe("notification decisions", () => {
     );
   });
 
-  it("always shows needs-input (prominent), failure and budget stop", () => {
-    for (const k of ["needs-input", "failed", "budget-stopped"] as const) {
+  it("suppresses needs-input while the user is watching the chat, where the request is shown", () => {
+    const watching = { viewVisible: true, windowFocused: true };
+    assert.equal(decideNotification(notice("needs-input"), allOn, watching).show, false);
+    assert.equal(
+      decideNotification(notice("needs-input"), allOn, { viewVisible: true, windowFocused: false }).show,
+      true,
+    );
+    assert.equal(
+      decideNotification(notice("needs-input"), allOn, { viewVisible: false, windowFocused: true }).show,
+      true,
+    );
+  });
+
+  it("says what OpenCode is asking, redacted and on one line", () => {
+    const n = { ...notice("needs-input"), detail: permissionDetail("bash", ["npm test -- session"]) };
+    assert.equal(
+      decideNotification(n, allOn, { viewVisible: false, windowFocused: true }).message,
+      "❓ OpenCode is waiting for you: permission for bash: npm test -- session",
+    );
+    assert.equal(
+      permissionDetail("bash", ["curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwx' https://x", "two"]),
+      "permission for bash: curl -H 'Authorization: Bearer [redacted]' https://x (+1)",
+    );
+    assert.equal(permissionDetail("webfetch", []), "permission for webfetch");
+    assert.equal(oneLine("a\n  b", 120), "a b");
+    assert.equal(oneLine("x".repeat(200), 10), "xxxxxxxxx…");
+  });
+
+  it("always shows failure and budget stop", () => {
+    for (const k of ["failed", "budget-stopped"] as const) {
       assert.equal(
         decideNotification(notice(k), allOn, { viewVisible: true, windowFocused: true }).show,
         true,
@@ -203,7 +233,7 @@ describe("notification decisions", () => {
       );
     }
     assert.equal(
-      decideNotification(notice("needs-input"), allOn, { viewVisible: true, windowFocused: true }).severity,
+      decideNotification(notice("needs-input"), allOn, { viewVisible: false, windowFocused: true }).severity,
       "warning",
     );
     assert.equal(

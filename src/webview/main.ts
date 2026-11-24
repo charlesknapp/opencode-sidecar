@@ -11,7 +11,9 @@ import type {
   FormAnswer,
   FormField,
   InboxDelivery,
+  McpServerInfo,
   MentionCandidate,
+  SavedPermission,
   PromptMention,
   SubagentView,
   TranscriptItem,
@@ -66,7 +68,8 @@ const itemEls = new Map<string, HTMLElement>();
 let sessionsOpen = false;
 let changesOpen = false;
 let draft = "";
-let delivery: InboxDelivery = "steer";
+let deliveryMode: InboxDelivery = "steer";
+const otherDelivery = (): InboxDelivery => (deliveryMode === "steer" ? "queue" : "steer");
 /** `@` suggestions picked while typing this draft; sent with it when their token is still there. */
 let mentions: PromptMention[] = [];
 /** Copy feedback per button key ("msg:<itemId>" or "code:<itemId>:<n>"). */
@@ -93,13 +96,13 @@ let subagentSignature = "";
 const persisted = vscode.getState() as
   { draft?: string; delivery?: InboxDelivery; mentions?: PromptMention[] } | undefined;
 if (persisted?.draft) draft = persisted.draft;
-if (persisted?.delivery === "queue") delivery = "queue";
+if (persisted?.delivery === "queue") deliveryMode = "queue";
 if (Array.isArray(persisted?.mentions)) mentions = persisted.mentions;
 
 const t = (key: StringKey) => translate(state?.locale ?? "en", key);
 
 function persist() {
-  vscode.setState({ draft, delivery, mentions });
+  vscode.setState({ draft, delivery: deliveryMode, mentions });
 }
 
 // ------------------------------------------------------------------- icons
@@ -117,15 +120,50 @@ const ICON_PATHS: Record<string, string[]> = {
   ],
   newchat: ["M8 2.3a5.7 5.7 0 0 1 5 8.4l.8 2.8-2.8-.8A5.7 5.7 0 1 1 8 2.3z", "M8 5.6v4.8M5.6 8h4.8"],
   pencil: ["M10.5 2.5l3 3L6 13H3v-3z"],
+  // Palette rows: compact (arrows meeting a line), model (a chip), shell, MCP servers,
+  // always-allowed (a shield with a tick) and settings (two sliders).
+  compact: ["M8 1.5v4.5", "M5.5 3.5L8 6l2.5-2.5", "M8 14.5V10", "M5.5 12.5L8 10l2.5 2.5", "M3 8h10"],
+  model: [
+    "M5 4.5h6a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-.5.5H5a.5.5 0 0 1-.5-.5V5a.5.5 0 0 1 .5-.5z",
+    "M6.5 2v2.5M9.5 2v2.5M6.5 11.5V14M9.5 11.5V14M2 6.5h2.5M2 9.5h2.5M11.5 6.5H14M11.5 9.5H14",
+  ],
+  terminal: [
+    "M3 3h10a.5.5 0 0 1 .5.5v9a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5v-9A.5.5 0 0 1 3 3z",
+    "M5 6.5L7 8l-2 1.5",
+    "M8.5 10H11",
+  ],
+  server: ["M3 2.5h10v4.5H3z", "M3 9h10v4.5H3z", "M5.5 4.75h1M5.5 11.25h1"],
+  allowed: ["M8 2.5l4.5 2v3.3c0 2.8-1.9 4.9-4.5 5.7-2.6-.8-4.5-2.9-4.5-5.7V4.5z", "M6 8l1.5 1.5L10.2 6.8"],
+  settings: ["M2.5 5h11M2.5 11h11", "M10.5 3.2v3.6M5.5 9.2v3.6"],
   plus: ["M8 3v10M3 8h10"],
   copy: [
     "M6.5 5h5A1.5 1.5 0 0 1 13 6.5v5a1.5 1.5 0 0 1-1.5 1.5h-5A1.5 1.5 0 0 1 5 11.5v-5A1.5 1.5 0 0 1 6.5 5z",
     "M3 10.5V4a1 1 0 0 1 1-1h6.5",
   ],
   up: ["M8 13V3M4 7l4-4 4 4"],
+  down: ["M8 3v10M4 9l4 4 4-4"],
+  // Steer: an arrow merging into the line of work. Queue: lines waiting, with a pause.
+  steer: ["M2.5 12.5c3.5 0 4.5-6 9-6h2", "M11.5 4.5l2 2-2 2", "M2.5 6.5h4"],
+  queue: ["M2.5 4.5h11", "M2.5 8h11", "M2.5 11.5h6", "M11 10v3", "M13.5 10v3"],
+  branch: [
+    "M5 2.4a1.6 1.6 0 1 1 0 3.2a1.6 1.6 0 1 1 0-3.2z",
+    "M5 10.4a1.6 1.6 0 1 1 0 3.2a1.6 1.6 0 1 1 0-3.2z",
+    "M11 2.4a1.6 1.6 0 1 1 0 3.2a1.6 1.6 0 1 1 0-3.2z",
+    "M5 5.6v4.8",
+    "M11 5.6c0 2.6-6 1.8-6 4.8",
+  ],
+  insert: ["M3 3.5h10", "M3 12.5h10", "M8 5.5v5", "M5.5 8.5l2.5 2 2.5-2"],
+  openfile: ["M9 2.5H4.5v11h7V5z", "M9 2.5V5h2.5", "M10 9.5h3.5", "M12 8l1.5 1.5L12 11"],
+  export: ["M8 2.5v7.5", "M5 5.5l3-3 3 3", "M3 9.5v3.5h10V9.5"],
+  trash: ["M2.5 4.5h11", "M6 4.5V3h4v1.5", "M4 4.5l.7 8.5h6.6l.7-8.5", "M6.7 7v4M9.3 7v4"],
   stop: ["F:M5 4h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"],
-  mode: ["M8 2.5l4.5 2v3.3c0 2.8-1.9 4.9-4.5 5.7-2.6-.8-4.5-2.9-4.5-5.7V4.5z"],
-  plan: ["M3 3.5h10M3 8h10M3 12.5h6"],
+  // Agents: Build is a hammer, Plan a clipboard with a checklist.
+  build: ["M9.3 2.2l4.5 4.5-2.1 2.1-4.5-4.5z", "M9.4 6.6L3 13"],
+  plan: [
+    "M6 2.5h4v2H6z",
+    "M6 3.5H4.5a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h7a.5.5 0 0 0 .5-.5V4a.5.5 0 0 0-.5-.5H10",
+    "M6.3 8.2l.8.8 1.4-1.5M9.5 8.5H11M6.3 11.2l.8.8 1.4-1.5M9.5 11.5H11",
+  ],
   chev: ["M4 6l4 4 4-4"],
   close: ["M4 4l8 8M12 4l-8 8"],
   search: ["M11.5 7a4.5 4.5 0 1 1-9 0a4.5 4.5 0 1 1 9 0", "M10.3 10.3L14 14"],
@@ -250,7 +288,14 @@ const composerEl = h("footer", { className: "composer" });
 /** The message box and its status lines float over the bottom of the conversation. */
 /** Status lines (a staged rewind, changes, pending messages) sit on the box's top edge. */
 const stripsEl = h("div", { className: "strips" }, revertEl, changesEl, pendingEl);
-const bottomEl = h("div", { className: "bottom" }, stripsEl, composerEl);
+/** "↓ Jump to latest" ("↓ 3 new"): shown above the box while the chat is scrolled up. */
+const jumpEl = h("button", {
+  className: "jump",
+  hidden: true,
+  "data-testid": "jump-latest",
+  onclick: () => jumpToLatest(),
+});
+const bottomEl = h("div", { className: "bottom" }, jumpEl, stripsEl, composerEl);
 app.append(headerEl, bannerEl, bookmarksEl, sessionsEl, subHeaderEl, scroller, bottomEl, statusLive);
 // The conversation scrolls under the floating box; its last line stays reachable above it.
 // The box keeps clear of the chat's scrollbar, whatever width the theme gives it.
@@ -300,6 +345,69 @@ sendBtn.addEventListener("click", () => {
   if (sendBtn.dataset.testid === "stop") stop();
   else submit();
 });
+/**
+ * While the agent works: does a message steer it (reach it at its next step) or wait in
+ * the queue until the task ends? A two-way switch in the footer, icons with tooltips;
+ * Alt+Enter sends one message the other way.
+ */
+const DELIVERY_TIPS: Record<InboxDelivery, string> = {
+  steer: "Steer: your message reaches the agent at its next step",
+  queue: "Queue: your message is sent when this task ends",
+};
+const deliveryBtn = (mode: InboxDelivery) =>
+  h(
+    "button",
+    {
+      className: `seg ${mode}`,
+      "data-testid": `delivery-${mode}`,
+      onclick: () => {
+        // In a narrow panel only the chosen segment shows, and clicking it flips the mode.
+        const compact = deliveryEl.classList.contains("compact");
+        if (deliveryMode === mode && !compact) return;
+        deliveryMode = deliveryMode === mode ? otherDelivery() : mode;
+        persist();
+        if (state) renderComposer(state);
+      },
+    },
+    icon(mode),
+  );
+const deliveryEl = h(
+  "div",
+  { className: "delivery", "aria-label": "While the agent works", hidden: true },
+  deliveryBtn("steer"),
+  deliveryBtn("queue"),
+);
+/** Under this panel width the switch shows only the chosen mode, as one button that flips it. */
+const DELIVERY_COMPACT_BELOW = 360;
+/**
+ * Paints the switch for the panel's width: two radio segments, or (narrow) a single toggle
+ * button whose tooltip and label say what a click does.
+ */
+function paintDelivery(): void {
+  const compact = app.clientWidth > 0 && app.clientWidth < DELIVERY_COMPACT_BELOW;
+  deliveryEl.classList.toggle("compact", compact);
+  deliveryEl.setAttribute("role", compact ? "group" : "radiogroup");
+  const other = otherDelivery();
+  const otherName = other === "steer" ? "Steer" : "Queue";
+  for (const b of deliveryEl.querySelectorAll<HTMLElement>(".seg")) {
+    const mode: InboxDelivery = b.classList.contains("steer") ? "steer" : "queue";
+    const on = mode === deliveryMode;
+    b.classList.toggle("on", on);
+    if (compact) {
+      b.removeAttribute("role");
+      b.removeAttribute("aria-checked");
+      const label = `${DELIVERY_TIPS[mode]}. Click to switch to ${otherName}`;
+      b.setAttribute("aria-label", label);
+      b.dataset.tip = `${label} (Alt+Enter sends one the other way)`;
+    } else {
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(on));
+      b.setAttribute("aria-label", DELIVERY_TIPS[mode]);
+      b.dataset.tip = `${DELIVERY_TIPS[mode]} (Alt+Enter sends one the other way)`;
+    }
+  }
+}
+new ResizeObserver(() => paintDelivery()).observe(app);
 const boxTools = h(
   "div",
   { className: "box-tools" },
@@ -312,6 +420,7 @@ const boxTools = h(
   h("span", { className: "grow" }),
   // Breaks the row before the model pill in a narrow panel (CSS orders the two last).
   h("span", { className: "brk", "aria-hidden": "true" }),
+  deliveryEl,
   modeBtn,
   sendBtn,
 );
@@ -371,11 +480,58 @@ modeBtn.addEventListener("click", () =>
   }),
 );
 
+// ↑/↓ recall this session's earlier prompts, as in a terminal: from an empty box, or
+// while a recalled prompt is shown unedited. Editing it makes it the draft again.
+let historyPos = -1;
+let historyDraft = "";
+/** This session's prompts, newest first, without repeats. */
+function promptHistory(): string[] {
+  const out: string[] = [];
+  for (let i = transcript.items.length - 1; i >= 0; i--) {
+    const it = transcript.items[i];
+    const text = it.kind === "user" ? it.text.trim() : "";
+    if (text && !out.includes(text)) out.push(text);
+  }
+  return out;
+}
+function showHistory(pos: number, hist: string[]): void {
+  historyPos = pos;
+  input.value = pos >= 0 ? hist[pos] : historyDraft;
+  draft = input.value;
+  persist();
+  autosize();
+  input.setSelectionRange(input.value.length, input.value.length);
+  updateMention();
+}
+/** Handles ↑/↓ for prompt history; true when the key was used. */
+function historyKey(e: KeyboardEvent): boolean {
+  if ((e.key !== "ArrowUp" && e.key !== "ArrowDown") || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey)
+    return false;
+  if (subView || e.isComposing) return false;
+  const hist = promptHistory();
+  const browsing = historyPos >= 0 && input.value === hist[historyPos];
+  if (!browsing && input.value !== "") return false;
+  if (e.key === "ArrowUp") {
+    if (historyPos + 1 >= hist.length) return browsing || hist.length > 0;
+    if (!browsing) historyDraft = input.value;
+    showHistory(browsing ? historyPos + 1 : 0, hist);
+  } else {
+    if (!browsing) return false;
+    showHistory(historyPos - 1, hist);
+  }
+  return true;
+}
+
 input.addEventListener("keydown", (e) => {
   if (mentionKey(e)) return;
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !e.altKey && !e.ctrlKey && !e.metaKey) {
+  if (historyKey(e)) {
     e.preventDefault();
-    submit();
+    return;
+  }
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    // Alt+Enter: this one message goes the other way (steer ↔ queue) while the agent works.
+    submit(e.altKey && !!state?.busy);
   } else if (e.key === "Escape" && state?.busy) {
     e.preventDefault();
     stop();
@@ -483,8 +639,10 @@ function autosize() {
   input.style.height = Math.min(input.scrollHeight, 240, Math.max(80, window.innerHeight * 0.4)) + "px";
 }
 
-function submit() {
+/** Sends the box; `flip` (Alt+Enter) sends this one message the other way while the agent works. */
+function submit(flip = false) {
   if (!state || state.connection.kind !== "connected") return;
+  const delivery = flip ? otherDelivery() : deliveryMode;
   const text = input.value;
   if (!text.trim()) return;
   const cmd = /^\/([\w.:/-]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
@@ -509,6 +667,7 @@ function submit() {
   }
   input.value = "";
   draft = "";
+  historyPos = -1;
   mentions = [];
   closeMention();
   persist();
@@ -691,13 +850,11 @@ function openMenu(anchor: HTMLElement, entries: MenuEntry[], opts: MenuOptions =
           "aria-label": o.label,
           "data-value": o.value,
           "data-tip": o.label,
-          onclick: (ev: Event) => {
-            ev.stopPropagation();
-            pickAt(i);
-          },
         }),
       );
-      const pickAt = (i: number) => {
+      // The choice the host knows about; a drag shows its steps and commits on release.
+      let committed = cur;
+      const show = (i: number) => {
         if (i < 0 || i >= opts2.length || i === cur) return;
         cur = i;
         dots.forEach((d, j) => {
@@ -705,8 +862,52 @@ function openMenu(anchor: HTMLElement, entries: MenuEntry[], opts: MenuOptions =
           d.setAttribute("aria-checked", String(j === cur));
         });
         valueEl.textContent = `(${opts2[cur].label})`;
+      };
+      const commit = () => {
+        if (cur === committed) return;
+        committed = cur;
         e.onSelect?.(opts2[cur].value);
       };
+      const pickAt = (i: number) => {
+        show(i);
+        commit();
+      };
+      /** The step whose dot is nearest the pointer, anywhere along the track. */
+      const nearest = (x: number) => {
+        let best = 0;
+        let dist = Infinity;
+        dots.forEach((d, j) => {
+          const r = d.getBoundingClientRect();
+          const dd = Math.abs(x - (r.left + r.width / 2));
+          if (dd < dist) {
+            dist = dd;
+            best = j;
+          }
+        });
+        return best;
+      };
+      // Click anywhere on the track, or press and drag along it.
+      const track = h("span", { className: "dots" }, ...dots);
+      track.addEventListener("pointerdown", (ev) => {
+        if (ev.button !== 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        track.setPointerCapture(ev.pointerId);
+        track.classList.add("dragging");
+        show(nearest(ev.clientX));
+      });
+      track.addEventListener("pointermove", (ev) => {
+        if (track.hasPointerCapture(ev.pointerId)) show(nearest(ev.clientX));
+      });
+      const release = (ev: PointerEvent) => {
+        if (!track.hasPointerCapture(ev.pointerId)) return;
+        track.releasePointerCapture(ev.pointerId);
+        track.classList.remove("dragging");
+        commit();
+      };
+      track.addEventListener("pointerup", release);
+      track.addEventListener("pointercancel", release);
+      track.addEventListener("click", (ev) => ev.stopPropagation());
       const row = h(
         "div",
         {
@@ -730,7 +931,7 @@ function openMenu(anchor: HTMLElement, entries: MenuEntry[], opts: MenuOptions =
           { className: "menu-text" },
           h("span", { className: "menu-label" }, e.label ?? "", " ", valueEl),
         ),
-        h("span", { className: "dots" }, ...dots),
+        track,
       );
       items.push(row);
       into.append(row);
@@ -962,6 +1163,18 @@ function confirmDialog(o: { title: string; body: string; choices: DialogChoice[]
   });
 }
 
+async function confirmDelete(id: string, title: string): Promise<void> {
+  const pick = await confirmDialog({
+    title: "Delete this session permanently?",
+    body: `“${title}” and its whole history are removed from OpenCode. This can't be undone. Archive it instead to only hide it.`,
+    choices: [
+      { value: "delete", label: "Delete permanently", danger: true, testid: "delete-confirm" },
+      { value: "keep", label: "Keep it", testid: "delete-keep" },
+    ],
+  });
+  if (pick === "delete") send({ type: "deleteSession", id });
+}
+
 async function confirmRewind(messageID: string): Promise<void> {
   const pick = await confirmDialog({
     title: "Rewind to before this prompt?",
@@ -1033,6 +1246,146 @@ document.addEventListener("focusin", (e) => {
 document.addEventListener("mousedown", () => hideTip(), true);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideTip();
+  // Ctrl/Cmd+F finds in the conversation (VS Code's own find doesn't reach a side bar view).
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f" && !dialogOpen) {
+    e.preventDefault();
+    openFind();
+  }
+});
+
+// -------------------------------------------------------------------- find
+//
+// A small bar over the top of the chat. Matches are marked with the CSS Custom
+// Highlight API, so the conversation's DOM is never changed; text that isn't shown
+// (inside a collapsed section) isn't counted.
+
+const findInput = h("input", {
+  className: "find-input",
+  type: "text",
+  placeholder: "Find in conversation",
+  "aria-label": "Find in conversation",
+  "data-testid": "find-input",
+  spellcheck: "false",
+}) as HTMLInputElement;
+const findCount = h("span", {
+  className: "find-count muted small",
+  "aria-live": "polite",
+  "data-testid": "find-count",
+});
+const findBtn = (label: string, name: "up" | "down" | "close", testid: string, onclick: () => void) =>
+  h(
+    "button",
+    { className: "ico", "data-tip": label, "aria-label": label, "data-testid": testid, onclick },
+    icon(name),
+  );
+const findEl = h(
+  "div",
+  { className: "findbar", role: "search", hidden: true, "data-testid": "findbar" },
+  findInput,
+  findCount,
+  findBtn("Previous match (Shift+Enter)", "up", "find-prev", () => stepFind(-1)),
+  findBtn("Next match (Enter)", "down", "find-next", () => stepFind(1)),
+  findBtn("Close (Esc)", "close", "find-close", () => closeFind()),
+);
+let findMatches: Range[] = [];
+let findIndex = -1;
+let findTimer = 0;
+const highlights = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
+const HighlightCtor = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+
+function findOpen(): boolean {
+  return !findEl.hidden;
+}
+function openFind(): void {
+  findEl.hidden = false;
+  findInput.focus();
+  findInput.select();
+  runFind(true);
+}
+function closeFind(): void {
+  findEl.hidden = true;
+  findMatches = [];
+  findIndex = -1;
+  highlights?.delete("sidecar-find");
+  highlights?.delete("sidecar-find-current");
+  input.focus();
+}
+function scheduleFind(): void {
+  clearTimeout(findTimer);
+  findTimer = window.setTimeout(() => runFind(false), 120);
+}
+/** Finds every visible match; `jump` moves to the first match below the top of the view. */
+function runFind(jump: boolean): void {
+  const q = findInput.value.trim().toLowerCase();
+  const before = findMatches[findIndex];
+  findMatches = [];
+  if (q) {
+    const walker = document.createTreeWalker(listEl, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const text = (n.textContent ?? "").toLowerCase();
+      for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + q.length)) {
+        const r = document.createRange();
+        r.setStart(n, i);
+        r.setEnd(n, i + q.length);
+        if (r.getClientRects().length) findMatches.push(r);
+      }
+    }
+  }
+  if (!findMatches.length) findIndex = -1;
+  else if (jump || findIndex < 0) {
+    const top = scroller.getBoundingClientRect().top;
+    findIndex = Math.max(
+      0,
+      findMatches.findIndex((r) => r.getBoundingClientRect().bottom > top),
+    );
+  } else {
+    // Keep the place after a redraw: the match nearest where the current one was.
+    const y = before?.getBoundingClientRect().top ?? 0;
+    let best = 0;
+    findMatches.forEach((r, i) => {
+      if (
+        Math.abs(r.getBoundingClientRect().top - y) <
+        Math.abs(findMatches[best].getBoundingClientRect().top - y)
+      )
+        best = i;
+    });
+    findIndex = best;
+  }
+  paintFind(jump);
+}
+function stepFind(dir: 1 | -1): void {
+  if (!findMatches.length) return;
+  findIndex = (findIndex + dir + findMatches.length) % findMatches.length;
+  paintFind(true);
+}
+function paintFind(scroll: boolean): void {
+  const n = findMatches.length;
+  findCount.textContent = findInput.value.trim() ? (n ? `${findIndex + 1} of ${n}` : "No results") : "";
+  findEl.classList.toggle("none", !!findInput.value.trim() && !n);
+  if (highlights && HighlightCtor) {
+    highlights.set("sidecar-find", new HighlightCtor(...findMatches));
+    highlights.set("sidecar-find-current", new HighlightCtor(...(n ? [findMatches[findIndex]] : [])));
+  }
+  if (!scroll || !n) return;
+  const rect = findMatches[findIndex].getBoundingClientRect();
+  const view = scroller.getBoundingClientRect();
+  // Bring the match to about a third of the way down, clear of the box at the bottom.
+  if (rect.top < view.top + 40 || rect.bottom > view.bottom - (bottomEl.offsetHeight + 20)) {
+    stickToBottom = false;
+    scroller.scrollTop += rect.top - (view.top + view.height / 3);
+  }
+}
+app.append(findEl);
+findInput.addEventListener("input", () => runFind(true));
+findInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    stepFind(e.shiftKey ? -1 : 1);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    closeFind();
+  }
 });
 window.addEventListener("blur", () => hideTip());
 
@@ -1217,7 +1570,7 @@ function modelMenu(): MenuEntry[] {
     out.push(
       item(m.name, () => send({ type: "selectModel", key: m.key }), {
         checked: m.key === s.selectedModel,
-        sub: m.contextLimit ? `${formatTokens(m.contextLimit)} context` : undefined,
+        sub: m.contextLimit ? `${formatTokens(m.contextLimit)} context` : "Context size not reported",
         testid: "model-option",
       }),
     );
@@ -1286,14 +1639,17 @@ function commandsMenu(): MenuEntry[] {
     heading("Context"),
     item("Attach current file", () => send({ type: "addCurrentFile" }), {
       icon: "file",
+      sub: "Add the file open in the editor to your message",
       disabled: !connected,
     }),
     item("Attach selection", () => send({ type: "addSelection" }), {
       icon: "selection",
+      sub: "Add the lines selected in the editor",
       disabled: !connected,
     }),
     item("Search workspace files…", () => send({ type: "searchFiles" }), {
       icon: "search",
+      sub: "Find a file in this folder to attach",
       disabled: !connected,
     }),
     item(
@@ -1303,7 +1659,7 @@ function commandsMenu(): MenuEntry[] {
         sessionsOpen = false;
         render();
       },
-      { icon: "bookmark" },
+      { icon: "bookmark", sub: "Answers you saved in this workspace" },
     ),
     item(
       "Session history…",
@@ -1313,12 +1669,13 @@ function commandsMenu(): MenuEntry[] {
         send({ type: "refreshSessions" });
         render();
       },
-      { icon: "history" },
+      { icon: "history", sub: "Open, search or restore earlier sessions" },
     ),
     sep(),
     heading("Model"),
     item("Switch model…", () => openMenu(modelBtn, modelMenu(), modelMenuOptions()), {
-      detail: model?.name,
+      icon: "model",
+      sub: model?.name ? `Now ${model.name}` : "Choose the model for this session",
       disabled: modelBtn.disabled,
       testid: "command-switch-model",
     }),
@@ -1326,6 +1683,7 @@ function commandsMenu(): MenuEntry[] {
     sep(),
     heading("Session"),
     item("/compact", () => send({ type: "compact" }), {
+      icon: "compact",
       sub: "Summarize the conversation to free context",
       disabled: !s?.currentSession,
       testid: "command-compact",
@@ -1335,7 +1693,7 @@ function commandsMenu(): MenuEntry[] {
       () => {
         if (s?.currentSession) startRename(s.currentSession.title);
       },
-      { disabled: !s?.currentSession },
+      { icon: "pencil", sub: "Give this session a clearer title", disabled: !s?.currentSession },
     ),
     item("Fork session", () => send({ type: "forkSession" }), {
       icon: "fork",
@@ -1348,16 +1706,43 @@ function commandsMenu(): MenuEntry[] {
       () => {
         if (s?.currentSession) send({ type: "archiveSession", id: s.currentSession.id, archived: true });
       },
-      { icon: "archive", disabled: !s?.currentSession, testid: "command-archive" },
+      {
+        icon: "archive",
+        sub: "Hide it from History; it can be restored",
+        disabled: !s?.currentSession,
+        testid: "command-archive",
+      },
     ),
-    item("New session", () => send({ type: "newSession" }), { icon: "newchat" }),
+    item("Export to Markdown", () => send({ type: "exportSession" }), {
+      icon: "export",
+      sub: "Open this session as a Markdown document",
+      disabled: !s?.currentSession,
+      testid: "command-export",
+    }),
+    item(
+      "Delete session…",
+      () => {
+        if (s?.currentSession) void confirmDelete(s.currentSession.id, s.currentSession.title);
+      },
+      {
+        icon: "trash",
+        sub: "Remove it from OpenCode for good",
+        disabled: !s?.currentSession,
+        testid: "command-delete",
+      },
+    ),
+    item("New session", () => send({ type: "newSession" }), {
+      icon: "newchat",
+      sub: "Start a fresh conversation in this folder",
+    }),
     sep(),
     heading("OpenCode commands"),
   ];
   for (const c of cmds.filter((c) => c.name !== "compact"))
     out.push(
       item(`/${c.name}`, () => insertCommand(`/${c.name} `), {
-        detail: c.description ?? undefined,
+        icon: "slash",
+        sub: c.description || "Insert it into the message box",
         testid: "command-option",
       }),
     );
@@ -1365,11 +1750,12 @@ function commandsMenu(): MenuEntry[] {
     out.push(note("OpenCode reports no commands for this folder."));
   out.push(
     item("!command", () => insertCommand("!"), {
+      icon: "terminal",
       sub: "Run a shell command in the session",
       testid: "command-shell",
     }),
     sep(),
-    heading("Customize"),
+    heading("Display"),
     toggle(
       "Pin the prompt you're reading",
       !!s?.prefs.stickyPrompt,
@@ -1393,9 +1779,132 @@ function commandsMenu(): MenuEntry[] {
       () => send({ type: "setPref", key: "statusWords", value: state?.prefs.statusWords === false }),
       "pref-words",
     ),
-    item("Sidecar settings…", () => send({ type: "openSettings" }), { testid: "open-settings" }),
+    sep(),
+    heading("Settings"),
+    item("MCP servers…", () => openMcpServers(), {
+      icon: "server",
+      sub: "The folder's MCP servers and their state",
+      testid: "mcp-servers",
+      disabled: state?.connection.kind !== "connected",
+    }),
+    item("Always-allowed actions…", () => openSavedPermissions(), {
+      icon: "allowed",
+      sub: "Rules saved when you chose Yes, always allow",
+      testid: "saved-permissions",
+      disabled: state?.connection.kind !== "connected",
+    }),
+    item("Sidecar settings…", () => send({ type: "openSettings" }), {
+      icon: "settings",
+      sub: "Open Sidecar's settings in VS Code",
+      testid: "open-settings",
+    }),
   );
   return out;
+}
+
+// ----------------------------------------------------------- MCP servers
+//
+// The MCP servers OpenCode has for the open folder and how each is doing (read-only).
+
+/** undefined while loading; null when OpenCode could not list them. */
+let mcpList: McpServerInfo[] | null | undefined;
+let mcpError = "";
+
+const MCP_STATUS: Record<McpServerInfo["status"], string> = {
+  connected: "● connected",
+  pending: "◌ connecting…",
+  disabled: "○ disabled",
+  failed: "✕ failed",
+  needs_auth: "! needs sign-in",
+};
+
+function openMcpServers(): void {
+  mcpList = undefined;
+  showMcpServers();
+  send({ type: "loadMcpServers" });
+}
+
+function showMcpServers(): void {
+  closeMenu();
+  openMenu(slashBtn, mcpServersMenu(), { width: "box", title: "MCP servers", maxHeight: 320 });
+  if (openMenuState) openMenuState.el.dataset.view = "mcp-servers";
+}
+
+function mcpServersMenu(): MenuEntry[] {
+  if (mcpList === undefined) return [note("Loading…")];
+  if (mcpList === null) return [note(`Couldn't load them: ${mcpError || "OpenCode did not answer."}`)];
+  if (!mcpList.length)
+    return [note("No MCP servers are configured for this folder. They are set up in OpenCode's config.")];
+  const out: MenuEntry[] = [];
+  for (const m of mcpList) {
+    out.push(stat(m.title || m.name, MCP_STATUS[m.status]));
+    if (m.error) out.push(note(m.error));
+  }
+  out.push(note("Shown as OpenCode reports them; manage servers in OpenCode."));
+  return out;
+}
+
+// ------------------------------------------------- always-allowed actions
+//
+// The rules OpenCode saved when "Yes, always allow" was chosen, for the open folder.
+// Removing one makes OpenCode ask again next time.
+
+/** undefined while loading; null when OpenCode could not list them. */
+let savedPerms: SavedPermission[] | null | undefined;
+let savedError = "";
+let reopenSaved = false;
+
+function openSavedPermissions(): void {
+  savedPerms = undefined;
+  showSavedPermissions();
+  send({ type: "loadSavedPermissions" });
+}
+
+function showSavedPermissions(): void {
+  // Redrawn in place: closed first, so openMenu doesn't take it for a second click on /.
+  closeMenu();
+  openMenu(slashBtn, savedPermissionsMenu(), {
+    width: "box",
+    title: "Always allowed in this folder",
+    maxHeight: 320,
+  });
+  if (openMenuState) openMenuState.el.dataset.view = "saved-permissions";
+}
+
+function savedPermissionsMenu(): MenuEntry[] {
+  if (savedPerms === undefined) return [note("Loading…")];
+  if (savedPerms === null) return [note(`Couldn't load them: ${savedError || "OpenCode did not answer."}`)];
+  if (!savedPerms.length)
+    return [
+      note(
+        "Nothing is always allowed here. Choosing “Yes, always allow” on a request adds a rule; it shows up here so you can remove it.",
+      ),
+    ];
+  return [
+    ...savedPerms.map((r) =>
+      item(r.resource || "(anything)", () => void confirmRemoveSaved(r), {
+        sub: `${r.action}${r.created ? ` · saved ${relativeTime(r.created)}` : ""} · click to remove`,
+        testid: "saved-permission",
+      }),
+    ),
+    note("OpenCode answers matching requests with Yes without asking. Remove a rule to be asked again."),
+  ];
+}
+
+async function confirmRemoveSaved(r: SavedPermission): Promise<void> {
+  const pick = await confirmDialog({
+    title: "Stop always allowing this?",
+    body: `${r.action}: ${r.resource || "(anything)"}. OpenCode will ask before doing this again.`,
+    choices: [
+      { value: "remove", label: "Stop always allowing", danger: true, testid: "saved-remove" },
+      { value: "keep", label: "Keep it", testid: "saved-keep" },
+    ],
+  });
+  if (pick !== "remove") return showSavedPermissions();
+  reopenSaved = true;
+  savedPerms = undefined;
+  send({ type: "removeSavedPermission", id: r.id });
+  showSavedPermissions();
 }
 
 function modelMenuOptions(): MenuOptions {
@@ -1484,6 +1993,8 @@ function usageMenu(): MenuEntry[] {
   out.push(
     sep(),
     item("Compact conversation", () => send({ type: "compact" }), {
+      icon: "compact",
+      sub: "Summarize the conversation to free context",
       disabled: !s.currentSession,
       testid: "compact",
     }),
@@ -1518,7 +2029,12 @@ function usageStats(s: ViewState): MenuEntry[] {
   return out;
 }
 
-/** The agent (Build, Plan, …) with OpenCode's descriptions, and steer or queue. */
+/** A hammer for Build, a clipboard for Plan, a person for any other agent. */
+function agentIcon(id: string | undefined): keyof typeof ICON_PATHS {
+  return id === "plan" ? "plan" : id === "build" || id === undefined ? "build" : "agent";
+}
+
+/** The agent (Build, Plan, …) with OpenCode's descriptions. */
 function modeMenu(): MenuEntry[] {
   const s = state;
   if (!s) return [];
@@ -1527,43 +2043,47 @@ function modeMenu(): MenuEntry[] {
     out.push(
       item(a.name, () => send({ type: "selectAgent", id: a.id }), {
         checked: a.id === s.selectedAgent,
-        icon: a.id === "plan" ? "plan" : "mode",
-        sub: a.description ?? undefined,
+        icon: agentIcon(a.id),
+        sub: a.description || "Defined in your OpenCode config",
         testid: "agent-option",
       }),
     );
   if (!(s.agents ?? []).length) out.push(note("No agents available."));
-  out.push(sep(), heading("While the agent works"));
-  for (const mode of ["steer", "queue"] as const)
-    out.push(
-      item(
-        mode === "steer" ? t("steer") : t("queue"),
-        () => {
-          delivery = mode;
-          persist();
-          render();
-        },
-        {
-          checked: delivery === mode,
-          sub:
-            mode === "steer"
-              ? "Your message reaches the agent at its next step."
-              : "Your message is sent when the current task ends.",
-          testid: `mode-${mode}`,
-        },
-      ),
-    );
   return out;
 }
 
 // --------------------------------------------------------------- scrolling
 
 let stickToBottom = true;
+/** How many steps the chat had when the reader scrolled away from its end. */
+let itemsWhenLeft = 0;
 scroller.addEventListener("scroll", () => {
+  const was = stickToBottom;
   stickToBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+  if (was && !stickToBottom) itemsWhenLeft = shown().items.length;
+  renderJump();
 });
 function maybeScroll() {
   if (stickToBottom) scroller.scrollTop = scroller.scrollHeight;
+  renderJump();
+}
+function renderJump(): void {
+  const away = !stickToBottom && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight >= 48;
+  jumpEl.hidden = !away;
+  if (!away) return;
+  const fresh = Math.max(0, shown().items.length - itemsWhenLeft);
+  const label = fresh ? `${fresh} new` : "Jump to latest";
+  if (jumpEl.dataset.label === label) return;
+  jumpEl.dataset.label = label;
+  jumpEl.setAttribute("aria-label", fresh ? `Jump to latest, ${fresh} new` : "Jump to latest");
+  jumpEl.replaceChildren(icon("down"), label);
+}
+function jumpToLatest(): void {
+  stickToBottom = true;
+  const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  jumpEl.hidden = true;
+  input.focus();
 }
 
 // -------------------------------------------------------------- formatting
@@ -1897,8 +2417,24 @@ function renderHeader(s: ViewState) {
       },
       icon(name),
     );
+  // The Git branch (or detached commit) the agent works on, from VS Code's Git.
+  const ws = s.workspace;
+  const branch = ws.branch ?? (ws.detachedAt ? `detached at ${ws.detachedAt}` : null);
+  const branchEl = branch
+    ? h(
+        "span",
+        {
+          className: "p-branch",
+          "data-tip": ws.branch ? `Git branch: ${ws.branch}` : `Detached HEAD at ${ws.detachedAt}`,
+          "data-testid": "branch",
+        },
+        icon("branch"),
+        h("span", {}, branch),
+      )
+    : null;
   headerEl.replaceChildren(
     titleEl,
+    branchEl ?? "",
     h("span", { className: "grow" }),
     h(
       "div",
@@ -2196,6 +2732,20 @@ function renderSessions(s: ViewState) {
         },
         icon(historyArchived ? "restore" : "archive"),
       ),
+      // Archived sessions can also be deleted for good (after a confirmation).
+      historyArchived
+        ? h(
+            "button",
+            {
+              className: "session-act",
+              "data-tip": "Delete permanently",
+              "aria-label": `Delete ${sess.title} permanently`,
+              "data-testid": "session-delete",
+              onclick: () => void confirmDelete(sess.id, sess.title),
+            },
+            icon("trash"),
+          )
+        : null,
     );
   });
   if (!rows.length)
@@ -2296,8 +2846,8 @@ function renderBookmarks(s: ViewState) {
 // ----------------------------------------------------------------- working
 
 /**
- * Words for the Working line, one per run: Sidecar riding along while the agent drives.
- * Sidecar's own list, on its own theme.
+ * Words for the Working line: Sidecar riding along while the agent drives. A run starts
+ * on one and moves to another every WORD_EVERY ms. Sidecar's own list, on its own theme.
  */
 const STATUS_WORDS = [
   "Riding along",
@@ -2320,6 +2870,70 @@ const STATUS_WORDS = [
   "Reading the signs",
 ];
 let statusWord = STATUS_WORDS[0];
+/** When the current word was picked. */
+let wordSince = 0;
+const WORD_EVERY = 8000;
+
+/** Any word but the current one. */
+function nextStatusWord(): string {
+  const others = STATUS_WORDS.filter((w) => w !== statusWord);
+  return others[Math.floor(Math.random() * others.length)];
+}
+
+/** Moves the Working line to a new word once the current one has had its turn. */
+function rotateStatusWord(): void {
+  if (workingEl.hidden || state?.stopping || state?.prefs.statusWords === false) return;
+  if (Date.now() - wordSince < WORD_EVERY) return;
+  const from = statusWord;
+  statusWord = nextStatusWord();
+  wordSince = Date.now();
+  stopSweep();
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    sweep = { from, to: statusWord, at: 0 };
+    const steps = Math.max(from.length, statusWord.length);
+    sweepTimer = window.setInterval(
+      () => {
+        if (sweep && ++sweep.at >= steps) stopSweep();
+        paintWord();
+      },
+      Math.round(SWEEP_MS / steps),
+    );
+  }
+  paintWord();
+}
+
+// When the word changes, a block cursor sweeps across it: letters behind it are already the
+// new word's, letters ahead still the old one's. Between changes the word is plain text.
+/** The whole sweep, whatever the length of the words. */
+const SWEEP_MS = 1300;
+let sweep: { from: string; to: string; at: number } | null = null;
+let sweepTimer: number | undefined;
+
+function stopSweep(): void {
+  if (sweepTimer !== undefined) window.clearInterval(sweepTimer);
+  sweepTimer = undefined;
+  sweep = null;
+}
+
+/** The word, then "…": mid-sweep, one span per letter with the cursor on one of them. */
+function wordNodes(word: string): Node[] {
+  if (!sweep) return [document.createTextNode(`${word}…`)];
+  const { from, to, at } = sweep;
+  const out: Node[] = [];
+  for (let k = 0; k < Math.max(from.length, to.length); k++) {
+    const ch = k < at ? to[k] : k === at ? (to[k] ?? from[k]) : from[k];
+    if (ch === undefined) continue;
+    out.push(h("span", k === at ? { className: "cur" } : {}, ch));
+  }
+  out.push(document.createTextNode("…"));
+  return out;
+}
+
+function paintWord(): void {
+  if (state?.stopping || state?.prefs.statusWords === false) return stopSweep();
+  const b = workingEl.querySelector<HTMLElement>('[data-testid="status-word"].typing');
+  if (b) b.replaceChildren(...wordNodes(statusWord));
+}
 
 /** "Riding along… 2:14 · Esc to stop" under the timeline while the agent runs. */
 function renderWorking(s: ViewState) {
@@ -2327,6 +2941,7 @@ function renderWorking(s: ViewState) {
   workingEl.hidden = !show;
   if (!show) {
     busySince = null;
+    stopSweep();
     workingEl.replaceChildren();
     return;
   }
@@ -2342,6 +2957,7 @@ function renderWorking(s: ViewState) {
   if (busySince === null) {
     // A new run gets a new word.
     statusWord = STATUS_WORDS[Math.floor(Math.random() * STATUS_WORDS.length)];
+    wordSince = Date.now();
     // Time the run from its prompt when that is recent; a resumed session starts now.
     const last = [...transcript.items].reverse().find((i) => i.kind === "user");
     const at = last?.kind === "user" ? last.time : undefined;
@@ -2349,7 +2965,15 @@ function renderWorking(s: ViewState) {
   }
   const word = s.stopping ? "Stopping" : s.prefs.statusWords === false ? "Working" : statusWord;
   label.replaceChildren(
-    h("b", { "data-testid": "status-word", title: "OpenCode is working" }, `${word}…`),
+    h(
+      "b",
+      {
+        className: s.stopping ? undefined : "typing",
+        "data-testid": "status-word",
+        title: "OpenCode is working",
+      },
+      ...(s.stopping ? [`${word}…`] : wordNodes(word)),
+    ),
     h(
       "span",
       { className: "muted" },
@@ -2357,6 +2981,7 @@ function renderWorking(s: ViewState) {
       s.stopping ? "" : " · Esc to stop",
     ),
   );
+  if (word !== statusWord) stopSweep();
 }
 
 // ------------------------------------------------------------- empty state
@@ -2726,6 +3351,35 @@ function renderBlocks(blocks: Block[], itemId: string, counter = { n: 0 }): Node
             "div",
             { className: "codeblock-bar" },
             h("span", { className: "muted small" }, b.lang || "code"),
+            // Finished blocks can also go into the editor: at the cursor, or as a new file.
+            b.closed
+              ? h(
+                  "span",
+                  { className: "code-acts" },
+                  h(
+                    "button",
+                    {
+                      className: "ico code-act",
+                      "data-tip": "Insert at cursor",
+                      "aria-label": "Insert at the cursor in the editor",
+                      "data-testid": "insert-code",
+                      onclick: () => send({ type: "insertCode", text }),
+                    },
+                    icon("insert"),
+                  ),
+                  h(
+                    "button",
+                    {
+                      className: "ico code-act",
+                      "data-tip": "Open in editor",
+                      "aria-label": "Open in a new editor",
+                      "data-testid": "open-code",
+                      onclick: () => send({ type: "openCode", text, lang: b.lang.slice(0, 40) }),
+                    },
+                    icon("openfile"),
+                  ),
+                )
+              : null,
             copyButton(
               key,
               t("copyCode"),
@@ -3674,6 +4328,25 @@ function questionDock(item: FormItem, count: number): HTMLElement {
 }
 
 /** Shows the first waiting request in place of the message box (or the box again). */
+/**
+ * A new permission request or question needs the user first: menus, the @ list,
+ * Bookmarks, History and tooltips close so nothing covers it. A confirm dialog the
+ * user opened stays, on top, and is answered first.
+ */
+function closePopovers(): void {
+  closeMenu();
+  closeMention();
+  hideTip();
+  if (bookmarksOpen) {
+    bookmarksOpen = false;
+    bookmarksEl.hidden = true;
+  }
+  if (sessionsOpen) {
+    sessionsOpen = false;
+    sessionsEl.hidden = true;
+  }
+}
+
 function renderDock(force = false): void {
   const reqs = pendingRequests();
   const req = reqs[0];
@@ -3704,7 +4377,10 @@ function renderDock(force = false): void {
   const active = document.activeElement;
   const focusKey = active instanceof HTMLElement && dockEl.contains(active) ? active.dataset.key : undefined;
   const fresh = dockEl.dataset.req !== req.id;
-  if (fresh) dockCollapsed = false;
+  if (fresh) {
+    dockCollapsed = false;
+    closePopovers();
+  }
   dockEl.dataset.req = req.id;
   dockEl.replaceChildren(
     req.kind === "permission" ? permissionDock(req, reqs.length) : questionDock(req, reqs.length),
@@ -4468,6 +5144,8 @@ function scheduleItems(ids: Iterable<string>) {
     for (const id of ids) renderItemById(id);
     if (ids.length && state) renderEmpty(state);
     if (ids.length) scheduleMeasure();
+    // Redrawn items drop their old highlights; an open find bar searches again.
+    if (ids.length && findOpen()) scheduleFind();
     renderDock();
     maybeScroll();
   });
@@ -4910,6 +5588,21 @@ function renderPending(s: ViewState) {
         h(
           "button",
           {
+            className: "btn subtle small pending-switch",
+            "data-tip":
+              p.delivery === "queue"
+                ? "Send it at the agent's next step instead"
+                : "Send it when this task ends instead",
+            "aria-label": `${p.delivery === "queue" ? "Steer" : "Queue"}: ${p.text.slice(0, 40)}`,
+            "data-testid": "pending-switch",
+            onclick: () =>
+              send({ type: "setDelivery", id: p.id, delivery: p.delivery === "queue" ? "steer" : "queue" }),
+          },
+          icon(p.delivery === "queue" ? "steer" : "queue"),
+        ),
+        h(
+          "button",
+          {
             className: "btn subtle small",
             "aria-label": `${t("edit")}: ${p.text.slice(0, 40)}`,
             onclick: () => send({ type: "editPending", id: p.id }),
@@ -5033,8 +5726,8 @@ function renderComposer(s: ViewState) {
     ? t("subagentReadOnly")
     : connected
       ? s.busy
-        ? delivery === "queue"
-          ? "Queue another message…"
+        ? deliveryMode === "queue"
+          ? "Queue a message for after this task…"
           : "Steer the agent…"
         : "Ask anything…"
       : s.onboarding.stage === "connecting" || s.onboarding.stage === "loading"
@@ -5042,6 +5735,11 @@ function renderComposer(s: ViewState) {
         : "Finish the setup above to start chatting";
   boxTools.hidden = !!subView;
   boxEl.classList.toggle("active", s.busy && !subView);
+  // Steer or queue: only meaningful while the agent works.
+  const working = s.busy && !subView && connected;
+  deliveryEl.hidden = !working;
+  boxEl.classList.toggle("queueing", working && deliveryMode === "queue");
+  paintDelivery();
   for (const b of [plusBtn, modeBtn, slashBtn]) b.disabled = !connected;
   const share = contextShare(s);
   ctxBtn.hidden = share === null;
@@ -5090,10 +5788,7 @@ function renderComposer(s: ViewState) {
   modelBtn.setAttribute("aria-label", modelLabel);
 
   const agent = s.agents?.find((a) => a.id === s.selectedAgent);
-  modeBtn.replaceChildren(
-    icon(agent?.id === "plan" ? "plan" : "mode"),
-    h("span", { className: "ml" }, agent?.name ?? "Agent"),
-  );
+  modeBtn.replaceChildren(icon(agentIcon(agent?.id)), h("span", { className: "ml" }, agent?.name ?? "Agent"));
   const modeLabel = `Agent: ${agent?.name ?? "none"} (Shift+Tab to switch)`;
   modeBtn.dataset.tip = modeLabel;
   modeBtn.setAttribute("aria-label", modeLabel);
@@ -5110,7 +5805,7 @@ function renderComposer(s: ViewState) {
       ? "Stopping…"
       : "Stop the running task (Esc)"
     : s.busy
-      ? delivery === "queue"
+      ? deliveryMode === "queue"
         ? "Queue message until the task finishes"
         : "Steer the running task"
       : "Send message (Enter)";
@@ -5257,6 +5952,19 @@ window.addEventListener("message", (e: MessageEvent) => {
       stickToBottom = true;
       maybeScroll();
       break;
+    case "mcpServers":
+      mcpList = msg.items;
+      mcpError = msg.error ?? "";
+      if (openMenuState?.el.dataset.view === "mcp-servers") showMcpServers();
+      break;
+    case "savedPermissions":
+      savedPerms = msg.items;
+      savedError = msg.error ?? "";
+      if (reopenSaved || openMenuState?.el.dataset.view === "saved-permissions") {
+        reopenSaved = false;
+        showSavedPermissions();
+      }
+      break;
     case "mentionResults":
       if (mention?.requestId === msg.requestId) {
         mention.items = msg.items;
@@ -5282,6 +5990,16 @@ window.addEventListener("message", (e: MessageEvent) => {
     }
     case "focusInput":
       input.focus();
+      break;
+    case "showHistory":
+      if (!sessionsOpen) {
+        sessionsOpen = true;
+        bookmarksOpen = false;
+        sessionQuery = "";
+        send({ type: "refreshSessions" });
+        render();
+      }
+      sessionsEl.querySelector<HTMLElement>("input")?.focus();
       break;
     case "focusModel":
       modelBtn.focus();
@@ -5316,6 +6034,7 @@ window.addEventListener("message", (e: MessageEvent) => {
 
 // Elapsed time of running subagents ticks without a state push.
 setInterval(() => {
+  rotateStatusWord();
   for (const el of document.querySelectorAll<HTMLElement>("[data-elapsed-from]")) {
     const from = Number(el.dataset.elapsedFrom);
     if (Number.isFinite(from)) el.textContent = formatDuration(Date.now() - from);

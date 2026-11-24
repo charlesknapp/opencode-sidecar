@@ -6,6 +6,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { languageFor } from "../shared/languages";
 import { pathToFileURL } from "node:url";
 import type { BookmarkView, MentionCandidate, PromptMention } from "../shared/model";
 import { discoverExecutable } from "../core/cliDiscovery";
@@ -197,8 +198,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.stateTimer = undefined;
       const state = this.viewState();
       this.updateStatusBar(state.onboarding.stage);
+      this.updateBadge();
       this.post({ type: "state", state });
     }, 16);
+  }
+
+  /**
+   * A count on Sidecar's icon while permission requests or questions wait, so a
+   * hidden panel still says it needs you. VS Code shows it on the Activity Bar icon.
+   */
+  private updateBadge(): void {
+    if (!this.view) return;
+    const n = this.controller?.pendingRequestCount() ?? 0;
+    const want = n ? `${n}` : "";
+    const have = this.view.badge ? `${this.view.badge.value}` : "";
+    if (want === have) return;
+    this.view.badge = n
+      ? {
+          value: n,
+          tooltip: n === 1 ? "OpenCode is waiting for your answer" : `OpenCode is waiting for ${n} answers`,
+        }
+      : undefined;
   }
 
   private queueEvents(events: UiEvent[]): void {
@@ -616,6 +636,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     await this.controller?.stop();
   }
 
+  /** Reveals Sidecar with its History open. */
+  async showHistory(): Promise<void> {
+    await this.focus();
+    this.post({ type: "showHistory" });
+  }
+
+  /** Opens the current session as an untitled Markdown document, to read, share or save. */
+  async exportSession(): Promise<void> {
+    const md = this.controller?.exportMarkdown() ?? null;
+    if (!md) {
+      void vscode.window.showInformationMessage("Open a session with messages to export it.");
+      return;
+    }
+    const doc = await vscode.workspace.openTextDocument({ language: "markdown", content: md });
+    await vscode.window.showTextDocument(doc, { preview: false });
+  }
+
   private addAttachment(a: Exclude<ContextAttachment, { kind: "image" }>): void {
     const duplicate = this.attachments.some((x) =>
       a.kind === "file"
@@ -805,6 +842,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return c?.setArchived(msg.id, msg.archived);
       case "loadArchived":
         return c?.loadArchived();
+      case "insertCode":
+        return this.insertCode(msg.text);
+      case "openCode":
+        return this.openCode(msg.text, msg.lang);
+      case "loadMcpServers":
+        return this.postMcpServers();
+      case "exportSession":
+        return this.exportSession();
+      case "deleteSession":
+        return c?.deleteSession(msg.id);
+      case "loadSavedPermissions":
+        return this.postSavedPermissions();
+      case "removeSavedPermission":
+        if (!c) return;
+        try {
+          await c.removeSavedPermission(msg.id);
+        } catch (e) {
+          this.log.warn(`Removing a saved permission failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        return this.postSavedPermissions();
       case "resolveRevert":
         return this.resolveRevert(msg.action);
       case "stop":
@@ -919,6 +976,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       case "removePending":
         await c?.cancelPending(msg.id);
         return;
+      case "setDelivery":
+        return c?.setPendingDelivery(msg.id, msg.delivery);
       case "retryLast":
         await c?.retry();
         return;
@@ -969,6 +1028,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         await this.context.globalState.update(SIGN_IN_HINT_KEY, true);
         this.postState();
         return;
+    }
+  }
+
+  /**
+   * Inserts a code block at the cursor of the last text editor (replacing its selection),
+   * as an ordinary edit that Undo reverts.
+   */
+  private async insertCode(text: string): Promise<void> {
+    const editor = vscode.window.activeTextEditor ?? vscode.window.visibleTextEditors[0];
+    if (!editor) {
+      void vscode.window.showInformationMessage("Open a file first; the code goes in at its cursor.");
+      return;
+    }
+    await vscode.window.showTextDocument(editor.document, editor.viewColumn);
+    const ok = await editor.edit((b) => {
+      for (const sel of editor.selections) b.replace(sel, text);
+    });
+    if (!ok) void vscode.window.showWarningMessage("The code could not be inserted into this editor.");
+  }
+
+  /** Opens a code block as a new untitled document in its language. */
+  private async openCode(text: string, lang: string): Promise<void> {
+    const language = await languageId(lang);
+    const doc = await vscode.workspace.openTextDocument({ language, content: text });
+    await vscode.window.showTextDocument(doc, { preview: false });
+  }
+
+  /** Sends the folder's MCP servers to the webview (or why they could not be listed). */
+  private async postMcpServers(): Promise<void> {
+    const c = this.controller;
+    if (!c) return this.post({ type: "mcpServers", items: null, error: "Not connected to OpenCode." });
+    try {
+      this.post({ type: "mcpServers", items: await c.mcpServers() });
+    } catch (e) {
+      this.log.warn(`Listing MCP servers failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.post({ type: "mcpServers", items: null, error: "OpenCode could not list them." });
+    }
+  }
+
+  /** Sends the open folder's "always allow" rules to the webview (or why they could not be listed). */
+  private async postSavedPermissions(): Promise<void> {
+    const c = this.controller;
+    if (!c) return this.post({ type: "savedPermissions", items: null, error: "Not connected to OpenCode." });
+    try {
+      this.post({ type: "savedPermissions", items: await c.savedPermissions() });
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      this.log.warn(`Listing saved permissions failed: ${why}`);
+      this.post({ type: "savedPermissions", items: null, error: "OpenCode could not list them." });
     }
   }
 
@@ -1367,6 +1475,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.notifier = fn;
       },
       viewVisible: () => !!this.view?.visible,
+      badge: () => this.view?.badge?.value ?? 0,
       statusBar: () => ({
         text: this.statusItem.text,
         tooltip: String(this.statusItem.tooltip ?? ""),
@@ -1385,4 +1494,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 /** Fingerprint of the connection evidence, used to notice when a sign-in completed. */
 function accountKey(account: AccountStatus | null, modelCount: number | undefined): string | null {
   return account ? `${account.opencode}:${account.otherProviders}:${modelCount ?? -1}` : null;
+}
+
+async function languageId(lang: string): Promise<string> {
+  return languageFor(lang, await vscode.languages.getLanguages());
 }

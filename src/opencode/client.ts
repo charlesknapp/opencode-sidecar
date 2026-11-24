@@ -13,7 +13,9 @@ import type {
   ModelOption,
   PendingInboxItem,
   PermissionDecision,
+  McpServerInfo,
   PermissionRequest,
+  SavedPermission,
   SessionSummary,
   SkillOption,
 } from "../shared/model";
@@ -93,6 +95,15 @@ export interface OpenCodeClient {
   /** Copies a session into a new one: the history before `before`, or all of it. */
   forkSession(id: string, before?: string): Promise<SessionSummary>;
   setArchived(id: string, archived: boolean): Promise<void>;
+  /** Deletes a session and its history from OpenCode (cannot be undone). */
+  deleteSession(id: string): Promise<void>;
+  /** The MCP servers configured for a folder and their state. */
+  listMcpServers(directory: string): Promise<McpServerInfo[]>;
+  /** OpenCode's project for a folder (the scope of its saved permissions). */
+  projectId(directory: string): Promise<string | null>;
+  /** "Always allow" rules OpenCode saved for a project. */
+  listSavedPermissions(projectID: string): Promise<SavedPermission[]>;
+  removeSavedPermission(id: string): Promise<void>;
   /** Applies a staged rewind (`commit`) or restores the messages it hid (`clear`). */
   resolveRevert(id: string, action: "commit" | "clear"): Promise<void>;
   getSession(id: string): Promise<SessionSummary>;
@@ -129,6 +140,8 @@ export interface OpenCodeClient {
   cancelForm(id: string, formId: string): Promise<void>;
   listInbox(id: string): Promise<PendingInboxItem[]>;
   cancelInbox(id: string, inboxId: string): Promise<void>;
+  /** Switches a waiting message between steer (next step) and queue (after the task). */
+  setInboxDelivery(id: string, inboxId: string, delivery: InboxDelivery): Promise<void>;
   /** Text of the first user message, used for local title fallbacks. */
   firstUserText(id: string): Promise<string | null>;
   subscribe(handlers: EventHandlers): EventSubscription;
@@ -546,6 +559,57 @@ export class HttpOpenCodeClient implements OpenCodeClient {
     await this.request("PATCH", `/api/session/${encodeURIComponent(id)}`, { body: { archived } });
   }
 
+  async deleteSession(id: string): Promise<void> {
+    await this.request("DELETE", `/api/session/${encodeURIComponent(id)}`);
+  }
+
+  async listMcpServers(directory: string): Promise<McpServerInfo[]> {
+    const d = rec(await this.request("GET", "/api/mcp", { query: this.loc(directory) }));
+    const list = Array.isArray(d.data) ? d.data : [];
+    const states = new Set(["connected", "pending", "disabled", "failed", "needs_auth"]);
+    const out: McpServerInfo[] = [];
+    for (const raw of list) {
+      const x = rec(raw);
+      const st = rec(x.status);
+      if (typeof x.name !== "string" || typeof st.status !== "string" || !states.has(st.status)) continue;
+      out.push({
+        name: x.name,
+        ...(typeof x.title === "string" && x.title ? { title: x.title } : {}),
+        status: st.status as McpServerInfo["status"],
+        ...(typeof st.error === "string" && st.error ? { error: st.error } : {}),
+      });
+    }
+    return out;
+  }
+
+  async projectId(directory: string): Promise<string | null> {
+    const d = rec(await this.request("GET", "/api/location", { query: this.loc(directory) }));
+    const id = rec(d.project).id;
+    return typeof id === "string" && id ? id : null;
+  }
+
+  async listSavedPermissions(projectID: string): Promise<SavedPermission[]> {
+    const d = rec(await this.request("GET", "/api/permission/saved", { query: { projectID } }));
+    const list = Array.isArray(d.data) ? d.data : [];
+    const out: SavedPermission[] = [];
+    for (const raw of list) {
+      const x = rec(raw);
+      // Only this project's rules, whatever the server returns.
+      if (typeof x.id !== "string" || x.projectID !== projectID) continue;
+      out.push({
+        id: x.id,
+        action: typeof x.action === "string" ? x.action : "",
+        resource: typeof x.resource === "string" ? x.resource : "",
+        created: typeof rec(x.time).created === "number" ? (rec(x.time).created as number) : 0,
+      });
+    }
+    return out.sort((a, b) => b.created - a.created);
+  }
+
+  async removeSavedPermission(id: string): Promise<void> {
+    await this.request("DELETE", `/api/permission/saved/${encodeURIComponent(id)}`);
+  }
+
   async resolveRevert(id: string, action: "commit" | "clear"): Promise<void> {
     const base = `/api/session/${encodeURIComponent(id)}/revert`;
     if (action === "commit") await this.request("POST", `${base}/commit`);
@@ -641,6 +705,14 @@ export class HttpOpenCodeClient implements OpenCodeClient {
       });
     }
     return out;
+  }
+
+  async setInboxDelivery(id: string, inboxId: string, delivery: InboxDelivery): Promise<void> {
+    await this.request(
+      "PATCH",
+      `/api/session/${encodeURIComponent(id)}/inbox/${encodeURIComponent(inboxId)}`,
+      { body: { delivery } },
+    );
   }
 
   async cancelInbox(id: string, inboxId: string): Promise<void> {

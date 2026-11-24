@@ -2,6 +2,7 @@
 // (or last) agent run. Derived locally from the user's own text; no model calls.
 
 import { splitUserText } from "../shared/userText";
+import { redact } from "./redact";
 
 /** Text sent by Budget Guard's Continue once / Increase budget. It continues a task; it is not a new one. */
 export const CONTINUE_TEXT = "Continue the previous task from where you stopped.";
@@ -182,6 +183,20 @@ export function deriveTaskFromHistory(messages: readonly unknown[], running: boo
 
 // ------------------------------------------------------------ notifications
 
+/** One line, at most `max` characters, for a notification. */
+export function oneLine(text: string, max = 120): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
+}
+
+/** "permission for bash: `npm test -- session`", redacted, for a notification. */
+export function permissionDetail(action: string, resources: string[]): string {
+  const what = resources.length
+    ? `: ${redact(resources[0])}${resources.length > 1 ? ` (+${resources.length - 1})` : ""}`
+    : "";
+  return oneLine(`permission for ${action}${what}`);
+}
+
 export type TaskNoticeKind = "completed" | "needs-input" | "failed" | "budget-stopped";
 
 export interface TaskNotice {
@@ -191,6 +206,8 @@ export interface TaskNotice {
   sessionTitle: string | null;
   /** Unique key; the same key is never notified twice. */
   key: string;
+  /** What OpenCode is asking, for needs-input (already redacted, one line). */
+  detail?: string;
 }
 
 export interface NotificationSettings {
@@ -207,9 +224,10 @@ export interface NotificationDecision {
 }
 
 /**
- * Decides whether and how to show a notice. Completion is suppressed while the
- * user is watching the chat (view visible and window focused); questions,
- * failures and budget stops are always shown unless disabled in settings.
+ * Decides whether and how to show a notice. Completion and requests for input are
+ * suppressed while the user is watching the chat (view visible and window focused),
+ * where the request already takes the message box's place; failures and budget
+ * stops are always shown. Each kind can be turned off in settings.
  */
 export function decideNotification(
   n: TaskNotice,
@@ -226,9 +244,11 @@ export function decideNotification(
       };
     case "needs-input":
       return {
-        show: settings.needsInput,
+        show: settings.needsInput && !(ctx.viewVisible && ctx.windowFocused),
         severity: "warning",
-        message: `❓ OpenCode needs your input: ${task}`,
+        message: n.detail
+          ? `❓ OpenCode is waiting for you: ${n.detail}`
+          : `❓ OpenCode needs your input: ${task}`,
       };
     case "failed":
       return { show: settings.taskFailed, severity: "error", message: `❌ OpenCode task failed: ${task}` };

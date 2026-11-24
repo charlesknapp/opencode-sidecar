@@ -278,6 +278,13 @@ describe("task notifications", () => {
       notices.map((n) => n.kind),
       ["needs-input", "needs-input"],
     );
+    // Each says what is asked: the question itself, or the permission and what it is for.
+    assert.deepEqual(
+      notices.map((n) => n.detail),
+      ["a question: Preferred color", "permission for read: .env"],
+    );
+    // Both wait for an answer: the count behind the badge on Sidecar's icon.
+    assert.equal(c.pendingRequestCount(), 2);
   });
 
   it("notifies failures", async () => {

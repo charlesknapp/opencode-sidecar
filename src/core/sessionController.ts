@@ -8,12 +8,15 @@ import { buildPrompt, type PromptPayload, type ResolvedMention } from "./context
 import {
   CONTINUE_TEXT,
   deriveTaskFromHistory,
+  oneLine,
+  permissionDetail,
   summarizeTask,
   type TaskNotice,
   type TaskRecord,
   type TaskStatus,
 } from "./currentTask";
 import { classifyError, describeForLog } from "./errors";
+import { sessionMarkdown } from "./exportMarkdown";
 import { summarizeAnswer, validateAnswer } from "./forms";
 import { reconstructSides, type FileSides } from "./patch";
 import { MAX_SUBAGENTS, SubagentTracker } from "./subagents";
@@ -33,6 +36,8 @@ import type {
   ModelOption,
   PendingInboxItem,
   PermissionDecision,
+  McpServerInfo,
+  SavedPermission,
   SessionSummary,
   SkillOption,
   SubagentView,
@@ -530,6 +535,25 @@ export class SessionController {
   }
 
   /** Loads this folder's archived sessions for the history's Archived view. */
+  /** The MCP servers OpenCode has for the open folder. */
+  async mcpServers(): Promise<McpServerInfo[]> {
+    return this.directory ? this.client.listMcpServers(this.directory) : [];
+  }
+
+  /** The open folder's "always allow" rules, newest first. */
+  async savedPermissions(): Promise<SavedPermission[]> {
+    const dir = this.directory;
+    if (!dir) return [];
+    const project = await this.client.projectId(dir);
+    return project ? this.client.listSavedPermissions(project) : [];
+  }
+
+  /** Stops always allowing a rule: OpenCode asks again next time. */
+  async removeSavedPermission(id: string): Promise<void> {
+    await this.client.removeSavedPermission(id);
+    this.log.info(`Removed a saved permission (${id})`);
+  }
+
   async loadArchived(): Promise<void> {
     const dir = this.directory;
     if (!dir) return;
@@ -556,6 +580,31 @@ export class SessionController {
       return;
     }
     if (archived && this.current?.id === id) await this.newSession();
+    await this.refreshSessions();
+  }
+
+  /** The open session as Markdown, or null when there is nothing to export. */
+  exportMarkdown(): string | null {
+    if (!this.current || !this.transcript.items.length) return null;
+    return sessionMarkdown(this.transcript.items, {
+      title: this.currentTitle() ?? "Untitled session",
+      exported: Date.now(),
+      model: this.selectedModel,
+      directory: this.directory,
+    });
+  }
+
+  /** Deletes a session from OpenCode for good; deleting the open one starts a new session. */
+  async deleteSession(id: string): Promise<void> {
+    try {
+      await this.client.deleteSession(id);
+      this.log.info(`Deleted session ${id}`);
+    } catch (e) {
+      this.log.error("Deleting failed", e);
+      this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not delete the session") }]);
+      return;
+    }
+    if (this.current?.id === id) await this.newSession();
     await this.refreshSessions();
   }
 
@@ -999,6 +1048,22 @@ export class SessionController {
     return this.dispatch(this.lastPayload);
   }
 
+  /** Switches a waiting message between steer (next step) and queue (after the task). */
+  async setPendingDelivery(id: string, delivery: InboxDelivery): Promise<void> {
+    const item = this.pending.find((p) => p.id === id);
+    if (!this.current || !item || item.delivery === delivery) return;
+    try {
+      await this.client.setInboxDelivery(this.current.id, id, delivery);
+      this.applyInbox({ type: "inbox.delivery", id, delivery });
+      this.sink.onStateChanged();
+    } catch (e) {
+      this.log.warn(`Changing a waiting message failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.emit([
+        { type: "notice", level: "info", text: "That message was already delivered to the agent." },
+      ]);
+    }
+  }
+
   /** Removes a pending steering/queued message before OpenCode delivers it. Returns its text. */
   async cancelPending(id: string): Promise<string | null> {
     const item = this.pending.find((p) => p.id === id);
@@ -1390,6 +1455,8 @@ export class SessionController {
         return [];
       case "inbox.delivery":
         this.pending = this.pending.map((p) => (p.id === ev.id ? { ...p, delivery: ev.delivery } : p));
+        if (this.pendingStartsTask.has(ev.id))
+          this.pendingStartsTask.set(ev.id, ev.delivery === "queue" || !this.execActive);
         return [];
     }
   }
@@ -1412,10 +1479,19 @@ export class SessionController {
         if (!replay) this.finishTask(ev.outcome);
         break;
       case "permission.requested":
-        if (!replay) this.notify("needs-input", `input:${ev.request.id}`);
+        if (!replay)
+          this.notify(
+            "needs-input",
+            `input:${ev.request.id}`,
+            permissionDetail(ev.request.action, ev.request.resources),
+          );
         break;
       case "form.requested":
-        if (!replay) this.notify("needs-input", `input:${ev.form.id}`);
+        if (!replay) {
+          // The first question the form asks says more than its title ("Questions").
+          const first = ev.form.fields.find((f) => f.title)?.title;
+          this.notify("needs-input", `input:${ev.form.id}`, oneLine(`a question: ${first ?? ev.form.title}`));
+        }
         break;
       case "session.renamed":
         if (this.current) this.current = { ...this.current, title: ev.title };
@@ -1551,7 +1627,7 @@ export class SessionController {
     // A user Stop or a budget stop is never reported as completed.
   }
 
-  private notify(kind: TaskNotice["kind"], key: string): void {
+  private notify(kind: TaskNotice["kind"], key: string, detail?: string): void {
     if (this.notified.has(key) || !this.sink.onTaskNotice) return;
     this.notified.add(key);
     this.sink.onTaskNotice({
@@ -1559,7 +1635,15 @@ export class SessionController {
       key,
       summary: this.task ? summarizeTask(this.task.raw) : "",
       sessionTitle: this.currentTitle(),
+      ...(detail ? { detail } : {}),
     });
+  }
+
+  /** Permission requests and questions waiting for an answer (the main session and its subagents). */
+  pendingRequestCount(): number {
+    return this.transcript.items.filter(
+      (i) => (i.kind === "permission" || i.kind === "form") && i.status === "pending",
+    ).length;
   }
 
   /** View model for the Current / Last Task bar; null for an empty session. */
