@@ -4,7 +4,7 @@
 
 ![OpenCode 2.x](https://img.shields.io/badge/OpenCode-2.x-0a0a0a) ![VS Code 1.95+](https://img.shields.io/badge/VS%20Code-1.95%2B-0a0a0a) ![License: MIT](https://img.shields.io/badge/license-MIT-0a0a0a)
 
-<p align="center"><img src="docs/marketplace/hero.png" alt="Sidecar for OpenCode: a chat panel with a timeline of the agent's steps, live subagents and a permission request answered in place" width="900"></p>
+<p align="center"><img src="docs/marketplace/demo.gif" alt="Sidecar for OpenCode in action: a prompt sent from the chat sidebar, each step landing on the timeline (read, run, edit), the diff, and live subagents with one stopped" width="900"></p>
 
 Free and open source. An independent community project, not affiliated with OpenCode; the official OpenCode extension is `sst-dev.opencode`.
 
