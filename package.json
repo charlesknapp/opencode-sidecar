@@ -2,7 +2,7 @@
   "name": "opencode-sidecar",
   "displayName": "Sidecar for OpenCode",
   "description": "The complete OpenCode coding agent in a VS Code chat panel: a timeline of every step, live subagents, diffs, @ mentions, images, permissions, fork and rewind.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "cadogy",
   "private": true,
   "license": "MIT",
@@ -201,7 +201,7 @@
           "default": 5,
           "minimum": 0,
           "maximum": 120,
-          "markdownDescription": "How long your provider keeps a prompt cached, in minutes. The clock in the message box estimates from this when the cache goes cold (OpenCode reports cache tokens, not the timer). `0` hides the clock."
+          "markdownDescription": "How long your provider keeps a prompt cached, in minutes. The clock in the message box estimates from this when the cache goes cold (OpenCode reports cache tokens, not the timer). It shows only when the model reports prompt-cache tokens. `0` hides the clock."
         },
         "opencodeSidecar.activity": {
           "type": "string",

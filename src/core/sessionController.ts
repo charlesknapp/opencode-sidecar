@@ -288,6 +288,7 @@ export class SessionController {
       cost: this.sessionCost,
       cacheHit: t && fed > 0 ? t.cacheRead / fed : null,
       lastStepAt: step?.at ?? null,
+      cached: !!t && t.cacheRead + t.cacheWrite > 0,
     };
   }
 

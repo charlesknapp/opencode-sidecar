@@ -512,7 +512,7 @@ describe(
     });
 
     it("shows a small tooltip on hover instead of the system one", async () => {
-      const usage = { ...baseState().usage!, lastStepAt: Date.now() - 2 * 60_000 };
+      const usage = { ...baseState().usage!, cached: true, lastStepAt: Date.now() - 2 * 60_000 };
       await host({ type: "state", state: baseState({ usage }) });
       assert.equal(await page.$eval('[data-testid="cache-pill"]', (b) => b.getAttribute("title")), null);
       await page.hover('[data-testid="cache-pill"]');
@@ -566,9 +566,17 @@ describe(
           const bubble = document.querySelector(".bubble")!.getBoundingClientRect();
           const bottom = document.querySelector(".bottom")!;
           const conv = document.querySelector(".conversation") as HTMLElement;
+          const model = document.querySelector('[data-testid="model-pill"]')!.getBoundingClientRect();
+          const send = document.querySelector('[data-testid="send"]')!.getBoundingClientRect();
           return {
+            width: b.width,
             left: b.left - bubble.left,
             right: bubble.right - b.right,
+            modelBelow: model.top >= send.bottom,
+            sendBeside:
+              Math.abs(
+                send.top - document.querySelector('[data-testid="add-context"]')!.getBoundingClientRect().top,
+              ) < 4,
             bg: getComputedStyle(bottom).backgroundImage,
             halo: getComputedStyle(box).boxShadow,
             scrollbarClear:
@@ -577,11 +585,13 @@ describe(
           };
         });
       const wide = await geometry();
-      // Wide: the box sits 32px inside the chat's column, so the chat shows beside it.
+      // Wide: the box stops growing at 640px, centred under the wider chat, which shows beside it.
+      assert.ok(Math.abs(wide.width - 640) < 1, `640px wide (${wide.width})`);
       assert.ok(
-        Math.abs(wide.left - 32) < 1 && Math.abs(wide.right - 32) < 1,
-        `inset (${wide.left}, ${wide.right})`,
+        wide.left > 20 && Math.abs(wide.left - wide.right) < 1,
+        `centred (${wide.left}, ${wide.right})`,
       );
+      assert.equal(wide.modelBelow, false, "one row of controls");
       // No band hides the chat beside the box; it only fades out at the panel's bottom edge.
       assert.match(wide.bg, /linear-gradient\(rgba\(0, 0, 0, 0\)/, "transparent first, then the bottom fade");
       assert.match(wide.halo, /px/, "a soft halo fades text close to the box");
@@ -593,6 +603,9 @@ describe(
         Math.abs(narrow.left) < 1 && Math.abs(narrow.right) < 1,
         `flush (${narrow.left}, ${narrow.right})`,
       );
+      // ...and puts the model pill on a row of its own under the tools, send staying on the first row.
+      assert.equal(narrow.modelBelow, true, "model pill on its own row");
+      assert.equal(narrow.sendBeside, true, "send on the first row");
     });
 
     it("/ is an action palette: context, model, session, OpenCode's commands and Sidecar's settings", async () => {
@@ -642,8 +655,47 @@ describe(
       assert.deepEqual(await lastSent("send"), { type: "send", text: "/usr/bin is a path" });
     });
 
+    it("shows the context in use as a ring that opens the usage menu", async () => {
+      const ring = () =>
+        page.$eval('[data-testid="context-ring"]', (b) => ({
+          hidden: (b as HTMLElement).hidden,
+          tip: (b as HTMLElement).dataset.tip,
+          cls: b.className,
+          dash: b.querySelector(".arc")?.getAttribute("stroke-dasharray"),
+        }));
+      // 42k of 262k: 16%, in the icon colour.
+      assert.deepEqual(await ring(), {
+        hidden: false,
+        tip: "Context 42k / 262k (16%)",
+        cls: "ico ctx",
+        dash: `${(42000 / 262144) * 100} 100`,
+      });
+      await page.click('[data-testid="context-ring"]');
+      assert.match(await text('[data-testid="menu"]'), /Context\s*42k \/ 262k \(16%\)/);
+      assert.ok(await page.$('[data-testid="compact"]'), "Compact is in the same menu");
+      await page.keyboard.press("Escape");
+      // Near the limit it takes the warning, then the error colour.
+      const at = (contextTokens: number) =>
+        host({ type: "state", state: baseState({ usage: { ...baseState().usage!, contextTokens } }) });
+      await at(200_000);
+      assert.equal((await ring()).cls, "ico ctx warn");
+      await at(250_000);
+      assert.equal((await ring()).cls, "ico ctx high");
+      // Without the model's limit there is no share to show; usage stays in the model menu.
+      await host({
+        type: "state",
+        state: baseState({ usage: { ...baseState().usage!, contextLimit: null } }),
+      });
+      assert.equal((await ring()).hidden, true);
+    });
+
     it("estimates the prompt cache on the clock pill; its menu holds usage and Compact", async () => {
-      const usage = { ...baseState().usage!, cacheHit: 0.82, lastStepAt: Date.now() - 2 * 60_000 };
+      const usage = {
+        ...baseState().usage!,
+        cacheHit: 0.82,
+        cached: true,
+        lastStepAt: Date.now() - 2 * 60_000,
+      };
       await host({ type: "state", state: baseState({ usage }) });
       assert.equal(await text('[data-testid="cache-pill"]'), "3m");
       await page.click('[data-testid="cache-pill"]');
@@ -654,11 +706,9 @@ describe(
             .join(": "),
         ),
       );
-      assert.deepEqual(stats.slice(0, 3), [
-        "Warm for: ~3 min",
-        "Cache hit: 82% of input",
-        "Context: 42k / 262k (16%)",
-      ]);
+      // Context first, then the prompt cache for a model that caches.
+      assert.equal(stats[0], "Context: 42k / 262k (16%)");
+      assert.deepEqual(stats.slice(-2), ["Warm for: ~3 min", "Cache hit: 82% of input"]);
       await page.click('[data-testid="compact"]');
       assert.ok(await lastSent("compact"));
       // Usage moved out of the model menu while the clock shows.
@@ -676,23 +726,41 @@ describe(
         state: baseState({ usage, prefs: { ...baseState().prefs, cacheWarmMinutes: 0 } }),
       });
       assert.equal(await page.$eval('[data-testid="cache-pill"]', (b) => (b as HTMLElement).hidden), true);
+      // A model that reported no prompt-cache tokens (no cache, such as a local one): no clock.
+      await host({ type: "state", state: baseState({ usage: { ...usage, cached: false } }) });
+      assert.equal(await page.$eval('[data-testid="cache-pill"]', (b) => (b as HTMLElement).hidden), true);
     });
 
-    it("shows the session's context, cost, steps and task budget in the model menu", async () => {
+    it("shows the session's context, cost, steps and task budget behind the ring, or in the model menu", async () => {
+      const budget = { ...baseState().budget, active: true };
+      await host({ type: "state", state: baseState({ busy: true, budget }) });
+      const statsIn = async (button: string) => {
+        await page.click(`[data-testid="${button}"]`);
+        const stats = await page.$$eval('[data-testid="menu"] .menu-stat', (els) =>
+          els.map((e) =>
+            Array.from(e.children)
+              .map((c) => c.textContent)
+              .join(": "),
+          ),
+        );
+        await page.keyboard.press("Escape");
+        return stats;
+      };
+      const all = [
+        "Context: 42k / 262k (16%)",
+        "Cost: $0.08",
+        "Steps: 14",
+        "Task: $0.03 / $0.30 · 5 / 50 steps",
+      ];
+      assert.deepEqual(await statsIn("context-ring"), all);
+      assert.deepEqual(await statsIn("model-pill"), [], "not twice");
+      // With no ring (the model's limit unknown) and no clock, the model menu keeps them.
       await host({
         type: "state",
-        state: baseState({ busy: true, budget: { ...baseState().budget, active: true } }),
+        state: baseState({ busy: true, budget, usage: { ...baseState().usage!, contextLimit: null } }),
       });
-      await page.click('[data-testid="model-pill"]');
-      const stats = await page.$$eval('[data-testid="menu"] .menu-stat', (els) =>
-        els.map((e) =>
-          Array.from(e.children)
-            .map((c) => c.textContent)
-            .join(": "),
-        ),
-      );
-      assert.deepEqual(stats, [
-        "Context: 42k / 262k (16%)",
+      assert.deepEqual(await statsIn("model-pill"), [
+        "Context: 42k",
         "Cost: $0.08",
         "Steps: 14",
         "Task: $0.03 / $0.30 · 5 / 50 steps",
@@ -1081,8 +1149,23 @@ describe(
       await host({ type: "state", state: baseState({ agentChanges, workspaceChanges: { count: 2 } }) });
       assert.equal(
         await page.$eval('[data-testid="workspace-changes"]', (e) => e.getAttribute("title")),
-        "Agent-only diff unavailable: OpenCode did not record snapshots for the agent's edits.",
+        "Workspace changes: 2 files (HEAD ↔ working tree)\nAgent-only diff unavailable: OpenCode did not record snapshots for the agent's edits.",
       );
+      // The strip sits on the box as one unit: the same width, the box's top corners square.
+      const joint = await page.evaluate(() => {
+        const strip = document.querySelector(".strips")!.getBoundingClientRect();
+        const box = document.querySelector(".box")!;
+        const b = box.getBoundingClientRect();
+        return {
+          sameEdges: Math.abs(strip.left - b.left) < 0.5 && Math.abs(strip.right - b.right) < 0.5,
+          corner: getComputedStyle(box).borderTopLeftRadius,
+          oneRow:
+            document.querySelector('[data-testid="view-workspace-changes"]')!.getBoundingClientRect().top -
+              document.querySelector('[data-testid="workspace-changes"]')!.getBoundingClientRect().top <
+            8,
+        };
+      });
+      assert.deepEqual(joint, { sameEdges: true, corner: "0px", oneRow: true });
     });
 
     it("attaches the current file, the selection or a searched file from +", async () => {
@@ -2447,7 +2530,7 @@ describe(
         }))
           s.setProperty(k, v);
       });
-      const usage = { ...baseState().usage!, cacheHit: 0.5, lastStepAt: Date.now() };
+      const usage = { ...baseState().usage!, cacheHit: 0.5, cached: true, lastStepAt: Date.now() };
       await host({
         type: "state",
         state: baseState({

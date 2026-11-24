@@ -1422,6 +1422,25 @@ th {
 .changes .row {
   gap: 6px;
 }
+/* The workspace line keeps to one row: its text gives way (to an ellipsis, and without
+   "HEAD ↔ working tree" in a narrow panel; both stay in the tooltip), never "View". */
+.changes .ws-row {
+  flex-wrap: nowrap;
+}
+.changes .ws-row > .muted {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.changes .ws-row > button {
+  flex: none;
+}
+@container sidecar (max-width: 440px) {
+  .changes .ws-aside {
+    display: none;
+  }
+}
 .changes-toggle {
   color: var(--vscode-foreground);
   font-weight: 600;
@@ -1430,20 +1449,21 @@ th {
 /* ---------------------------------------------------------- message box */
 
 /* Status lines (a staged rewind, changes, pending messages) form one strip on the
-   box's top edge, each line set apart by a hairline. */
+   box's top edge, as wide as the box, each line set apart by a hairline. The box's
+   top corners square off under it, so the two read as one unit. */
 .strips {
   display: flex;
   flex-direction: column;
-  margin-inline: 10px;
   border: 1px solid var(--rail);
   border-bottom: 0;
   border-radius: 8px 8px 0 0;
   background: var(--menu-bg);
   overflow: hidden;
 }
-.bottom > .strips {
-  width: auto;
-  max-width: calc(var(--column) - 20px);
+.bottom:has(.strips > :not([hidden])) .composer .box,
+.bottom:has(.strips > :not([hidden])) .composer .dock {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 .strips:not(:has(> :not([hidden]))) {
   display: none;
@@ -1460,17 +1480,16 @@ th {
   gap: 0;
 }
 
-/* The message box floats over the bottom of the conversation, in the chat's own
-   column. The chat keeps scrolling behind it to the panel's bottom edge and stays
-   visible around it; a soft halo in the panel colour fades text that passes close
-   to the box. The overlay stops short of the chat's scrollbar, which stays usable.
-   The box's border takes the accent while the agent works. */
+/* The message box floats over the bottom of the conversation, centred under the chat.
+   It fills a narrow side bar and stops growing at 640px, so in a wide one the chat
+   shows beside it. The chat keeps scrolling behind it to the panel's bottom edge; a
+   soft halo in the panel colour fades text that passes close to the box. The overlay
+   stops short of the chat's scrollbar, which stays usable. The box's border takes the
+   accent while the agent works. */
 .bottom {
   --fade: 32px;
   --halo: 0 0 12px 6px var(--panel-bg);
-  /* The box sits a little inside the chat's column, so the chat shows beside it: none
-     in a narrow side bar, up to 32px in a wide one. */
-  --box-inset: clamp(0px, calc(8cqi - 24px), 32px);
+  --box-max: 640px;
   position: absolute;
   left: 0;
   right: var(--scrollbar, 10px);
@@ -1479,15 +1498,21 @@ th {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: var(--fade) calc(var(--gutter) + var(--box-inset)) 12px;
-  /* The chat fades out as it reaches the panel's bottom edge. */
-  background: linear-gradient(transparent calc(100% - var(--fade)), var(--panel-bg));
+  padding: var(--fade) var(--gutter) 12px;
+  /* The chat dims across the whole box area: full strength above the box, fainter beside
+     it, gone at the panel's bottom edge. */
+  background: linear-gradient(
+    transparent,
+    color-mix(in srgb, var(--panel-bg) 55%, transparent) var(--fade),
+    color-mix(in srgb, var(--panel-bg) 85%, transparent) calc(100% - var(--fade)),
+    var(--panel-bg)
+  );
   /* The scroll wheel over the fade still scrolls the chat. */
   pointer-events: none;
 }
 .bottom > * {
   width: 100%;
-  max-width: calc(var(--column) - 2 * var(--box-inset));
+  max-width: min(var(--column), var(--box-max));
   margin-inline: auto;
   pointer-events: auto;
 }
@@ -1525,11 +1550,12 @@ th {
 }
 .input {
   width: 100%;
-  min-height: 46px;
+  /* One line when empty; it grows with the text up to the cap. */
+  min-height: 36px;
   max-height: min(240px, 40vh);
   scrollbar-width: thin;
   resize: none;
-  padding: 9px 12px 4px;
+  padding: 9px 12px;
   border: 0;
   background: transparent;
   color: var(--vscode-input-foreground);
@@ -1542,11 +1568,30 @@ th {
 }
 .box-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   padding: 5px 6px;
   border-top: 1px solid var(--rail);
   min-width: 0;
+}
+/* A line break that only takes effect in a narrow panel (below). */
+.box-tools .brk {
+  display: none;
+}
+/* Narrow panels: the model pill moves to a second row under the tools, at its full
+   width, instead of being squeezed beside them. */
+@container sidecar (max-width: 420px) {
+  .box-tools .brk {
+    display: block;
+    flex-basis: 100%;
+    height: 0;
+    order: 98;
+  }
+  .box-tools .pill.model {
+    order: 99;
+    max-width: 100%;
+  }
 }
 .box-tools .ico {
   width: 22px;
@@ -1652,14 +1697,20 @@ th {
   height: 12px;
   stroke-width: 2;
 }
-/* Narrow panels: "● 2" instead of "● 2 agents"; no variant or agent name under 360px. */
+/* Narrow panels: "● 2" instead of "● 2 agents" up to 440px. Just above the width where
+   the model pill gets its own row, the model's variant gives way to its name (it stays
+   in the pill's tooltip and the model menu). No agent name under 360px. */
 @container sidecar (max-width: 440px) {
   .pill .pl {
     display: none;
   }
 }
+@container sidecar (min-width: 421px) and (max-width: 520px) {
+  .pill .v {
+    display: none;
+  }
+}
 @container sidecar (max-width: 359px) {
-  .pill .v,
   .mode .ml {
     display: none;
   }
@@ -1832,16 +1883,24 @@ kbd {
 }
 
 /* "/" commands: a slash in a small rounded square. */
-.sqico {
-  display: grid;
-  place-items: center;
-  width: 14px;
-  height: 14px;
-  border: 1.4px solid currentColor;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1;
+/* The context ring: a faint track and an arc that fills from the top as the context
+   grows, in the theme's warning colour from 70% and its error colour from 90%. */
+.i-ring {
+  transform: rotate(-90deg);
+}
+.i-ring .track {
+  stroke: currentColor;
+  opacity: 0.25;
+}
+.i-ring .arc {
+  stroke: currentColor;
+  stroke-linecap: round;
+}
+.ctx.warn .arc {
+  stroke: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, #cca700));
+}
+.ctx.high .arc {
+  stroke: var(--vscode-editorError-foreground, var(--vscode-charts-red, #f14c4c));
 }
 /* The clock pill has no fill. */
 .pill.clean {

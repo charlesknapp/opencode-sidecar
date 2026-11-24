@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2 (2026-11-23)
+
+- **Context ring** in the message box: it fills with the context in use (from the tokens OpenCode reports and the model's limit), in the theme's warning colour from 70% and error colour from 90%. Hover for the numbers; click for context, cost, steps, the task budget and Compact.
+- The **prompt cache clock** shows only when the last step reported prompt-cache tokens, so models without a prompt cache (such as most local ones) no longer show a countdown that means nothing.
+- The **/** button is a drawn icon matching the others in the message box.
+- The chat **dims across the whole box area**, as it passes beside and below the message box, instead of only at the bottom edge.
+- The message box stops growing at **640px**, centred under the chat, so in a wide panel it no longer stretches across it, and it starts one line tall.
+- The **status strip** above the message box is as wide as the box and joins it as one unit, and its workspace line stays on one row ("HEAD ↔ working tree" moves to the tooltip in a narrow panel).
+- In a **narrow panel** (420px or less) the model pill moves to a row of its own under the tools instead of being squeezed; just above that width the model's variant gives way to its name (it stays in the tooltip and the model menu).
+
 ## 0.1.1 (2026-11-23)
 
 **Look and feel**

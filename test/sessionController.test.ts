@@ -267,6 +267,7 @@ describe("session controller: sessions and prompts", () => {
       cost: 0.25,
       // Cache-read share of the step's input: 40000 / (1000 + 40000 + 800).
       cacheHit: 40000 / 41800,
+      cached: true,
     });
     assert.ok(typeof lastStepAt === "number" && Date.now() - lastStepAt < 5000, "live steps get their time");
   });

@@ -145,6 +145,7 @@ const base = (o = {}) => ({
     contextLimit: 262144,
     cost: 0.08,
     cacheHit: 0.82,
+    cached: true,
     lastStepAt: Date.now() - 2 * 60_000,
   },
   steps: 14,
@@ -836,6 +837,9 @@ const doneItems = timelineItems
   .map((i) => (i.kind === "tool" ? { ...i, status: "completed" } : i));
 const doneState = base({ task: null, currentSession: { id: "s", title: "Random sign-outs" } });
 scenes["10-final-answer"] = { state: doneState, items: doneItems };
+// The message box at the narrowest and a wide width: it wraps the model pill, then stops growing at 640px.
+scenes["10-final-answer-300"] = { ...scenes["10-final-answer"], width: 300 };
+scenes["10-final-answer-900"] = { ...scenes["10-final-answer"], width: 900 };
 scenes["11-commands"] = { state: doneState, items: doneItems, click: '[data-testid="commands-button"]' };
 scenes["12-usage"] = { state: doneState, items: doneItems, click: '[data-testid="cache-pill"]' };
 scenes["13-bookmarks"] = {

@@ -110,6 +110,11 @@ const ICON_PATHS: Record<string, string[]> = {
   bookmark: ["M4.5 2.5h7v11L8 11l-3.5 2.5z"],
   history: ["M13.8 8a5.8 5.8 0 1 1-11.6 0a5.8 5.8 0 1 1 11.6 0", "M8 5v3l2 1.3"],
   clock: ["M13.8 8a5.8 5.8 0 1 1-11.6 0a5.8 5.8 0 1 1 11.6 0", "M8 5v3l2 1.3"],
+  // The / palette: a slash in a rounded square, on the same grid and stroke as the others.
+  slash: [
+    "M4.9 2.6h6.2a2.3 2.3 0 0 1 2.3 2.3v6.2a2.3 2.3 0 0 1-2.3 2.3H4.9a2.3 2.3 0 0 1-2.3-2.3V4.9a2.3 2.3 0 0 1 2.3-2.3z",
+    "M9.5 5.4L6.5 10.6",
+  ],
   newchat: ["M8 2.3a5.7 5.7 0 0 1 5 8.4l.8 2.8-2.8-.8A5.7 5.7 0 1 1 8 2.3z", "M8 5.6v4.8M5.6 8h4.8"],
   pencil: ["M10.5 2.5l3 3L6 13H3v-3z"],
   plus: ["M8 3v10M3 8h10"],
@@ -264,7 +269,7 @@ const shown = (): Transcript => subView?.transcript ?? transcript;
 const chipsEl = h("div", { className: "chips", "aria-label": "Attached context" });
 const input = h("textarea", {
   className: "input",
-  rows: 2,
+  rows: 1,
   dir: "auto",
   placeholder: "Ask anything…",
   "aria-label": "Message OpenCode",
@@ -284,7 +289,8 @@ const toolBtn = (cls: string, label: string, testid: string, ...children: Array<
     ...children,
   );
 const plusBtn = toolBtn("ico", "Add context", "add-context", icon("plus"));
-const slashBtn = toolBtn("ico", "Commands", "commands-button", h("span", { className: "sqico" }, "/"));
+const slashBtn = toolBtn("ico", "Commands", "commands-button", icon("slash"));
+const ctxBtn = toolBtn("ico ctx", "Context", "context-ring");
 const clockBtn = toolBtn("pill clean", "Prompt cache and usage", "cache-pill");
 const agentsBtn = toolBtn("pill", "Subagents", "agents-pill");
 const modelBtn = toolBtn("pill model", "Model", "model-pill");
@@ -299,10 +305,13 @@ const boxTools = h(
   { className: "box-tools" },
   plusBtn,
   slashBtn,
+  ctxBtn,
   clockBtn,
   agentsBtn,
   modelBtn,
   h("span", { className: "grow" }),
+  // Breaks the row before the model pill in a narrow panel (CSS orders the two last).
+  h("span", { className: "brk", "aria-hidden": "true" }),
   modeBtn,
   sendBtn,
 );
@@ -349,9 +358,8 @@ slashBtn.addEventListener("click", () => {
   if (openMenuState?.anchor !== slashBtn) send({ type: "refreshCommands" });
   openMenu(slashBtn, commandsMenu(), commandsMenuOptions());
 });
-clockBtn.addEventListener("click", () =>
-  openMenu(clockBtn, usageMenu(), { width: "box", title: "Context and usage" }),
-);
+for (const b of [ctxBtn, clockBtn])
+  b.addEventListener("click", () => openMenu(b, usageMenu(), { width: "box", title: "Context and usage" }));
 modelBtn.addEventListener("click", () => openMenu(modelBtn, modelMenu(), modelMenuOptions()));
 modeBtn.addEventListener("click", () =>
   openMenu(modeBtn, modeMenu(), {
@@ -1215,9 +1223,9 @@ function modelMenu(): MenuEntry[] {
     );
   }
   if (!models.length) out.push(note(modelPlaceholder(s)));
-  // Usage lives in the clock's menu; without the clock it stays here.
+  // Usage lives behind the context ring and the clock; without either it stays here.
   const stats = usageStats(s);
-  if (stats.length && !clockShown(s)) out.push(sep(), heading("Session"), ...stats);
+  if (stats.length && !ringShown(s) && !clockShown(s)) out.push(sep(), heading("Session"), ...stats);
   return out;
 }
 
@@ -1394,9 +1402,13 @@ function modelMenuOptions(): MenuOptions {
   return { width: "box", title: "Select a model", maxHeight: 320, footer: modelSliders() };
 }
 
-/** The clock shows once a step has finished, unless `cacheWarmMinutes` is 0. */
+/**
+ * The clock shows once a step has finished with prompt-cache tokens reported (the model
+ * caches), unless `cacheWarmMinutes` is 0. A model without a prompt cache, such as most
+ * local ones, never shows it.
+ */
 function clockShown(s: ViewState): boolean {
-  return s.prefs.cacheWarmMinutes > 0 && !!s.usage?.lastStepAt;
+  return s.prefs.cacheWarmMinutes > 0 && !!s.usage?.lastStepAt && s.usage.cached === true;
 }
 
 function cacheUntil(s: ViewState): number {
@@ -1415,24 +1427,60 @@ function cacheTip(until: number): string {
     : "Prompt cache probably cold (estimate).";
 }
 
-/** Prompt cache estimate, the session's usage, and Compact conversation. */
+/** The share of the context window in use (0–1), when OpenCode reported it and the model's limit is known. */
+function contextShare(s: ViewState): number | null {
+  const u = s.usage;
+  if (u?.contextTokens == null || !u.contextLimit) return null;
+  return Math.min(1, Math.max(0, u.contextTokens / u.contextLimit));
+}
+
+/** The context ring shows once OpenCode has reported how full the context window is. */
+function ringShown(s: ViewState): boolean {
+  return contextShare(s) !== null;
+}
+
+/** A ring that fills with the context in use: a faint track and an arc from the top. */
+function contextRing(share: number): SVGSVGElement {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", "i i-ring");
+  const circle = (cls: string) => {
+    const c = document.createElementNS(NS, "circle");
+    for (const [k, v] of Object.entries({ class: cls, cx: "8", cy: "8", r: "5.6", pathLength: "100" }))
+      c.setAttribute(k, v);
+    return c;
+  };
+  const arc = circle("arc");
+  // At least a sliver, so a fresh session still shows where the ring starts.
+  arc.setAttribute("stroke-dasharray", `${Math.max(2, share * 100)} 100`);
+  svg.append(circle("track"), arc);
+  return svg;
+}
+
+/** The session's usage (context first), the prompt-cache estimate for models that cache, and Compact. */
 function usageMenu(): MenuEntry[] {
   const s = state;
   if (!s) return [];
-  const left = cacheUntil(s) - Date.now();
-  const out: MenuEntry[] = [
-    heading("Prompt cache"),
-    stat("Warm for", left > 0 ? `~${Math.ceil(left / 60_000)} min` : "cold (estimate)"),
-  ];
-  if (s.usage?.cacheHit != null)
-    out.push(stat("Cache hit", `${Math.round(s.usage.cacheHit * 100)}% of input`));
-  out.push(
-    note(
-      `Estimated from the last step and your ${s.prefs.cacheWarmMinutes}-minute cache setting. OpenCode reports cache tokens, not the timer.`,
-    ),
-  );
+  const out: MenuEntry[] = [];
   const stats = usageStats(s);
-  if (stats.length) out.push(sep(), heading("Session"), ...stats);
+  if (stats.length) out.push(heading("Session"), ...stats);
+  if (clockShown(s)) {
+    const left = cacheUntil(s) - Date.now();
+    if (out.length) out.push(sep());
+    out.push(
+      heading("Prompt cache"),
+      stat("Warm for", left > 0 ? `~${Math.ceil(left / 60_000)} min` : "cold (estimate)"),
+    );
+    if (s.usage?.cacheHit != null)
+      out.push(stat("Cache hit", `${Math.round(s.usage.cacheHit * 100)}% of input`));
+    out.push(
+      note(
+        `Estimated from the last step and your ${s.prefs.cacheWarmMinutes}-minute cache setting. OpenCode reports cache tokens, not the timer.`,
+      ),
+    );
+  }
   out.push(
     sep(),
     item("Compact conversation", () => send({ type: "compact" }), {
@@ -4812,15 +4860,21 @@ function renderChanges(s: ViewState) {
     );
   }
   if (showWs && ws) {
-    const why = ac.status === "unavailable" ? `${t("agentDiffUnavailable")}: ${ac.reason}` : undefined;
+    const label = `${t("workspaceChanges")}: ${ws.count} file${ws.count === 1 ? "" : "s"}`;
+    const why = ac.status === "unavailable" ? `\n${t("agentDiffUnavailable")}: ${ac.reason}` : "";
     parts.push(
       h(
         "div",
-        { className: "row small" },
+        { className: "row small ws-row" },
         h(
           "span",
-          { className: "muted", "data-testid": "workspace-changes", title: why },
-          `${t("workspaceChanges")}: ${ws.count} file${ws.count === 1 ? "" : "s"} (HEAD ↔ working tree)`,
+          {
+            className: "muted",
+            "data-testid": "workspace-changes",
+            title: `${label} (HEAD ↔ working tree)${why}`,
+          },
+          label,
+          h("span", { className: "ws-aside" }, " (HEAD ↔ working tree)"),
         ),
         h(
           "button",
@@ -4989,6 +5043,17 @@ function renderComposer(s: ViewState) {
   boxTools.hidden = !!subView;
   boxEl.classList.toggle("active", s.busy && !subView);
   for (const b of [plusBtn, modeBtn, slashBtn]) b.disabled = !connected;
+  const share = contextShare(s);
+  ctxBtn.hidden = share === null;
+  if (share !== null && s.usage) {
+    const pct = Math.round(share * 100);
+    ctxBtn.replaceChildren(contextRing(share));
+    ctxBtn.classList.toggle("warn", pct >= 70 && pct < 90);
+    ctxBtn.classList.toggle("high", pct >= 90);
+    const tip = `Context ${formatTokens(s.usage.contextTokens!)} / ${formatTokens(s.usage.contextLimit!)} (${pct}%)`;
+    ctxBtn.dataset.tip = tip;
+    ctxBtn.setAttribute("aria-label", `${tip}. Usage and Compact.`);
+  }
   clockBtn.hidden = !clockShown(s);
   if (clockShown(s)) {
     const until = cacheUntil(s);

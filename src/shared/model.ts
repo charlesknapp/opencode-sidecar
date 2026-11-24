@@ -158,6 +158,11 @@ export interface UsageInfo {
   cacheHit?: number | null;
   /** When the last step finished (epoch ms), for the prompt-cache estimate. */
   lastStepAt?: number | null;
+  /**
+   * The last step reported prompt-cache tokens (read or written), so the provider caches.
+   * The clock shows only then: a model without a prompt cache has nothing to count down.
+   */
+  cached?: boolean;
 }
 
 /** An OpenCode slash command (`GET /api/command`). */

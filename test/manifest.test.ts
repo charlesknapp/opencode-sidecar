@@ -13,7 +13,7 @@ describe("extension manifest", () => {
   it("keeps the release identity", () => {
     assert.deepEqual(
       [pkg.name, pkg.publisher, pkg.displayName, pkg.version],
-      ["opencode-sidecar", "cadogy", "Sidecar for OpenCode", "0.1.1"],
+      ["opencode-sidecar", "cadogy", "Sidecar for OpenCode", "0.1.2"],
     );
   });
 

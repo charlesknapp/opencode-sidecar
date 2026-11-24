@@ -95,4 +95,4 @@ OpenCode runs a subagent (the `subagent` tool) in a child session: `session.crea
 
 - A folder OpenCode has not loaded yet briefly answers with empty model and command lists. Sidecar retries the models once and the commands twice, and refreshes the commands when the / menu opens.
 - An agent's default model can differ from `GET /api/model/default`, so new sessions are created with an explicit model.
-- Rolling, weekly or monthly provider quotas are not exposed by OpenCode and are not shown. The prompt-cache clock is an estimate from the last step's time and the `cacheWarmMinutes` setting.
+- Rolling, weekly or monthly provider quotas are not exposed by OpenCode and are not shown. The prompt-cache clock is an estimate from the last step's time and the `cacheWarmMinutes` setting, shown only when that step reported cache tokens (`tokens.cache.read` or `tokens.cache.write` above zero).
