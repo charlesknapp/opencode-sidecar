@@ -18,19 +18,21 @@ export function DemoVideo({ label }: { label: string }) {
   }, [])
 
   return (
-    <video
-      ref={ref}
-      aria-label={label}
-      className="aspect-video w-full rounded-media border border-line-strong bg-raised"
-      poster="/demo-poster.jpg"
-      autoPlay={!reducedMotion}
-      controls={reducedMotion}
-      muted
-      loop
-      playsInline
-      preload="metadata"
-    >
-      <source src="/demo.mp4" type="video/mp4" />
-    </video>
+    <div className="relative overflow-hidden rounded-media after:pointer-events-none after:absolute after:inset-0 after:rounded-media after:border after:border-line-strong">
+      <video
+        ref={ref}
+        aria-label={label}
+        className="block aspect-video w-full object-cover"
+        poster="/demo-poster.jpg"
+        autoPlay={!reducedMotion}
+        controls={reducedMotion}
+        muted
+        loop
+        playsInline
+        preload="metadata"
+      >
+        <source src="/demo.mp4" type="video/mp4" />
+      </video>
+    </div>
   )
 }

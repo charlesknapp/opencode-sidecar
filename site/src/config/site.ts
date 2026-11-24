@@ -27,69 +27,48 @@ export type Site = typeof site
 export type Feature = {
   title: string
   description: string
-  image: { src: string; alt: string; anchor: "top" | "bottom" }
+  art: { name: ArtName; anchor: "top" | "bottom" }
 }
+
+export type ArtName =
+  "timeline" | "subagents" | "permission" | "budget" | "composer" | "session"
 
 export const features: readonly Feature[] = [
   {
     title: "Every step on one timeline",
     description:
       "Each prompt gets a timeline of what the agent did: thinking time, every tool call with its input and output, and edits as diffs with your theme's syntax colors. Click an edit to open it in VS Code's own diff editor.",
-    image: {
-      src: "/screens/tools.png",
-      alt: "A read, an edit with its changed lines and a failed shell command",
-      anchor: "top",
-    },
+    art: { name: "timeline", anchor: "top" },
   },
   {
     title: "Live subagents you can stop",
     description:
       "Each subagent shows its task, its exact prompt, what it is doing right now, and its tool count and time. Stop any of them, or open one into its own conversation. Its report comes back as one line you can expand.",
-    image: {
-      src: "/screens/subagents.png",
-      alt: "Subagent rows and a subagent's permission request",
-      anchor: "top",
-    },
+    art: { name: "subagents", anchor: "top" },
   },
   {
     title: "Nothing is approved for you",
     description:
       "Permission requests and questions, including those raised deep inside a subagent, wait in place of the message box until you answer. You can also tell the agent what to do instead.",
-    image: {
-      src: "/screens/question.png",
-      alt: "A question in place of the message box, with options",
-      anchor: "bottom",
-    },
+    art: { name: "permission", anchor: "bottom" },
   },
   {
     title: "Budget Guard",
     description:
       "Set a local limit on cost and steps for each task. When a task runs away, Budget Guard stops it, and you decide whether to continue once, raise the budget or start over.",
-    image: {
-      src: "/screens/budget.png",
-      alt: "Budget Guard stopped the task with Continue once and Increase budget",
-      anchor: "top",
-    },
+    art: { name: "budget", anchor: "top" },
   },
   {
     title: "Everything at hand in the message box",
     description:
       "Type @ to mention a file, folder, subagent or skill, paste a screenshot, and open / for OpenCode's commands, including your own. Steer a running task or queue the next message, and rewind or fork from any prompt.",
-    image: {
-      src: "/screens/commands.png",
-      alt: "The / action palette with sections and a filter",
-      anchor: "bottom",
-    },
+    art: { name: "composer", anchor: "bottom" },
   },
   {
     title: "One timeline for the whole session",
     description:
       "Prompts stay pinned while you read their turn, answers can be copied or bookmarked, and sessions you start in OpenCode's terminal UI show up here too, because they are OpenCode's own.",
-    image: {
-      src: "/screens/timeline.png",
-      alt: "Two turns with a pinned prompt, tool calls, answers, Copy and Bookmark",
-      anchor: "top",
-    },
+    art: { name: "session", anchor: "top" },
   },
 ]
 

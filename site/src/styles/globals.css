@@ -14,7 +14,7 @@
   --color-foreground-hover: var(--foreground-hover);
   --color-line-hover: var(--line-hover);
 
-  --radius-media: 1rem;
+  --radius-media: 0.5rem;
 }
 
 :root {
@@ -68,7 +68,7 @@
 }
 
 @utility text-display {
-  font-size: clamp(2.75rem, 7.2vw, 5.75rem);
+  font-size: clamp(3rem, 7vw, 6rem);
   line-height: 0.98;
   letter-spacing: -0.045em;
   font-weight: 500;
@@ -99,4 +99,78 @@
 
 @utility fade-out-top {
   mask-image: linear-gradient(to top, black 62%, transparent);
+}
+
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--subtle-foreground);
+}
+
+/* Feature art: miniature panels that play a short interaction while their card is
+   active (hovered, or in view on touch screens). Each element names what it does,
+   and --d staggers it. Leaving the card reverts everything at once. */
+@layer components {
+  .art [data-enter],
+  .art [data-leave],
+  .art [data-move],
+  .art [data-type] {
+    transition-property: opacity, transform, max-width;
+    transition-duration: var(--dur, 420ms);
+    transition-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+
+  .art [data-enter] {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  .art [data-leave] {
+    opacity: 1;
+  }
+
+  .art [data-type] {
+    display: inline-block;
+    max-width: 0;
+    overflow: hidden;
+    vertical-align: bottom;
+    white-space: nowrap;
+    transition-timing-function: steps(var(--steps, 10), end);
+  }
+
+  [data-on="true"] .art [data-enter],
+  [data-on="true"] .art [data-leave],
+  [data-on="true"] .art [data-move],
+  [data-on="true"] .art [data-type] {
+    transition-delay: var(--d, 0ms);
+  }
+
+  [data-on="true"] .art [data-enter] {
+    opacity: 1;
+    transform: none;
+  }
+
+  [data-on="true"] .art [data-leave] {
+    opacity: 0;
+  }
+
+  [data-on="true"] .art [data-move] {
+    transform: var(--to);
+  }
+
+  [data-on="true"] .art [data-type] {
+    max-width: var(--w, 12ch);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .art [data-enter],
+    .art [data-leave],
+    .art [data-move],
+    .art [data-type] {
+      transition: none !important;
+    }
+  }
 }

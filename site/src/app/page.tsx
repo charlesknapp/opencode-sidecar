@@ -3,10 +3,12 @@ import Link from "next/link"
 import { comparison, faq, features, site, steps } from "@/config/site"
 import { formatReleaseDate, loadReleases } from "@/lib/changelog"
 import { buildStructuredData } from "@/lib/structured-data"
+import { ButtonLink } from "@/components/button-link"
 import { DemoVideo } from "@/components/demo-video"
 import { FeatureCard } from "@/components/feature-card"
+import { InstallCommand } from "@/components/install-command"
 import { Mark } from "@/components/mark"
-import { Pill } from "@/components/pill"
+import { Cross, Section } from "@/components/section"
 import { SiteFooter, SiteNav } from "@/components/site-chrome"
 
 const jsonLd = JSON.stringify(buildStructuredData({ site, faq })).replace(
@@ -34,66 +36,67 @@ export default function Home() {
       />
       <header>
         <SiteNav />
-        <div className="container-page pt-14 pb-16 lg:pt-24 lg:pb-20">
-          <Link
-            href="/changelog"
-            className="inline-flex h-8 items-center gap-2 rounded-full border border-line-strong px-3.5 text-sm text-muted-foreground transition-[border-color,color] duration-150 hover:border-line-hover hover:text-foreground"
-          >
-            <span className="font-medium text-foreground">
-              v{latest.version}
-            </span>
-            <span aria-hidden="true" className="h-3 w-px bg-line-strong" />
-            {formatReleaseDate(latest.date)} · What&apos;s new →
-          </Link>
-          <h1 className="mt-8 max-w-4xl text-display">
-            OpenCode,{" "}
-            <span className="text-muted-foreground">in your sidebar.</span>
-          </h1>
-          <p className="mt-7 max-w-[38rem] text-lead text-muted-foreground">
-            {site.summary}
-          </p>
-          <div className="mt-10 flex flex-wrap gap-3">
-            <Pill href={site.links.marketplace} variant="primary">
-              Install for VS Code
-            </Pill>
-            <Pill href={site.links.openVsx}>
-              Open VSX
-              <span className="hidden min-[400px]:inline">
-                : Cursor, Windsurf, VSCodium
-              </span>
-            </Pill>
+        <div className="relative container-page pt-14 pb-20 lg:pt-24 lg:pb-28 xl:border-x xl:border-line">
+          <Cross side="left" />
+          <Cross side="right" />
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:items-end lg:gap-16">
+            <div>
+              <Link
+                href="/changelog"
+                className="inline-flex h-8 items-center gap-2 rounded-full border border-line-strong px-3.5 text-sm text-muted-foreground transition-[border-color,color] duration-150 hover:border-line-hover hover:text-foreground"
+              >
+                <span className="font-medium text-foreground">
+                  v{latest.version}
+                </span>
+                <span aria-hidden="true" className="h-3 w-px bg-line-strong" />
+                {formatReleaseDate(latest.date)} · What&apos;s new →
+              </Link>
+              <h1 className="mt-8 text-display">
+                OpenCode,{" "}
+                <span className="text-muted-foreground">in your sidebar.</span>
+              </h1>
+            </div>
+            <div>
+              <p className="max-w-[34rem] text-lead text-muted-foreground">
+                {site.summary}
+              </p>
+              <div className="mt-8 flex flex-wrap gap-x-5 gap-y-4">
+                <ButtonLink href={site.links.marketplace} variant="primary">
+                  Install for VS Code
+                </ButtonLink>
+                <ButtonLink href={site.links.openVsx}>Open VSX</ButtonLink>
+              </div>
+            </div>
           </div>
-          <p className="mt-6 text-sm text-subtle-foreground">
-            Free · Open source (MIT) · No telemetry ·{" "}
-            <a
-              href={site.links.openInVsCode}
-              className={`${inlineLink} whitespace-nowrap`}
-            >
-              Open it in VS Code directly
-            </a>
-          </p>
+
+          <div className="mt-14 grid grid-cols-[minmax(0,1fr)] gap-4 lg:mt-16 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+            <InstallCommand />
+            <p className="text-sm text-subtle-foreground lg:max-w-[16rem]">
+              Free · Open source (MIT) · No telemetry ·{" "}
+              <a
+                href={site.links.openInVsCode}
+                className={`${inlineLink} whitespace-nowrap`}
+              >
+                Open it in VS Code directly
+              </a>
+            </p>
+          </div>
+
+          <div className="mt-10 lg:mt-12">
+            <DemoVideo label="Demo of Sidecar: a prompt landing on the timeline, its diff, and live subagents" />
+            <p className="mt-4 text-sm text-subtle-foreground">
+              The real extension, replaying a scripted session.{" "}
+              <a href={site.links.video} className={inlineLink}>
+                Watch the one-minute film
+              </a>
+            </p>
+          </div>
         </div>
       </header>
 
       <main>
-        <section
-          aria-labelledby="demo"
-          className="container-page pb-24 lg:pb-32"
-        >
-          <h2 id="demo" className="sr-only">
-            Demo
-          </h2>
-          <DemoVideo label="Demo of Sidecar: a prompt landing on the timeline, its diff, and live subagents" />
-          <p className="mt-4 text-sm text-subtle-foreground">
-            The real extension, replaying a scripted session.{" "}
-            <a href={site.links.video} className={inlineLink}>
-              Watch the one-minute film
-            </a>
-          </p>
-        </section>
-
-        <section aria-labelledby="try" className="border-t border-line section">
-          <div className="container-page grid gap-12 lg:grid-cols-[1fr_440px] lg:items-center lg:gap-20">
+        <Section id="try" index="01" label="Try it">
+          <div className="grid gap-12 lg:grid-cols-[1fr_440px] lg:items-center lg:gap-20">
             <div>
               <h2 id="try" className="max-w-lg text-h2">
                 Try the real panel, right here.
@@ -129,13 +132,10 @@ export default function Home() {
               className="h-[680px] w-full rounded-media border border-line-strong bg-raised"
             />
           </div>
-        </section>
+        </Section>
 
-        <section
-          aria-labelledby="features"
-          className="border-t border-line section"
-        >
-          <div className="container-page">
+        <Section id="features" index="02" label="Features">
+          <div>
             <div className="grid gap-6 lg:grid-cols-2 lg:items-end">
               <h2 id="features" className="max-w-xl text-h2">
                 See and steer everything the agent does.
@@ -145,19 +145,20 @@ export default function Home() {
                 your code, built on OpenCode&apos;s own API.
               </p>
             </div>
-            <ul className="mt-14 grid gap-5 md:grid-cols-2 lg:mt-16 lg:grid-cols-3">
-              {features.map((feature) => (
-                <FeatureCard key={feature.title} feature={feature} />
+            <ul className="mt-14 grid overflow-hidden rounded-media border border-line md:grid-cols-2 lg:mt-16 lg:grid-cols-3">
+              {features.map((feature, index) => (
+                <FeatureCard
+                  key={feature.title}
+                  feature={feature}
+                  index={index}
+                />
               ))}
             </ul>
           </div>
-        </section>
+        </Section>
 
-        <section
-          aria-labelledby="compare"
-          className="border-t border-line section"
-        >
-          <div className="container-page">
+        <Section id="compare" index="03" label="Compare">
+          <div>
             <h2 id="compare" className="max-w-2xl text-h2">
               Sidecar or the official OpenCode extension?
             </h2>
@@ -237,13 +238,10 @@ export default function Home() {
               </table>
             </div>
           </div>
-        </section>
+        </Section>
 
-        <section
-          aria-labelledby="start"
-          className="border-t border-line section"
-        >
-          <div className="container-page grid gap-12 lg:grid-cols-2 lg:gap-20">
+        <Section id="start" index="04" label="Get started">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-20">
             <div>
               <h2 id="start" className="text-h2">
                 Get started in a minute
@@ -257,24 +255,23 @@ export default function Home() {
                 local ones included.
               </p>
             </div>
-            <ol className="space-y-2">
+            <ol className="space-y-9 lg:pt-1">
               {steps.map((step, index) => (
-                <li
-                  key={step}
-                  className="flex gap-5 border-t border-line pt-5 pb-3"
-                >
-                  <span className="grid size-7 shrink-0 place-items-center rounded-full border border-line-strong font-mono text-[13px] text-muted-foreground tabular-nums">
-                    {index + 1}
+                <li key={step} className="flex gap-6">
+                  <span className="w-6 shrink-0 pt-[0.2em] font-mono text-[13px] text-subtle-foreground tabular-nums">
+                    {String(index + 1).padStart(2, "0")}
                   </span>
-                  <span className="pt-0.5 leading-relaxed">{step}</span>
+                  <span className="max-w-[30rem] text-[17px] leading-relaxed">
+                    {step}
+                  </span>
                 </li>
               ))}
             </ol>
           </div>
-        </section>
+        </Section>
 
-        <section aria-labelledby="faq" className="border-t border-line section">
-          <div className="container-page grid gap-12 lg:grid-cols-[1fr_2fr] lg:gap-20">
+        <Section id="faq" index="05" label="FAQ">
+          <div className="grid gap-12 lg:grid-cols-[1fr_2fr] lg:gap-20">
             <div>
               <h2 id="faq" className="text-h2 lg:sticky lg:top-12">
                 Questions
@@ -294,10 +291,10 @@ export default function Home() {
               ))}
             </div>
           </div>
-        </section>
+        </Section>
 
-        <section aria-labelledby="cta" className="border-t border-line section">
-          <div className="container-page flex flex-col items-center text-center">
+        <Section id="cta">
+          <div className="flex flex-col items-center text-center">
             <Mark className="size-14" />
             <h2 id="cta" className="mt-8 text-h2">
               Try it in your editor.
@@ -306,11 +303,11 @@ export default function Home() {
               Search “OpenCode Sidecar” in your Extensions view.
             </p>
             <div className="mt-9 flex flex-wrap justify-center gap-3">
-              <Pill href={site.links.marketplace} variant="primary">
+              <ButtonLink href={site.links.marketplace} variant="primary">
                 VS Code Marketplace
-              </Pill>
-              <Pill href={site.links.openVsx}>Open VSX</Pill>
-              <Pill href={site.links.source}>Source on GitHub</Pill>
+              </ButtonLink>
+              <ButtonLink href={site.links.openVsx}>Open VSX</ButtonLink>
+              <ButtonLink href={site.links.source}>Source on GitHub</ButtonLink>
             </div>
             <p className="mt-9 text-sm text-subtle-foreground">
               Like it?{" "}
@@ -324,7 +321,7 @@ export default function Home() {
               .
             </p>
           </div>
-        </section>
+        </Section>
       </main>
 
       <SiteFooter />
