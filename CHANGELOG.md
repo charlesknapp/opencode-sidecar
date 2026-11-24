@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5 (2026-11-24)
+
+- The README (and so the Marketplace and Open VSX pages) opens with an animated demo of the timeline, the diff and live subagents. No change to the extension itself.
+
 ## 0.1.4 (2026-11-24)
 
 - The listing says what Sidecar is in the words people search for: **Sidecar for OpenCode: Chat Sidebar & GUI**, an OpenCode chat sidebar and GUI for VS Code, Cursor and VSCodium. The extension ID and the panel's title are unchanged.

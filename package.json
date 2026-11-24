@@ -2,7 +2,7 @@
   "name": "opencode-sidecar",
   "displayName": "Sidecar for OpenCode: Chat Sidebar & GUI",
   "description": "OpenCode chat sidebar and GUI for VS Code, Cursor and VSCodium: every agent step on one timeline, live subagents, diffs, @ mentions, images, permissions, fork and rewind.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "cadogy",
   "private": true,
   "license": "MIT",

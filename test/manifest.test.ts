@@ -13,7 +13,7 @@ describe("extension manifest", () => {
   it("keeps the release identity", () => {
     assert.deepEqual(
       [pkg.name, pkg.publisher, pkg.displayName, pkg.version],
-      ["opencode-sidecar", "cadogy", "Sidecar for OpenCode: Chat Sidebar & GUI", "0.1.4"],
+      ["opencode-sidecar", "cadogy", "Sidecar for OpenCode: Chat Sidebar & GUI", "0.1.5"],
     );
   });
 
