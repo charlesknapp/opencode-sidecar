@@ -1,6 +1,6 @@
 # Sidecar for OpenCode
 
-**The complete OpenCode experience inside VS Code.** Sidecar puts the [OpenCode](https://opencode.ai) coding agent in a chat panel beside your code: every step on one timeline, live subagents you can open and stop, permission requests and questions answered where you type, `@` mentions, images, fork and rewind, and the agent's edits in VS Code's own diff editor.
+**An OpenCode chat sidebar and GUI for VS Code.** Sidecar for OpenCode is a free, open-source extension that puts the [OpenCode](https://opencode.ai) coding agent in a chat panel beside your code, in VS Code, Cursor, Windsurf and VSCodium: every step on one timeline, live subagents you can open and stop, permission requests and questions answered where you type, `@` mentions, images, fork and rewind, and the agent's edits in VS Code's own diff editor.
 
 ![OpenCode 2.x](https://img.shields.io/badge/OpenCode-2.x-0a0a0a) ![VS Code 1.95+](https://img.shields.io/badge/VS%20Code-1.95%2B-0a0a0a) ![License: MIT](https://img.shields.io/badge/license-MIT-0a0a0a)
 
@@ -162,10 +162,33 @@ Details are in [SECURITY.md](https://github.com/charlesknapp/opencode-sidecar/bl
 - Reopening a session loads its most recent 400 messages.
 - The interface is in English, with a few strings in Arabic.
 
+## Sidecar or the official OpenCode extension?
+
+The official extension, `sst-dev.opencode`, opens OpenCode's terminal UI in a split terminal and passes it your selection and file references. Sidecar is a graphical chat panel instead. Both use the same OpenCode, so you can install both and move between them: a session started in one shows up in the other.
+
+|                         | Official extension (`sst-dev.opencode`)                                   | Sidecar for OpenCode                                                                                                                        |
+| ----------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Interface               | OpenCode's terminal UI in a split terminal (Ctrl+Esc / Cmd+Esc)           | A chat panel in the side bar, secondary side bar or an editor tab                                                                           |
+| Context from the editor | Shares your selection or tab; inserts file references like `@File#L37-42` | `@` mentions of files, folders, subagents and skills; the selection, files and images from **+**                                            |
+| The agent's work        | In the terminal UI                                                        | A timeline per prompt with every tool call, diffs in VS Code's diff editor, live subagents, permission requests in place of the message box |
+| Editors                 | VS Code and VS Code-based editors                                         | VS Code, and Cursor, Windsurf and VSCodium via Open VSX                                                                                     |
+
 ## FAQ
 
 **What is Sidecar for OpenCode?**
 A free, open-source VS Code extension that gives the OpenCode coding agent a full chat interface inside the editor. It works with the OpenCode 2 service already on your machine.
+
+**Is there an OpenCode GUI or chat sidebar for VS Code?**
+Yes: Sidecar is one. Install it from the Extensions view (search "OpenCode Sidecar"), click the Sidecar icon, and chat with OpenCode in a panel beside your code. It needs the OpenCode 2 service on your machine; the setup card helps install and start it.
+
+**Does it work in Cursor, Windsurf or VSCodium?**
+Yes. Those editors install extensions from Open VSX, where Sidecar is published as `cadogy.opencode-sidecar`.
+
+**Which OpenCode versions does it support?**
+OpenCode 2.x, with its background service running. OpenCode 1.x is not supported.
+
+**Can I use local models, such as Ollama or LM Studio?**
+Yes, if they are set up as a provider in OpenCode. Sidecar uses whatever models OpenCode offers, so any provider OpenCode supports works here too.
 
 **Is it official?**
 No. It is an independent community project and is not affiliated with OpenCode. The official OpenCode extension is `sst-dev.opencode`.
@@ -181,6 +204,10 @@ Sidecar sends your prompts and the files you attach only to your local OpenCode 
 
 **Which platforms does it run on?**
 Wherever VS Code 1.95+ and OpenCode 2.x run: Windows, macOS and Linux. It needs a trusted workspace.
+
+## Like it?
+
+If Sidecar is useful to you, a rating on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cadogy.opencode-sidecar&ssr=false#review-details) or [Open VSX](https://open-vsx.org/extension/cadogy/opencode-sidecar/reviews), or a [star on GitHub](https://github.com/charlesknapp/opencode-sidecar), helps other OpenCode users find it. Bugs and ideas are welcome in [Issues](https://github.com/charlesknapp/opencode-sidecar/issues).
 
 ## About
 

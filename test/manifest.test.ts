@@ -13,7 +13,7 @@ describe("extension manifest", () => {
   it("keeps the release identity", () => {
     assert.deepEqual(
       [pkg.name, pkg.publisher, pkg.displayName, pkg.version],
-      ["opencode-sidecar", "cadogy", "Sidecar for OpenCode", "0.1.3"],
+      ["opencode-sidecar", "cadogy", "Sidecar for OpenCode: Chat Sidebar & GUI", "0.1.4"],
     );
   });
 
@@ -82,7 +82,7 @@ describe("extension manifest", () => {
       ["opencodeSidecar.chat", "webview", "Sidecar for OpenCode"],
     );
     // Settings and commands use the short name.
-    assert.equal(pkg.displayName, "Sidecar for OpenCode");
+    assert.equal(pkg.displayName, "Sidecar for OpenCode: Chat Sidebar & GUI");
     assert.equal(pkg.contributes.configuration.title, "Sidecar");
     for (const c of pkg.contributes.commands as Array<{ category: string }>)
       assert.equal(c.category, "Sidecar");

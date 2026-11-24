@@ -1,8 +1,8 @@
 {
   "name": "opencode-sidecar",
-  "displayName": "Sidecar for OpenCode",
-  "description": "The complete OpenCode coding agent in a VS Code chat panel: a timeline of every step, live subagents, diffs, @ mentions, images, permissions, fork and rewind.",
-  "version": "0.1.3",
+  "displayName": "Sidecar for OpenCode: Chat Sidebar & GUI",
+  "description": "OpenCode chat sidebar and GUI for VS Code, Cursor and VSCodium: every agent step on one timeline, live subagents, diffs, @ mentions, images, permissions, fork and rewind.",
+  "version": "0.1.4",
   "publisher": "cadogy",
   "private": true,
   "license": "MIT",
@@ -43,7 +43,17 @@
     "sidebar",
     "diff",
     "open-source",
-    "developer-tools"
+    "developer-tools",
+    "opencode-gui",
+    "opencode-chat",
+    "opencode-sidebar",
+    "opencode-vscode",
+    "opencode-extension",
+    "ai-chat",
+    "chat-panel",
+    "gui",
+    "cursor",
+    "vscodium"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [

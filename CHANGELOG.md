@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 (2026-11-24)
+
+- The listing says what Sidecar is in the words people search for: **Sidecar for OpenCode: Chat Sidebar & GUI**, an OpenCode chat sidebar and GUI for VS Code, Cursor and VSCodium. The extension ID and the panel's title are unchanged.
+- The README compares Sidecar with the official OpenCode extension and answers more questions: Cursor, Windsurf and VSCodium, supported OpenCode versions, and local models.
+- Open VSX releases are published with trusted publishing, so no access token is stored anywhere.
+
 ## 0.1.3 (2026-11-23)
 
 **New**
