@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.1 (2026-11-23)
+
+**Look and feel**
+
+- The chat scrolls behind the message box all the way to the panel's bottom edge and stays visible around it; a soft halo fades text near the box, and the chat fades out at the bottom edge. In a wide panel the box sits slightly inside the chat's column.
+- The working mark is drawn true: the ring stays still and the disc orbits its centre, cutting the ring's gap as it goes (no more wobble). The gap is a real cut-out, so the mark looks right on any background, and the mark no longer restarts its orbit each time the agent's state changes.
+- The status strip no longer covers the top border of the message box.
+- One background wherever the view is docked, so fades never show as bands in themes whose panel and side bar colours differ.
+
+**Fixes**
+
+- No "Agent-only diff unavailable" strip when OpenCode recorded no snapshots (for example in a folder that is not a git repository): there was nothing to open. When workspace changes are shown instead, their line explains why on hover.
+
+**Project**
+
+- Releases are published by GitHub Actions with trusted publishing to the Visual Studio Marketplace (and Open VSX), from a clean install with no shared cache; CI actions updated to their Node 24 versions; the packaging tool's `minimatch` moved to a patched version (no change to the extension itself).
+
 ## 0.1.0 (2026-11-23)
 
 First release of Sidecar for OpenCode.

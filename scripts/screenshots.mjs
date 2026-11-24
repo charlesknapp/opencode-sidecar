@@ -5,6 +5,7 @@
 //   npm run build && node scripts/screenshots.mjs          README set -> docs/marketplace/screenshots
 //   node scripts/screenshots.mjs --all --out=<folder>       every scene, for review
 //   node scripts/screenshots.mjs 8-timeline --out=<folder>  chosen scenes
+//   ... --scroll-up=<px>                                     scrolled up from the end, to review the box over the chat
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -923,6 +924,7 @@ scenes["18-mention"] = {
 //   node scripts/screenshots.mjs 8-timeline --out=some/folder
 const args = process.argv.slice(2);
 const outArg = args.find((a) => a.startsWith("--out="));
+const scrollUp = Number(args.find((a) => a.startsWith("--scroll-up="))?.slice("--scroll-up=".length) ?? 0);
 if (outArg) out = path.resolve(outArg.slice("--out=".length));
 fs.mkdirSync(out, { recursive: true });
 const only = args.filter((a) => !a.startsWith("--"));
@@ -975,6 +977,12 @@ for (const [name, scene] of chosen) {
     await new Promise((r) => setTimeout(r, 300));
   }
   if (scene.scroll === "top") await page.$eval(".conversation", (c) => (c.scrollTop = 0));
+  if (scrollUp)
+    await page.$eval(
+      ".conversation",
+      (c, px) => (c.scrollTop = c.scrollHeight - c.clientHeight - px),
+      scrollUp,
+    );
   await new Promise((r) => setTimeout(r, 200));
   await page.screenshot({ path: path.join(out, `${readmeRun ? README[name] : name}.png`) });
   await page.close();

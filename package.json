@@ -2,7 +2,7 @@
   "name": "opencode-sidecar",
   "displayName": "Sidecar for OpenCode",
   "description": "The complete OpenCode coding agent in a VS Code chat panel: a timeline of every step, live subagents, diffs, @ mentions, images, permissions, fork and rewind.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "cadogy",
   "private": true,
   "license": "MIT",
@@ -383,5 +383,10 @@
     "puppeteer-core": "^25.12.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.1"
+  },
+  "overrides": {
+    "@vscode/vsce": {
+      "minimatch": "11.0.9"
+    }
   }
 }

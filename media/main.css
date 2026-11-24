@@ -69,7 +69,9 @@ body {
   color: var(--vscode-foreground);
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
-  background: transparent;
+  /* One background wherever the view is docked (side bars or the bottom panel), so the
+     fades and halos, which use the same colour, never show as bands. */
+  background: var(--panel-bg);
 }
 
 #app {
@@ -1459,11 +1461,16 @@ th {
 }
 
 /* The message box floats over the bottom of the conversation, in the chat's own
-   column. The chat fades out as it scrolls under it, and nothing shows beside or
-   below the box. The overlay stops short of the chat's scrollbar, which stays
-   usable. The box's border takes the accent while the agent works. */
+   column. The chat keeps scrolling behind it to the panel's bottom edge and stays
+   visible around it; a soft halo in the panel colour fades text that passes close
+   to the box. The overlay stops short of the chat's scrollbar, which stays usable.
+   The box's border takes the accent while the agent works. */
 .bottom {
   --fade: 32px;
+  --halo: 0 0 12px 6px var(--panel-bg);
+  /* The box sits a little inside the chat's column, so the chat shows beside it: none
+     in a narrow side bar, up to 32px in a wide one. */
+  --box-inset: clamp(0px, calc(8cqi - 24px), 32px);
   position: absolute;
   left: 0;
   right: var(--scrollbar, 10px);
@@ -1472,14 +1479,15 @@ th {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: var(--fade) var(--gutter) 12px;
-  background: linear-gradient(transparent, var(--panel-bg) var(--fade));
+  padding: var(--fade) calc(var(--gutter) + var(--box-inset)) 12px;
+  /* The chat fades out as it reaches the panel's bottom edge. */
+  background: linear-gradient(transparent calc(100% - var(--fade)), var(--panel-bg));
   /* The scroll wheel over the fade still scrolls the chat. */
   pointer-events: none;
 }
 .bottom > * {
   width: 100%;
-  max-width: var(--column);
+  max-width: calc(var(--column) - 2 * var(--box-inset));
   margin-inline: auto;
   pointer-events: auto;
 }
@@ -1490,6 +1498,19 @@ th {
   border-radius: 8px;
   background: var(--box-bg);
   min-width: 0;
+}
+/* The halo sits behind the status strip and the box (or the dock that takes its
+   place); the strip is raised so the box's halo never tints it. */
+.bottom > .strips,
+.composer .box,
+.composer .dock {
+  box-shadow: var(--halo);
+}
+.bottom > .strips {
+  position: relative;
+  z-index: 1;
+  /* The strip's halo stops at its bottom edge, so it never covers the box's border. */
+  clip-path: inset(-24px -24px 0 -24px);
 }
 .box:focus-within {
   border-color: var(--vscode-focusBorder);
@@ -2011,11 +2032,19 @@ kbd {
   padding-left: 8px;
   color: var(--muted);
 }
+.working-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .working b {
   color: var(--vscode-foreground);
   font-weight: 600;
 }
-/* Sidecar's mark turning while the agent works: the disc rides around with the ring's gap. */
+/* Sidecar's mark while the agent works: the ring stays still and the disc orbits its
+   centre, cutting the ring's gap as it goes. The gap is a mask (white keeps, black cuts),
+   so whatever is behind the mark shows through it. */
 .mark-spin {
   display: inline-grid;
   place-items: center;
@@ -2025,6 +2054,27 @@ kbd {
 .mark-spin .i {
   width: 16px;
   height: 16px;
+}
+.i-mark .ring {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.95;
+}
+.i-mark .keep {
+  fill: #fff;
+  stroke: none;
+}
+.i-mark .gap {
+  fill: #000;
+  stroke: none;
+}
+.i-mark .disc {
+  fill: currentColor;
+  stroke: none;
+}
+.i-mark .orbit {
+  transform-box: view-box;
+  transform-origin: 8px 8px;
   animation: spin 1.6s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
 }
 @keyframes spin {

@@ -549,7 +549,7 @@ describe(
       );
     });
 
-    it("lines the box up with the chat column, fades the chat under it and hides it beside it", async () => {
+    it("floats the box over the chat, which scrolls behind it to the bottom edge", async () => {
       await page.setViewport({ width: 900, height: 700 });
       const lines = Array.from({ length: 60 }, (_, i) => `Line ${i}`).join("\n\n");
       await host({
@@ -559,23 +559,40 @@ describe(
           { kind: "assistant", id: "text:long", text: lines, streaming: false },
         ],
       });
-      const g = await page.evaluate(() => {
-        const box = document.querySelector(".box")!.getBoundingClientRect();
-        const bubble = document.querySelector(".bubble")!.getBoundingClientRect();
-        const bottom = getComputedStyle(document.querySelector(".bottom")!);
-        const conv = document.querySelector(".conversation") as HTMLElement;
-        return {
-          left: box.left - bubble.left,
-          right: box.right - bubble.right,
-          bg: bottom.backgroundImage,
-          scrollbarClear:
-            document.querySelector(".bottom")!.getBoundingClientRect().right <=
-            conv.getBoundingClientRect().left + conv.clientWidth + 0.5,
-        };
-      });
-      assert.ok(Math.abs(g.left) < 1 && Math.abs(g.right) < 1, `same column (${g.left}, ${g.right})`);
-      assert.match(g.bg, /linear-gradient/, "the chat fades out above the box");
-      assert.ok(g.scrollbarClear, "the chat's scrollbar stays usable");
+      const geometry = () =>
+        page.evaluate(() => {
+          const box = document.querySelector(".box")!;
+          const b = box.getBoundingClientRect();
+          const bubble = document.querySelector(".bubble")!.getBoundingClientRect();
+          const bottom = document.querySelector(".bottom")!;
+          const conv = document.querySelector(".conversation") as HTMLElement;
+          return {
+            left: b.left - bubble.left,
+            right: bubble.right - b.right,
+            bg: getComputedStyle(bottom).backgroundImage,
+            halo: getComputedStyle(box).boxShadow,
+            scrollbarClear:
+              bottom.getBoundingClientRect().right <=
+              conv.getBoundingClientRect().left + conv.clientWidth + 0.5,
+          };
+        });
+      const wide = await geometry();
+      // Wide: the box sits 32px inside the chat's column, so the chat shows beside it.
+      assert.ok(
+        Math.abs(wide.left - 32) < 1 && Math.abs(wide.right - 32) < 1,
+        `inset (${wide.left}, ${wide.right})`,
+      );
+      // No band hides the chat beside the box; it only fades out at the panel's bottom edge.
+      assert.match(wide.bg, /linear-gradient\(rgba\(0, 0, 0, 0\)/, "transparent first, then the bottom fade");
+      assert.match(wide.halo, /px/, "a soft halo fades text close to the box");
+      assert.ok(wide.scrollbarClear, "the chat's scrollbar stays usable");
+      // A narrow side bar keeps the whole width for the box.
+      await page.setViewport({ width: 300, height: 700 });
+      const narrow = await geometry();
+      assert.ok(
+        Math.abs(narrow.left) < 1 && Math.abs(narrow.right) < 1,
+        `flush (${narrow.left}, ${narrow.right})`,
+      );
     });
 
     it("/ is an action palette: context, model, session, OpenCode's commands and Sidecar's settings", async () => {
@@ -932,11 +949,42 @@ describe(
       // A playful word per run with the turning mark, the elapsed time and how to stop.
       assert.match(await text('[data-testid="working"]'), /^[A-Z][a-z ]+…\s*0:0\d · Esc to stop$/);
       assert.ok(await page.$('[data-testid="working"] .mark-spin .i-mark'), "the mark turns");
+      // The ring stays still; the disc and the ring's gap (a mask, so any background shows
+      // through) orbit together.
+      const mark = await page.$eval('[data-testid="working"] .i-mark', (svg) => {
+        const ring = svg.querySelector(".ring")!;
+        const id = /^url\(#(.+)\)$/.exec(ring.getAttribute("mask") ?? "")?.[1];
+        const mask = id ? document.getElementById(id) : null;
+        return {
+          masked: mask?.tagName === "mask" && !!mask.querySelector(".orbit .gap"),
+          ringStill: getComputedStyle(ring).animationName,
+          orbits: Array.from(svg.querySelectorAll(".orbit")).map((g) => getComputedStyle(g).animationName),
+        };
+      });
+      assert.equal(mark.masked, true, "the gap is cut by a mask");
+      assert.equal(mark.ringStill, "none", "the ring stays still");
+      assert.deepEqual(mark.orbits, ["spin", "spin"], "the gap and the disc orbit together");
       await host({
         type: "state",
         state: baseState({ busy: true, prefs: { ...baseState().prefs, statusWords: false } }),
       });
       assert.equal(await text('[data-testid="status-word"]'), "Working…", "plain with the setting off");
+      // A state change during the run redraws the text, not the mark, so its orbit never restarts.
+      await page.evaluate(() => {
+        (window as unknown as { __mark: Element }).__mark = document.querySelector(
+          '[data-testid="working"] .i-mark',
+        )!;
+      });
+      await host({ type: "state", state: baseState({ busy: true }) });
+      assert.equal(
+        await page.evaluate(
+          () =>
+            (window as unknown as { __mark: Element }).__mark ===
+            document.querySelector('[data-testid="working"] .i-mark'),
+        ),
+        true,
+        "the same mark keeps turning",
+      );
       await host({ type: "state", state: baseState({ busy: true }) });
       await page.click('[data-testid="stop"]');
       assert.ok(await lastSent("stop"));
@@ -1019,17 +1067,22 @@ describe(
       assert.ok(await lastSent("openWorkspaceDiffAll"));
     });
 
-    it("says when agent-only diff is unavailable", async () => {
-      await host({
-        type: "state",
-        state: baseState({
-          agentChanges: {
-            status: "unavailable",
-            reason: "OpenCode could not provide the session's snapshot diff.",
-          },
-        }),
-      });
-      assert.match(await text('[data-testid="agent-diff-unavailable"]'), /Agent-only diff unavailable/);
+    it("shows no strip when the agent-only diff is unavailable, and says why on workspace changes", async () => {
+      const agentChanges = {
+        status: "unavailable" as const,
+        reason: "OpenCode did not record snapshots for the agent's edits.",
+      };
+      await host({ type: "state", state: baseState({ agentChanges, workspaceChanges: { count: 0 } }) });
+      assert.equal(
+        await page.$eval(".changes", (e) => (e as HTMLElement).hidden),
+        true,
+        "nothing to open, no strip",
+      );
+      await host({ type: "state", state: baseState({ agentChanges, workspaceChanges: { count: 2 } }) });
+      assert.equal(
+        await page.$eval('[data-testid="workspace-changes"]', (e) => e.getAttribute("title")),
+        "Agent-only diff unavailable: OpenCode did not record snapshots for the agent's edits.",
+      );
     });
 
     it("attaches the current file, the selection or a searched file from +", async () => {

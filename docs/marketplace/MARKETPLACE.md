@@ -46,7 +46,7 @@ They are referenced from README.md with relative paths. On the Marketplace, `vsc
 | Homepage   | https://github.com/charlesknapp/opencode-sidecar#readme                  |
 | Issues     | https://github.com/charlesknapp/opencode-sidecar/issues                  |
 | Security   | https://github.com/charlesknapp/opencode-sidecar/security/advisories/new |
-| Release    | https://github.com/charlesknapp/opencode-sidecar/releases/tag/v0.1.0     |
+| Releases   | https://github.com/charlesknapp/opencode-sidecar/releases                |
 
 `package.json` contains `repository`, `homepage` and `bugs`; packaging runs plain `vsce package` (no `--allow-missing-repository`, no `--skip-license`).
 

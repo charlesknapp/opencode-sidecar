@@ -146,11 +146,6 @@ const ICON_PATHS: Record<string, string[]> = {
   ],
   archive: ["M2.5 3.5h11v2.5h-11z", "M3.5 6v6.5h9V6", "M6.5 8.5h3"],
   restore: ["M3 4v3.5h3.5", "M3.4 7.4A5 5 0 1 1 4.5 11.5"],
-  // Sidecar's mark: a ring (the work) with a disc riding alongside it.
-  mark: [
-    "M10.05 5.03A4.63 4.63 0 1 0 10.05 10.97",
-    "F:M12.48 6.07a1.93 1.93 0 1 1 0 3.86a1.93 1.93 0 1 1 0-3.86z",
-  ],
 };
 
 function icon(name: keyof typeof ICON_PATHS): SVGSVGElement {
@@ -166,6 +161,39 @@ function icon(name: keyof typeof ICON_PATHS): SVGSVGElement {
     if (filled) p.setAttribute("class", "fill");
     svg.append(p);
   }
+  return svg;
+}
+
+let markCount = 0;
+
+/**
+ * Sidecar's mark for the Working line, in the logo's proportions: a ring (the work)
+ * centred in the box, and the disc riding alongside it. The disc orbits the ring's
+ * centre while the ring stays still; at rest it reads as the logo. The gap the disc
+ * cuts in the ring is a mask, not paint, so the mark works on any background. The
+ * mask's hole and the disc orbit with the same animation, started together.
+ */
+function markSpinner(): SVGSVGElement {
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag: string, attrs: Record<string, string>) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    return e;
+  };
+  const id = `sidecar-mark-${++markCount}`;
+  const svg = el("svg", { viewBox: "0 0 16 16", "aria-hidden": "true", class: "i i-mark" }) as SVGSVGElement;
+  const mask = el("mask", { id, maskUnits: "userSpaceOnUse", x: "0", y: "0", width: "16", height: "16" });
+  const hole = el("g", { class: "orbit" });
+  hole.append(el("circle", { class: "gap", cx: "13.55", cy: "8", r: "3.35" }));
+  mask.append(el("rect", { class: "keep", width: "16", height: "16" }), hole);
+  const disc = el("g", { class: "orbit" });
+  disc.append(el("circle", { class: "disc", cx: "13.55", cy: "8", r: "2.45" }));
+  svg.append(
+    el("defs", {}),
+    el("circle", { class: "ring", cx: "8", cy: "8", r: "4.4", mask: `url(#${id})` }),
+    disc,
+  );
+  svg.firstChild!.appendChild(mask);
   return svg;
 }
 
@@ -2254,6 +2282,15 @@ function renderWorking(s: ViewState) {
     workingEl.replaceChildren();
     return;
   }
+  // The mark is made once per run and kept: rebuilding it on every render would restart
+  // its orbit each time the agent's state changes. Only the text after it is redrawn.
+  let mark = workingEl.querySelector<HTMLElement>(":scope > .mark-spin");
+  let label = workingEl.querySelector<HTMLElement>(":scope > .working-text");
+  if (!mark || !label) {
+    mark = h("span", { className: "mark-spin", "aria-hidden": "true" }, markSpinner());
+    label = h("span", { className: "working-text" });
+    workingEl.replaceChildren(mark, label);
+  }
   if (busySince === null) {
     // A new run gets a new word.
     statusWord = STATUS_WORDS[Math.floor(Math.random() * STATUS_WORDS.length)];
@@ -2263,9 +2300,7 @@ function renderWorking(s: ViewState) {
     busySince = at !== undefined && Date.now() - at < 6 * 3600_000 ? at : Date.now();
   }
   const word = s.stopping ? "Stopping" : s.prefs.statusWords === false ? "Working" : statusWord;
-  workingEl.replaceChildren(
-    // The mark turns while the agent works; with reduced motion it stays still.
-    h("span", { className: "mark-spin", "aria-hidden": "true" }, icon("mark")),
+  label.replaceChildren(
     h("b", { "data-testid": "status-word", title: "OpenCode is working" }, `${word}…`),
     h(
       "span",
@@ -4729,7 +4764,10 @@ function renderSubHeader() {
 function renderChanges(s: ViewState) {
   const ac = s.agentChanges;
   const ws = s.workspaceChanges;
-  const showAgent = ac.status !== "none";
+  // An agent-only diff that OpenCode could not provide (no snapshots, such as in a folder
+  // that is not a git repository) is not a strip of its own: there is nothing to open.
+  // When workspace changes are shown instead, their line says why.
+  const showAgent = ac.status === "ok";
   const showWs = !!ws && ws.count > 0 && s.connection.kind === "connected";
   if (!showAgent && !showWs) {
     changesEl.replaceChildren();
@@ -4772,23 +4810,16 @@ function renderChanges(s: ViewState) {
       ),
       changesOpen ? fileList(ac.files, "openAgentDiff") : null,
     );
-  } else if (ac.status === "unavailable") {
-    parts.push(
-      h(
-        "div",
-        { className: "row muted small", "data-testid": "agent-diff-unavailable", title: ac.reason },
-        `${t("agentDiffUnavailable")} — ${ac.reason}`,
-      ),
-    );
   }
   if (showWs && ws) {
+    const why = ac.status === "unavailable" ? `${t("agentDiffUnavailable")}: ${ac.reason}` : undefined;
     parts.push(
       h(
         "div",
         { className: "row small" },
         h(
           "span",
-          { className: "muted" },
+          { className: "muted", "data-testid": "workspace-changes", title: why },
           `${t("workspaceChanges")}: ${ws.count} file${ws.count === 1 ? "" : "s"} (HEAD ↔ working tree)`,
         ),
         h(
