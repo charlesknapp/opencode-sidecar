@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-raised: var(--raised);
+  --color-foreground-hover: var(--foreground-hover);
+  --color-line-hover: var(--line-hover);
+
+  --radius-media: 1rem;
+}
+
+:root {
+  --background: #0b0b0c;
+  --raised: #121214;
+  --line: #1f1f22;
+  --line-strong: #2c2c30;
+  --line-hover: #46464c;
+  --foreground: #ededef;
+  --foreground-hover: #d4d4d8;
+  --muted-foreground: #9d9da3;
+  --subtle-foreground: #6c6c72;
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--foreground);
+    color: var(--background);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--foreground);
+    outline-offset: 3px;
+    border-radius: 6px;
+  }
+}
+
+@utility container-page {
+  margin-inline: auto;
+  width: 100%;
+  max-width: 1200px;
+  padding-inline: 1.25rem;
+
+  @media (width >= 48rem) {
+    padding-inline: 2rem;
+  }
+}
+
+@utility section {
+  padding-block: 5rem;
+
+  @media (width >= 64rem) {
+    padding-block: 7rem;
+  }
+}
+
+@utility text-display {
+  font-size: clamp(2.75rem, 7.2vw, 5.75rem);
+  line-height: 0.98;
+  letter-spacing: -0.045em;
+  font-weight: 500;
+}
+
+@utility text-h2 {
+  font-size: clamp(1.875rem, 3.6vw, 2.75rem);
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  font-weight: 500;
+}
+
+@utility text-h3 {
+  font-size: 1.125rem;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  font-weight: 500;
+}
+
+@utility text-lead {
+  font-size: clamp(1.0625rem, 1.6vw, 1.25rem);
+  line-height: 1.6;
+}
+
+@utility fade-out-bottom {
+  mask-image: linear-gradient(to bottom, black 62%, transparent);
+}
+
+@utility fade-out-top {
+  mask-image: linear-gradient(to top, black 62%, transparent);
+}

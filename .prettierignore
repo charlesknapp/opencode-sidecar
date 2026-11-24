@@ -4,3 +4,5 @@ dist-vsix
 out-test
 .vscode-test
 package-lock.json
+# The marketing site has its own Prettier config (site/prettier.config.js)
+site
