@@ -243,3 +243,39 @@
     transition: none;
   }
 }
+
+/* "Works in" below desktop width: a slow ticker, fading at both edges. */
+@media (width < 64rem) {
+  .ticker {
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black 12%,
+      black 88%,
+      transparent
+    );
+  }
+}
+@media (width < 64rem) and (prefers-reduced-motion: no-preference) {
+  .ticker-track {
+    animation: ticker 22s linear infinite;
+  }
+}
+@media (width < 64rem) and (prefers-reduced-motion: reduce) {
+  .ticker-track > ul:first-child {
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+  }
+  .ticker-track > ul:last-child {
+    display: none;
+  }
+}
+
+@keyframes ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}

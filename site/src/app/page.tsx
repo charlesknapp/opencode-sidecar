@@ -129,14 +129,28 @@ export default function Home() {
       >
         <div className="container-page flex flex-col gap-5 py-10 lg:flex-row lg:items-center lg:gap-12">
           <p className="shrink-0 eyebrow">Works in</p>
-          <ul
-            aria-label="Works in"
-            className="flex flex-wrap gap-x-10 gap-y-2 text-[1.375rem] font-medium tracking-[-0.02em] text-muted-foreground"
-          >
-            {site.editors.map((editor) => (
-              <li key={editor}>{editor}</li>
-            ))}
-          </ul>
+          {/* Below desktop width the names glide by as a ticker: the list, then a copy
+              of it hidden from assistive tech, moving half the track's width per loop. */}
+          <div className="ticker -mx-5 overflow-hidden md:-mx-8 lg:mx-0 lg:overflow-visible">
+            <div className="ticker-track flex w-max lg:w-auto">
+              {[false, true].map((copy) => (
+                <ul
+                  key={String(copy)}
+                  aria-label={copy ? undefined : "Works in"}
+                  aria-hidden={copy || undefined}
+                  className={`flex shrink-0 gap-x-10 pr-10 text-[1.375rem] font-medium tracking-[-0.02em] text-muted-foreground lg:flex-wrap lg:pr-0 ${
+                    copy ? "lg:hidden" : ""
+                  }`}
+                >
+                  {site.editors.map((editor) => (
+                    <li key={editor} className="whitespace-nowrap">
+                      {editor}
+                    </li>
+                  ))}
+                </ul>
+              ))}
+            </div>
+          </div>
           <p className="text-sm leading-relaxed text-subtle-foreground lg:ml-auto lg:max-w-[16rem] lg:text-right">
             With any model OpenCode supports, local ones included.
           </p>
@@ -219,7 +233,7 @@ export default function Home() {
               {numbers.map(({ value, label, note }) => (
                 <li
                   key={label}
-                  className="-mr-px -mb-px border-r border-b border-line py-8 pr-5 even:pl-5 lg:border-b-0 lg:px-8 lg:py-10 lg:first:pl-0 lg:last:border-r-0"
+                  className="-mb-px border-b border-line py-8 pr-5 odd:border-r even:pl-5 lg:-mr-px lg:border-r lg:border-b-0 lg:px-8 lg:py-10 lg:first:pl-0 lg:last:border-r-0"
                 >
                   <span className="block text-[clamp(2.25rem,4vw,3rem)] leading-none font-medium tracking-[-0.04em] tabular-nums">
                     <CountUp value={value} />
@@ -421,9 +435,12 @@ export default function Home() {
         </Section>
 
         <Section id="faq" index="06" label="FAQ">
-          <div className="grid gap-12 lg:grid-cols-[1fr_2fr] lg:gap-20">
+          <div className="grid lg:grid-cols-[1fr_2fr] lg:gap-20">
             <div>
-              <h2 id="faq" className="text-h2 lg:sticky lg:top-12">
+              <h2
+                id="faq"
+                className="sr-only lg:not-sr-only lg:sticky lg:top-12 lg:text-h2"
+              >
                 Questions
               </h2>
             </div>
@@ -462,12 +479,26 @@ export default function Home() {
             <p className="mt-4 text-lead text-muted-foreground">
               Search “OpenCode Sidecar” in your Extensions view.
             </p>
-            <div className="mt-9 flex flex-wrap justify-center gap-3">
-              <ButtonLink href={site.links.marketplace} variant="primary">
+            <div className="mt-9 grid w-full max-w-sm grid-cols-2 gap-3 sm:flex sm:w-auto sm:max-w-none sm:flex-wrap sm:justify-center">
+              <ButtonLink
+                href={site.links.marketplace}
+                variant="primary"
+                className="col-span-2"
+              >
                 VS Code Marketplace
               </ButtonLink>
-              <ButtonLink href={site.links.openVsx}>Open VSX</ButtonLink>
-              <ButtonLink href={site.links.source}>Source on GitHub</ButtonLink>
+              <ButtonLink
+                href={site.links.openVsx}
+                className="px-3! whitespace-nowrap sm:px-6!"
+              >
+                Open VSX
+              </ButtonLink>
+              <ButtonLink
+                href={site.links.source}
+                className="px-3! whitespace-nowrap sm:px-6!"
+              >
+                Source on GitHub
+              </ButtonLink>
             </div>
             <p className="mt-9 text-sm text-subtle-foreground">
               Like it?{" "}

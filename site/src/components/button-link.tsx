@@ -13,14 +13,16 @@ const variants = {
 export function ButtonLink({
   href,
   variant = "secondary",
+  className = "",
   children,
 }: {
   href: string
   variant?: keyof typeof variants
+  className?: string
   children: ReactNode
 }) {
   return (
-    <a href={href} className={variants[variant]}>
+    <a href={href} className={`${variants[variant]} ${className}`}>
       {children}
     </a>
   )
