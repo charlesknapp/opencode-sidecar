@@ -242,7 +242,7 @@ function Permission() {
               "--dur": "380ms",
               "--to": "translateY(calc(100% + 4px))",
             })}
-            className="absolute inset-x-0 top-0 h-[26px] rounded-[3px] bg-[#0078d4]"
+            className="absolute inset-x-0 top-0 h-[26px] rounded-[3px] bg-[#04395e]"
           />
           {choices.map((choice, i) => (
             <div

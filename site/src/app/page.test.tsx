@@ -50,8 +50,21 @@ describe("home page", () => {
     expect(video).toHaveAttribute("playsinline")
   })
 
-  it("embeds the interactive demo of the real panel", () => {
+  it("embeds the interactive demo of the real panel, loaded as it scrolls near", () => {
+    // The frame mounts when it nears the viewport; here it is "near" at once.
+    const original = window.IntersectionObserver
+    window.IntersectionObserver = class {
+      constructor(
+        private cb: (entries: { isIntersecting: boolean }[]) => void
+      ) {}
+      observe() {
+        this.cb([{ isIntersecting: true }])
+      }
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof IntersectionObserver
     renderHome()
+    window.IntersectionObserver = original
     expect(
       screen.getByTitle(/interactive demo of the sidecar panel/i)
     ).toHaveAttribute("src", "/demo/index.html")

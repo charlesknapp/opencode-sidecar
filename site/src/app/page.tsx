@@ -1,7 +1,9 @@
 import Link from "next/link"
+import { preload } from "react-dom"
 
 import { guides } from "@/config/guides"
 import { comparison, faq, features, site, steps } from "@/config/site"
+import { versioned } from "@/lib/assets"
 import { formatReleaseDate, loadReleases } from "@/lib/changelog"
 import { extensionTests, roundedCount } from "@/lib/stats"
 import { buildStructuredData } from "@/lib/structured-data"
@@ -11,6 +13,7 @@ import { DemoVideo } from "@/components/demo-video"
 import { FeatureCard } from "@/components/feature-card"
 import { HeroLines } from "@/components/hero-lines"
 import { InstallCommand } from "@/components/install-command"
+import { LazyFrame } from "@/components/lazy-frame"
 import { Mark } from "@/components/mark"
 import { Cross, Section } from "@/components/section"
 import { SiteFooter, SiteNav } from "@/components/site-chrome"
@@ -35,6 +38,9 @@ const plain = (text: string) =>
   text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/(\*\*|__|`|_)/g, "")
 
 export default function Home() {
+  // The demo's poster is the largest thing on the first screen: fetch it first.
+  const poster = versioned("/demo-loop-poster.webp")
+  preload(poster, { as: "image", fetchPriority: "high" })
   const releases = loadReleases()
   const [latest] = releases
   const numbers = [
@@ -111,7 +117,11 @@ export default function Home() {
           </div>
 
           <div className="mt-10 lg:mt-12">
-            <DemoVideo label="Demo of Sidecar: a prompt landing on the timeline, its diff, and live subagents" />
+            <DemoVideo
+              label="Demo of Sidecar: a prompt landing on the timeline, its diff, and live subagents"
+              src={versioned("/demo-loop.mp4")}
+              poster={poster}
+            />
             <p className="mt-4 text-sm text-subtle-foreground">
               The real extension, replaying a scripted session.{" "}
               <a href={site.links.video} className={inlineLink}>
@@ -188,11 +198,10 @@ export default function Home() {
                 this page, and nothing is sent anywhere.
               </p>
             </div>
-            <iframe
+            <LazyFrame
               src="/demo/index.html"
               title="Interactive demo of the Sidecar panel"
-              loading="lazy"
-              className="h-[680px] w-full rounded-media border border-line-strong bg-raised"
+              className="h-[680px] w-full overflow-hidden rounded-media border border-line-strong bg-raised"
             />
           </div>
         </Section>
