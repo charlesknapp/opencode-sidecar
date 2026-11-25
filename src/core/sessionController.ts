@@ -1377,6 +1377,8 @@ export class SessionController {
     if (env.parentID && this.subagents.created(env.sessionID, env.parentID, root, env.created))
       this.sink.onStateChanged();
     if (env.events.length === 0) return;
+    // When the session or one of its subagents stops, a request may have closed without a reply event.
+    if (env.events.some((ev) => ev.type === "session.idle")) void this.closeStaleRequests(root);
     if (env.sessionID === root) {
       this.emit(env.events);
       return;
@@ -1397,6 +1399,51 @@ export class SessionController {
     // The open session can finish its turn while subagents work; report completion once they are done.
     if (wasActive && !this.subagentsActive() && !this.busy && this.task?.status === "completed")
       this.notify("completed", `completed:${this.task.id}:${this.execSeq}`);
+  }
+
+  /**
+   * Marks as expired the waiting requests OpenCode no longer has open, so the dock and
+   * the badge never wait on something nobody can answer (e.g. a subagent's request
+   * dropped when the subagent ended, which sends no reply event).
+   */
+  private async closeStaleRequests(root: string): Promise<void> {
+    const waiting = this.transcript.items.filter(
+      (i): i is Extract<TranscriptItem, { kind: "permission" | "form" }> =>
+        (i.kind === "permission" || i.kind === "form") && i.status === "pending",
+    );
+    if (!waiting.length) return;
+    const sessionOf = (i: (typeof waiting)[number]) =>
+      i.kind === "permission" ? i.request.sessionID : i.form.sessionID;
+    const open = new Set<string>();
+    for (const sessionID of new Set(waiting.map(sessionOf))) {
+      try {
+        const [permissions, forms] = await Promise.all([
+          this.client.listPermissions(sessionID),
+          this.client.listForms(sessionID),
+        ]);
+        for (const p of permissions) open.add(p.id);
+        for (const f of forms) open.add(f.id);
+      } catch {
+        // Unknown: keep that session's requests rather than closing a live one.
+        for (const i of waiting)
+          if (sessionOf(i) === sessionID) open.add(i.kind === "permission" ? i.request.id : i.form.id);
+      }
+    }
+    if (this.disposed || this.current?.id !== root) return;
+    const stale: UiEvent[] = [];
+    for (const i of waiting) {
+      const now = this.transcript.get(i.id);
+      if (now?.kind !== i.kind || now.status !== "pending") continue; // answered meanwhile
+      if (i.kind === "permission" && !open.has(i.request.id))
+        stale.push({ type: "permission.resolved", requestId: i.request.id, decision: "expired" });
+      if (i.kind === "form" && !open.has(i.form.id))
+        stale.push({ type: "form.resolved", formId: i.form.id, status: "expired", answer: null });
+    }
+    if (stale.length) {
+      this.log.info(`Closed ${stale.length} request(s) OpenCode no longer has open`);
+      this.emit(stale);
+      this.sink.onStateChanged();
+    }
   }
 
   /** Called when the event stream reconnects; resynchronizes the open session. */

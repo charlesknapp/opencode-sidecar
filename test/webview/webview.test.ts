@@ -1429,6 +1429,41 @@ describe(
         }),
       });
       assert.match(await text('[data-testid="pending-item"]'), /Queued/);
+      // The badge stays readable when the theme's badge colour is the accent (Dark Modern).
+      for (const delivery of ["steer", "queue"] as const) {
+        await host({
+          type: "state",
+          state: baseState({
+            busy: true,
+            pending: [{ id: "msg_b", text: "Check the other callers.", attachments: [], delivery }],
+          }),
+        });
+        const colors = await page.$eval('[data-testid="pending-item"] .badge', (b) => {
+          const root = document.documentElement;
+          root.style.setProperty("--vscode-badge-background", getComputedStyle(b).color);
+          const s = getComputedStyle(b);
+          return { fg: s.color, bg: s.backgroundColor };
+        });
+        assert.notEqual(colors.fg, colors.bg, `${delivery} badge text matches its background`);
+        assert.match(
+          await text('[data-testid="pending-item"] .badge'),
+          delivery === "steer" ? /Steering/ : /Queued/,
+        );
+      }
+      await host({
+        type: "state",
+        state: baseState({
+          busy: true,
+          pending: [
+            {
+              id: "msg_q",
+              text: "Run only the targeted test after this.",
+              attachments: [],
+              delivery: "queue",
+            },
+          ],
+        }),
+      });
       // A waiting message can switch to steering before it is delivered.
       await page.click('[data-testid="pending-switch"]');
       assert.deepEqual(await lastSent("setDelivery"), {
@@ -1555,6 +1590,41 @@ describe(
       assert.deepEqual(await lastSent("openAgentDiff"), { type: "openAgentDiff", path: "a.txt" });
       await page.click('[data-testid="view-workspace-changes"]');
       assert.ok(await lastSent("openWorkspaceDiffAll"));
+    });
+
+    it("lists agent changes as rows that open their diff: name first, folder muted, no zero counts", async () => {
+      await host({
+        type: "state",
+        state: baseState({
+          agentChanges: {
+            status: "ok",
+            files: [
+              { path: "src/math.js", additions: 5, deletions: 1, status: "modified" },
+              { path: "test-add.mjs", additions: 15, deletions: 0, status: "added" },
+            ],
+          },
+        }),
+      });
+      assert.equal(await text('[data-testid="view-agent-changes"]'), "Review all");
+      assert.doesNotMatch(await text(".changes"), /HEAD/, "git jargon only in the tooltip");
+      await page.click('[data-testid="agent-changes-toggle"]');
+      assert.deepEqual(
+        await page.$$eval('.changes [data-testid="file-diff"]', (rows) =>
+          rows.map((r) =>
+            [".fname", ".fdir", ".adds", ".dels", ".ftag"].map(
+              (s) => r.querySelector(s)?.textContent ?? null,
+            ),
+          ),
+        ),
+        [
+          ["math.js", "src", "+5", "−1", null],
+          ["test-add.mjs", null, "+15", null, "new"],
+        ],
+      );
+      await page.click('.changes li:nth-child(2) [data-testid="file-diff"]');
+      assert.deepEqual(await lastSent("openAgentDiff"), { type: "openAgentDiff", path: "test-add.mjs" });
+      await page.click('.changes li:nth-child(1) [data-testid="file-open"]');
+      assert.deepEqual(await lastSent("openFile"), { type: "openFile", path: "src/math.js" });
     });
 
     it("shows no strip when the agent-only diff is unavailable, and says why on workspace changes", async () => {
@@ -2346,10 +2416,95 @@ describe(
       assert.equal(await text('[data-id="tool:grep"] .th'), "Searchrefresh(in src");
     });
 
+    it("hints that a diff opens in the diff editor, and puts old beside new when the panel is wide", async () => {
+      await host({ type: "transcript", items: TOOLS });
+      const box = '[data-id="tool:edit"] [data-testid="tool-diff"]';
+      assert.equal(await text(`${box} .diff-hint`), "Click to open in the diff editor");
+      const hintOpacity = () => page.$eval(`${box} .diff-hint`, (e) => getComputedStyle(e).opacity);
+      assert.equal(await hintOpacity(), "0", "hidden until hovered");
+      await page.hover(box);
+      await new Promise((r) => setTimeout(r, 250));
+      assert.equal(await hintOpacity(), "1");
+
+      const shown = (sel: string) =>
+        page.$eval(`${box} ${sel}`, (e) => getComputedStyle(e).display !== "none");
+      assert.deepEqual(
+        [await shown(".diff-lines"), await shown(".diff-split")],
+        [true, false],
+        "narrow: stacked",
+      );
+      await page.setViewport({ width: 900, height: 900 });
+      assert.deepEqual(
+        [await shown(".diff-lines"), await shown(".diff-split")],
+        [false, true],
+        "wide: side by side",
+      );
+      assert.deepEqual(
+        await page.$$eval(`${box} .ds-row`, (rows) =>
+          rows.map((r) =>
+            [...r.querySelectorAll(".ds-cell")].map(
+              (c) => `${c.className.replace("ds-cell ds-", "")}:${c.textContent}`,
+            ),
+          ),
+        ),
+        [
+          ["ctx:keep", "ctx:keep"],
+          ["del:old", "add:new one"],
+          ["empty:", "add:new two"],
+        ],
+      );
+      await page.setViewport({ width: 360, height: 900 });
+    });
+
+    it("resizes the old and new columns with a draggable divider that never opens the diff", async () => {
+      await page.setViewport({ width: 900, height: 900 });
+      await host({ type: "transcript", items: TOOLS });
+      const box = '[data-id="tool:edit"] [data-testid="tool-diff"]';
+      const handle = `${box} [data-testid="diff-divider"]`;
+      const leftWidth = () => page.$eval(`${box} .ds-row .ds-cell`, (c) => c.getBoundingClientRect().width);
+      const before = await leftWidth();
+      const h0 = (await (await page.$(handle))!.boundingBox())!;
+      await clearSent();
+      await page.mouse.move(h0.x + h0.width / 2, h0.y + 10);
+      await page.mouse.down();
+      await page.mouse.move(h0.x + h0.width / 2 + 120, h0.y + 10, { steps: 6 });
+      await page.mouse.up();
+      const after = await leftWidth();
+      assert.ok(after > before + 80, `the old column grew (${before} → ${after})`);
+      assert.equal(await lastSent("openAgentDiff"), undefined, "dragging does not open the diff");
+
+      // Keyboard: the divider is a focusable separator; arrows move it, Home centres it.
+      await page.focus(handle);
+      const value = () => page.$eval(handle, (e) => Number(e.getAttribute("aria-valuenow")));
+      const v = await value();
+      await page.keyboard.press("ArrowLeft");
+      assert.ok((await value()) < v, "ArrowLeft narrows the old column");
+      await page.keyboard.press("Home");
+      assert.equal(await value(), 50);
+      assert.equal(await lastSent("openAgentDiff"), undefined, "keys on the divider do not open the diff");
+      await page.setViewport({ width: 360, height: 900 });
+    });
+
+    it("says what an edit did, not just its net line count", async () => {
+      const edit = (id: string, additions: number, deletions: number) =>
+        tool(id, "edit", "edit", "completed", {
+          path: "/w/my-app/src/math.js",
+          files: [{ path: "src/math.js", additions, deletions, status: "modified" }],
+        });
+      await host({
+        type: "transcript",
+        items: [edit("tool:e1", 1, 1), edit("tool:e2", 3, 0), edit("tool:e3", 0, 2), edit("tool:e4", 2, 3)],
+      });
+      assert.deepEqual(
+        await page.$$eval('[data-testid="tool"] .tool-sub', (els) => els.map((e) => e.textContent)),
+        ["Changed 1 line", "Added 3 lines", "Removed 2 lines", "Added 2, removed 3 lines"],
+      );
+    });
+
     it("shows an edit's changed lines inline and opens the diff editor on click or Enter", async () => {
       await host({ type: "transcript", items: TOOLS });
-      // The net change, as one phrase; the exact counts are in its tooltip.
-      assert.equal(await text('[data-id="tool:edit"] .tool-sub'), "Added 1 line");
+      // What changed, in words; the exact counts are also in its tooltip.
+      assert.equal(await text('[data-id="tool:edit"] .tool-sub'), "Added 2, removed 1 line");
       assert.equal(
         await page.$eval('[data-id="tool:edit"] .tool-sub', (e) => e.getAttribute("data-tip")),
         "+2 −1",
@@ -2924,6 +3079,209 @@ describe(
       await clearSent();
       await page.click('[data-testid="handback-open"]');
       assert.deepEqual(await sent(), [{ type: "openSubagent", sessionID: "ses_sub" }]);
+    });
+
+    it("puts the streaming caret at the end of the text, not on a line of its own", async () => {
+      await host({
+        type: "transcript",
+        items: [{ kind: "assistant", id: "text:s", text: "In JS, 0.1 - 0.2 is", streaming: true }],
+      });
+      const caret = await page.$eval(
+        '[data-id="text:s"] .msg-body > p:last-child',
+        (p) => getComputedStyle(p, "::after").content,
+      );
+      assert.equal(caret, '"▍"');
+      assert.equal(
+        await page.$eval('[data-id="text:s"] .msg-body', (b) => getComputedStyle(b, "::after").content),
+        "none",
+      );
+    });
+
+    it("runs the timeline rail straight through a subagent's report, which has no dot", async () => {
+      await host({
+        type: "transcript",
+        items: [
+          SUBAGENT_TOOL,
+          {
+            kind: "handback",
+            id: "handback:h2",
+            childID: "ses_sub",
+            agent: "Explore",
+            state: "completed",
+            description: "Find token callers",
+            report: "Found 4 callers.",
+          },
+          { kind: "assistant", id: "text:after", text: "Done.", streaming: false },
+        ],
+      });
+      const gap = await page.$eval('[data-id="handback:h2"]', (el) => {
+        const before = getComputedStyle(el, "::before");
+        const after = getComputedStyle(el, "::after");
+        return parseFloat(after.top) - (parseFloat(before.top) + parseFloat(before.height));
+      });
+      assert.ok(gap <= 0.5, `rail gap of ${gap}px around the missing dot`);
+    });
+
+    it("puts a reply's time on its own row above the text, with the dot on the first line", async () => {
+      await host({
+        type: "transcript",
+        items: [
+          {
+            kind: "assistant",
+            id: "text:t",
+            text: "All baseline tests pass.",
+            streaming: false,
+            time: 1_700_000_000_000,
+          },
+        ],
+      });
+      const g = await page.$eval('[data-id="text:t"]', (item) => {
+        const ts = item.querySelector(".ts")!.getBoundingClientRect();
+        const p = item.querySelector(".msg-body p")!.getBoundingClientRect();
+        const dot = item.querySelector(".dot")!.getBoundingClientRect();
+        return {
+          tsTop: ts.top,
+          pTop: p.top,
+          pBottom: p.bottom,
+          tsBottom: ts.bottom,
+          dotMid: (dot.top + dot.bottom) / 2,
+        };
+      });
+      assert.ok(g.tsBottom <= g.pTop + 1, `time above the text (${JSON.stringify(g)})`);
+      assert.ok(
+        Math.abs(g.dotMid - (g.pTop + (g.pBottom - g.pTop) / 2)) < 3,
+        `dot centred on the first line (${JSON.stringify(g)})`,
+      );
+    });
+
+    it("leaves no empty dot for a reply part with only whitespace, and keeps the next reply's time", async () => {
+      await host({
+        type: "transcript",
+        items: [
+          { kind: "assistant", id: "text:blank", text: " \n\n", streaming: false, time: 1_700_000_000_000 },
+          {
+            kind: "assistant",
+            id: "text:real",
+            text: "Fixed both.",
+            streaming: false,
+            time: 1_700_000_060_000,
+          },
+        ],
+      });
+      assert.equal(
+        await page.$eval('[data-id="text:blank"]', (e) => getComputedStyle(e).display),
+        "none",
+        "no rail entry, no dot",
+      );
+      assert.notEqual(await page.$('[data-id="text:real"] .ts, [data-id="text:real"] time'), null);
+    });
+
+    it("shows the agent's todo list as a checklist, not as a file edit", async () => {
+      const detail = {
+        facts: [],
+        command: null,
+        cwd: null,
+        output: "1/3 completed",
+        outputTruncated: false,
+        exitCode: null,
+        files: [],
+        error: null,
+        subagent: null,
+        todos: [
+          { content: "Find the callers", status: "completed" },
+          { content: "Share one refresh", status: "in_progress" },
+          { content: "Drop the old helper", status: "cancelled" },
+        ],
+      };
+      await host({
+        type: "transcript",
+        items: [
+          {
+            kind: "tool",
+            id: "tool:td",
+            name: "todowrite",
+            title: "1/3 completed, 1 in progress, 1 cancelled",
+            category: "todo",
+            status: "completed",
+            detail,
+          } as TranscriptItem,
+        ],
+      });
+      assert.equal(await text('[data-id="tool:td"] [data-testid="tool-name"]'), "Todos");
+      assert.equal(await page.$('[data-id="tool:td"] .tool-edit'), null);
+      assert.deepEqual(
+        await page.$$eval('[data-testid="todo-list"] li', (els) =>
+          els.map((e) => e.getAttribute("aria-label")),
+        ),
+        ["Find the callers: done", "Share one refresh: in progress", "Drop the old helper: cancelled"],
+      );
+    });
+
+    it("links a generated image to the file OpenCode saves", async () => {
+      await host({
+        type: "transcript",
+        items: [
+          {
+            kind: "tool",
+            id: "tool:img",
+            name: "generate_image",
+            title: "Image",
+            category: "media",
+            status: "completed",
+            detail: {
+              facts: [],
+              command: null,
+              cwd: null,
+              output: null,
+              outputTruncated: false,
+              exitCode: null,
+              files: [],
+              error: null,
+              subagent: null,
+              description: "A red fox in snow",
+              path: "/w/my-app/fox.png",
+              media: { kind: "image", state: "started" },
+            },
+          } as TranscriptItem,
+        ],
+      });
+      assert.equal(await text('[data-testid="media-file"]'), "Generating in the background · fox.png");
+      await clearSent();
+      await page.click('[data-testid="media-path"]');
+      assert.deepEqual(await lastSent("openFile"), { type: "openFile", path: "/w/my-app/fox.png" });
+    });
+
+    it("shows what OpenCode posts on its own as one line that expands", async () => {
+      await host({
+        type: "transcript",
+        items: [
+          {
+            kind: "background",
+            id: "background:b1",
+            source: "shell",
+            state: "completed",
+            text: "12 passing\n0 failing",
+            command: "npm test -- race",
+            path: null,
+          },
+          {
+            kind: "background",
+            id: "background:g1",
+            source: "goal",
+            state: null,
+            text: "",
+            command: null,
+            path: null,
+          },
+        ],
+      });
+      assert.equal(
+        await text('[data-id="background:b1"] [data-testid="background"]'),
+        "Background command · npm test -- race · completed: 12 passing",
+      );
+      await page.click('[data-id="background:b1"] summary');
+      assert.equal(await text('[data-id="background:b1"] .bg-text'), "12 passing\n0 failing");
+      assert.equal(await text('[data-id="background:g1"] [data-testid="background"]'), "Goal");
     });
 
     it("shows a launched subagent as starting until OpenCode reports its session", async () => {

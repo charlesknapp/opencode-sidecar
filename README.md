@@ -33,6 +33,9 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 | Context                                    | Files, folders and selections, `@` mentions found by OpenCode's search, pasted images               |
 | Rewind                                     | Rewind with or without code, and Restore or Apply a rewind staged in another client                 |
 | Shell, compaction                          | `!command`, `/compact`                                                                              |
+| Goals                                      | `/goal`: the objective, then each round's reason and next step                                      |
+| Todos                                      | The agent's todo list as a checklist (OpenCode's experimental `todowrite` tool)                     |
+| Background jobs                            | A row when a background shell, image or video job finishes, with its result or file                 |
 | Usage                                      | Context, cost, steps, cache hits and a prompt-cache estimate                                        |
 | Agent changes                              | Kept apart from your own edits, in VS Code's diff editor                                            |
 | Other clients (terminal UI, other windows) | Followed live: new sessions, renames, rewinds, agent and model choices                              |
@@ -40,7 +43,7 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 ## A tour
 
 - **One timeline per prompt.** A dot per step: text, thinking time, every tool call and every subagent. The prompt you're reading stays pinned while you scroll, and **Rewind ↺** takes the session back to just before it.
-- **Readable tool calls.** Shell commands as IN/OUT boxes, reads as file links, edits as changed lines with your theme's syntax colors (click for the diff editor). Click IN, OUT or a subagent's prompt to open it in full in an editor tab. Prefer it compact? Set `opencodeSidecar.activity` to `grouped`.
+- **Readable tool calls.** Shell commands as IN/OUT boxes, reads as file links, edits as changed lines with your theme's syntax colors, old beside new in a wide panel with a divider you can drag (click for the diff editor). Click IN, OUT or a subagent's prompt to open it in full in an editor tab. Prefer it compact? Set `opencodeSidecar.activity` to `grouped`.
 - **Live subagents.** Each one shows its task, prompt, current activity, tool count and time, with **Stop** and **Open ›** into its own conversation. Its report comes back as one line you can expand.
 - **Answer where you type.** Permission requests and questions replace the message box until answered: _1 Yes_, _2 Yes, always allow_ (when OpenCode offers it), _3 No_, or type what the agent should do instead. Nothing is ever approved for you, and sensitive paths get a warning.
 - **A message box with everything at hand.** Type **@** to mention a file, folder, subagent or skill. Paste or drop a screenshot, or use **+** for a file, the selection, a workspace search or an image. **/** opens the action palette: OpenCode's commands, `/compact`, `!command`, model, session and settings. A ring fills with the context in use (click it for context, cost, steps, the task budget and Compact), and the ◷ clock estimates the prompt cache for models that use one. The model pill has variant and Budget Guard sliders. Shift+Tab switches the agent. While the agent works you can **steer** it or **queue** your next message.

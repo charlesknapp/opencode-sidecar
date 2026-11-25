@@ -82,6 +82,43 @@ async function withSubagent() {
 const permission = (id: string, sessionID: string) =>
   raw("permission.asked", { id, sessionID, action: "bash", resources: ["npm test"] });
 
+describe("session controller: requests OpenCode no longer has", () => {
+  const settle = () => new Promise((r) => setTimeout(r, 10));
+
+  it("closes a subagent's request once the subagent ends without it being answered", async () => {
+    const { c, client } = await withSubagent();
+    c.handleRawEvent(permission("per_sub", "ses_sub"));
+    assert.equal(c.pendingRequestCount(), 1);
+    // The subagent ends; OpenCode has dropped the request without a reply event.
+    client.permissions = [];
+    c.handleRawEvent(raw("session.execution.succeeded", { sessionID: "ses_sub" }));
+    await settle();
+    assert.equal(c.pendingRequestCount(), 0, "no answer waits on the badge");
+    const item = c.transcript.get("perm:per_sub");
+    assert.equal(item?.kind === "permission" && item.status, "expired");
+  });
+
+  it("keeps a request OpenCode still has open", async () => {
+    const { c, client } = await withSubagent();
+    c.handleRawEvent(permission("per_open", "ses_sub"));
+    client.permissions = [
+      {
+        id: "per_open",
+        sessionID: "ses_sub",
+        action: "bash",
+        resources: ["npm test"],
+        canAlways: false,
+        patterns: [],
+        message: null,
+        toolId: null,
+      },
+    ];
+    c.handleRawEvent(raw("session.execution.succeeded", { sessionID: "ses_1" }));
+    await settle();
+    assert.equal(c.pendingRequestCount(), 1);
+  });
+});
+
 describe("session controller: subagent progress", () => {
   it("links the subagent tool call to the subagent's session", async () => {
     const { c } = await withSubagent();

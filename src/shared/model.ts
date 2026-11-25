@@ -280,6 +280,10 @@ export interface ToolDetail {
   diffs?: FileDiff[];
   /** Start of the content a write call wrote, and its total line count. */
   written?: { lines: string[]; total: number };
+  /** For the todo tool: the whole list as the agent last wrote it. */
+  todos?: TodoEntry[];
+  /** For an image or video tool: what it makes and its job state ("started", "completed", …). */
+  media?: { kind: "image" | "video"; state: string | null };
 }
 
 /** One line of an inline diff; "gap" separates hunks. */
@@ -333,6 +337,23 @@ export type TranscriptItem =
       state: string | null;
       description: string | null;
       report: string;
+      time?: number;
+    }
+  /**
+   * Something OpenCode posted into the session on its own: a goal's progress, a
+   * background shell's result, or a finished image or video job.
+   */
+  | {
+      kind: "background";
+      id: string;
+      /** OpenCode's `metadata.source`: "goal", "shell", "generate_image", … */
+      source: string;
+      state: string | null;
+      text: string;
+      /** For a background shell: its command. */
+      command: string | null;
+      /** For a media job: the file it saved. */
+      path: string | null;
       time?: number;
     }
   | { kind: "notice"; id: string; level: "error" | "info"; text: string }
@@ -473,7 +494,15 @@ export interface BudgetView {
   allowance: number;
 }
 
-export type ToolCategory = "read" | "search" | "shell" | "edit" | "web" | "agent" | "other";
+export type ToolCategory =
+  "read" | "search" | "shell" | "edit" | "web" | "agent" | "todo" | "media" | "other";
+
+/** A task on the agent's todo list (OpenCode's `todowrite` tool). */
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
+export interface TodoEntry {
+  content: string;
+  status: TodoStatus;
+}
 
 /**
  * Normalized session events (internal UI event model). Produced from OpenCode
@@ -504,6 +533,17 @@ export type UiEvent =
       state: string | null;
       description: string | null;
       text: string;
+      time?: number;
+    }
+  /** A background notice OpenCode posted into the session (synthetic message, any source but "subagent"). */
+  | {
+      type: "background.notice";
+      id: string;
+      source: string;
+      state: string | null;
+      text: string;
+      command: string | null;
+      path: string | null;
       time?: number;
     }
   | { type: "tool.started"; toolId: string; name: string }

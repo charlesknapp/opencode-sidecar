@@ -20,7 +20,7 @@ const EN = {
   newSession: "Start new session",
   submit: "Submit",
   agentChanges: "Agent changes",
-  viewAgentChanges: "View Agent Changes",
+  reviewAll: "Review all",
   workspaceChanges: "Workspace changes",
   agentDiffUnavailable: "Agent-only diff unavailable",
   changeModel: "Change model",

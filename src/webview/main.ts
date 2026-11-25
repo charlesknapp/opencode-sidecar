@@ -16,6 +16,7 @@ import type {
   SavedPermission,
   PromptMention,
   SubagentView,
+  TodoEntry,
   TranscriptItem,
 } from "../shared/model";
 import type { HostMessage, OfficialLink, ViewState, WebviewMessage } from "../shared/protocol";
@@ -3411,40 +3412,63 @@ function details(id: string, summary: Node[], body: Node[], extraClass = ""): HT
   return el;
 }
 
+const FILE_TAG: Record<string, string> = { added: "new", deleted: "deleted" };
+
+/**
+ * Changed files, one row each: the name, its folder muted, the counts that aren't zero
+ * and a "new"/"deleted" tag. The row opens the file's diff; the icon at the end opens
+ * the file itself.
+ */
 function fileList(files: FileChange[], diffAction: "openAgentDiff" | null): HTMLElement {
   return h(
     "ul",
     { className: "file-list" },
-    ...files.map((f) =>
-      h(
+    ...files.map((f) => {
+      const slash = Math.max(f.path.lastIndexOf("/"), f.path.lastIndexOf("\\"));
+      const name = f.path.slice(slash + 1);
+      const dir = slash > 0 ? f.path.slice(0, slash) : null;
+      const tag = FILE_TAG[f.status];
+      const body = [
+        h("span", { className: "fname" }, name),
+        dir ? h("span", { className: "fdir" }, dir) : null,
+        h(
+          "span",
+          { className: "fcounts" },
+          f.additions ? h("span", { className: "adds" }, `+${f.additions}`) : null,
+          f.deletions ? h("span", { className: "dels" }, `−${f.deletions}`) : null,
+        ),
+        tag ? h("span", { className: `ftag ftag-${f.status}` }, tag) : null,
+      ];
+      const open = () => send({ type: "openFile", path: f.path });
+      return h(
         "li",
         {},
         h(
           "button",
           {
-            className: "link-btn",
-            title: `Open ${f.path}`,
-            onclick: () => send({ type: "openFile", path: f.path }),
+            className: "file-row",
+            "aria-label": diffAction ? `View the diff of ${f.path}` : `Open ${f.path}`,
+            "data-tip": diffAction ? "View the diff" : "Open the file",
+            "data-testid": diffAction ? "file-diff" : "file-open-row",
+            onclick: diffAction ? () => send({ type: diffAction, path: f.path }) : open,
           },
-          f.path,
+          ...body,
         ),
-        h("span", { className: "adds" }, `+${f.additions}`),
-        h("span", { className: "dels" }, `−${f.deletions}`),
-        f.status !== "modified" ? h("span", { className: "muted small" }, f.status) : null,
         diffAction
           ? h(
               "button",
               {
-                className: "btn subtle small",
-                "aria-label": `View diff of ${f.path}`,
-                "data-testid": "file-diff",
-                onclick: () => send({ type: diffAction, path: f.path }),
+                className: "file-open",
+                "aria-label": `Open ${f.path}`,
+                "data-tip": "Open the file",
+                "data-testid": "file-open",
+                onclick: open,
               },
-              "Diff",
+              icon("openfile"),
             )
           : null,
-      ),
-    ),
+      );
+    }),
   );
 }
 
@@ -3468,6 +3492,52 @@ const TOOL_LABELS: Record<string, string> = {
   websearch: "Web search",
   codesearch: "Code search",
   apply_patch: "Patch",
+  todowrite: "Todos",
+  todoread: "Todos",
+  generate_image: "Image",
+  experimental_image_generate: "Image",
+  image_generate: "Image",
+  generate_video: "Video",
+  experimental_video_generate: "Video",
+};
+
+const TODO_MARK: Record<TodoEntry["status"], string> = {
+  completed: "✓",
+  in_progress: "●",
+  pending: "○",
+  cancelled: "✕",
+};
+const TODO_STATUS: Record<TodoEntry["status"], string> = {
+  completed: "done",
+  in_progress: "in progress",
+  pending: "to do",
+  cancelled: "cancelled",
+};
+
+/** The agent's todo list as it last wrote it, one line per task. */
+function todoList(todos: TodoEntry[]): HTMLElement {
+  return h(
+    "ul",
+    { className: "todos", "data-testid": "todo-list" },
+    ...todos.map((t) =>
+      h(
+        "li",
+        {
+          className: `todo todo-${t.status.replace("_", "-")}`,
+          "aria-label": `${t.content}: ${TODO_STATUS[t.status]}`,
+        },
+        h("span", { className: "todo-mark", "aria-hidden": "true" }, TODO_MARK[t.status]),
+        h("span", { className: "todo-text", dir: "auto" }, t.content),
+      ),
+    ),
+  );
+}
+
+const MEDIA_STATE: Record<string, string> = {
+  started: "Generating in the background",
+  completed: "Saved",
+  error: "Failed",
+  cancelled: "Cancelled",
 };
 
 function toolLabel(item: ToolItem): string {
@@ -3513,8 +3583,11 @@ function changeText(f: FileChange | undefined): string {
   if (!f) return "Modified";
   if (f.status === "added") return `Created with ${plural(f.additions, "line")}`;
   if (f.status === "deleted") return "Deleted";
-  const net = f.additions - f.deletions;
-  return net > 0 ? `Added ${plural(net, "line")}` : net < 0 ? `Removed ${plural(-net, "line")}` : "Modified";
+  const { additions: a, deletions: d } = f;
+  if (a && d) return a === d ? `Changed ${plural(a, "line")}` : `Added ${a}, removed ${plural(d, "line")}`;
+  if (a) return `Added ${plural(a, "line")}`;
+  if (d) return `Removed ${plural(d, "line")}`;
+  return "Modified";
 }
 
 function changeSub(f: FileChange | undefined): HTMLElement {
@@ -3552,17 +3625,121 @@ const DIFF_VISIBLE = 16;
 /** A written file shows its first lines, fading out; a click opens the file. */
 const WRITTEN_VISIBLE = 6;
 
+type SplitCell = { t: "ctx" | "del" | "add" | "empty" | "gap"; text: string };
+
+/**
+ * Rows for an old | new view: context on both sides, and each run of removed lines
+ * beside the added lines that replace it (an empty cell where one side is shorter).
+ */
+function splitRows(lines: FileDiff["lines"]): Array<[SplitCell, SplitCell]> {
+  const rows: Array<[SplitCell, SplitCell]> = [];
+  let dels: string[] = [];
+  let adds: string[] = [];
+  const flush = () => {
+    for (let i = 0; i < Math.max(dels.length, adds.length); i++)
+      rows.push([
+        i < dels.length ? { t: "del", text: dels[i] } : { t: "empty", text: "" },
+        i < adds.length ? { t: "add", text: adds[i] } : { t: "empty", text: "" },
+      ]);
+    dels = [];
+    adds = [];
+  };
+  for (const l of lines) {
+    if (l.t === "del") dels.push(l.text);
+    else if (l.t === "add") adds.push(l.text);
+    else {
+      flush();
+      rows.push(
+        l.t === "gap"
+          ? [
+              { t: "gap", text: "" },
+              { t: "gap", text: "" },
+            ]
+          : ([l, l] as [SplitCell, SplitCell]),
+      );
+    }
+  }
+  flush();
+  return rows;
+}
+
+/** Width of the old column in side-by-side diffs (percent); one value for every diff. */
+let splitLeft = 50;
+
+function setSplitLeft(percent: number) {
+  splitLeft = Math.round(Math.min(80, Math.max(20, percent)));
+  for (const el of document.querySelectorAll<HTMLElement>(".diff-split")) {
+    el.style.setProperty("--ds-left", `${splitLeft}%`);
+    el.querySelector(".ds-divider")?.setAttribute("aria-valuenow", String(splitLeft));
+  }
+}
+
+/**
+ * The line between old and new: drag it (or use ←/→, Home) to share the width
+ * differently. It keeps its pointer and keys to itself, so it never opens the diff.
+ */
+function splitDivider(): HTMLElement {
+  const el = h("div", {
+    className: "ds-divider",
+    role: "separator",
+    tabindex: "0",
+    "aria-orientation": "vertical",
+    "aria-label": "Width of the old and new columns",
+    "aria-valuemin": "20",
+    "aria-valuemax": "80",
+    "aria-valuenow": String(splitLeft),
+    "data-tip": "Drag to resize",
+    "data-testid": "diff-divider",
+  });
+  el.addEventListener("click", (e) => e.stopPropagation());
+  el.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const split = el.parentElement!;
+    el.setPointerCapture(e.pointerId);
+    el.classList.add("dragging");
+    const move = (ev: PointerEvent) => {
+      const r = split.getBoundingClientRect();
+      setSplitLeft(((ev.clientX - r.left) / r.width) * 100);
+    };
+    const stop = () => {
+      el.classList.remove("dragging");
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", stop);
+      el.removeEventListener("pointercancel", stop);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", stop);
+    el.addEventListener("pointercancel", stop);
+  });
+  el.addEventListener("keydown", (e) => {
+    const step = { ArrowLeft: -5, ArrowRight: 5 }[e.key];
+    if (step === undefined && e.key !== "Home" && e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (step !== undefined) setSplitLeft(splitLeft + step);
+    else if (e.key === "Home") setSplitLeft(50);
+  });
+  return el;
+}
+
 function diffBox(diff: FileDiff): HTMLElement {
   const long = diff.lines.length > DIFF_VISIBLE || diff.more > 0;
   const grammar = grammarFor(diff.path);
+  const cell = (c: SplitCell) =>
+    h(
+      "div",
+      { className: `ds-cell ds-${c.t}` },
+      ...(c.t === "gap" ? ["⋯"] : c.t === "empty" ? [] : highlightLine(c.text || " ", grammar)),
+    );
   return clickable(
     {
       className: "diff" + (long ? " long" : ""),
-      title: `Open the change to ${diff.path} in the diff editor`,
       "aria-label": `Open the change to ${diff.path} in the diff editor`,
       "data-testid": "tool-diff",
     },
     () => send({ type: "openAgentDiff", path: diff.path }),
+    // Stacked in a narrow panel; old beside new once the panel is wide (CSS container query).
     h(
       "div",
       { className: "diff-lines" },
@@ -3575,6 +3752,15 @@ function diffBox(diff: FileDiff): HTMLElement {
         ),
       ),
     ),
+    h(
+      "div",
+      { className: "diff-split", style: `--ds-left: ${splitLeft}%` },
+      ...splitRows(diff.lines).map(([a, b]) =>
+        h("div", { className: "ds-row", "aria-hidden": "true" }, cell(a), cell(b)),
+      ),
+      splitDivider(),
+    ),
+    h("span", { className: "diff-hint", "aria-hidden": "true" }, "Click to open in the diff editor"),
   );
 }
 
@@ -3584,7 +3770,6 @@ function writtenBox(path: string, w: { lines: string[]; total: number }): HTMLEl
     {
       className:
         "diff written" + (w.lines.length > WRITTEN_VISIBLE || w.total > w.lines.length ? " long" : ""),
-      title: `Open ${path}`,
       "aria-label": `Open ${path}`,
       "data-testid": "tool-written",
     },
@@ -3601,6 +3786,7 @@ function writtenBox(path: string, w: { lines: string[]; total: number }): HTMLEl
         ),
       ),
     ),
+    h("span", { className: "diff-hint", "aria-hidden": "true" }, "Click to open the file"),
   );
 }
 
@@ -3685,6 +3871,24 @@ function renderTool(item: ToolItem): HTMLElement {
     case "read":
       head.append(d.path ? pathLink(d.path) : desc(item.title));
       break;
+    case "todo":
+      head.append(desc(item.title));
+      if (d.todos?.length) parts.push(todoList(d.todos));
+      break;
+    case "media": {
+      if (d.description) head.append(desc(d.description));
+      const stateText = d.media?.state ? (MEDIA_STATE[d.media.state] ?? capitalize(d.media.state)) : null;
+      if (stateText || d.path)
+        parts.push(
+          h(
+            "div",
+            { className: "tool-sub", "data-testid": "media-file" },
+            stateText ? `${stateText}${d.path ? " · " : ""}` : "",
+            d.path ? pathLink(d.path, "media-path") : null,
+          ),
+        );
+      break;
+    }
     case "edit": {
       const diffs = d.diffs ?? [];
       if (diffs.length) {
@@ -4536,6 +4740,8 @@ function renderItem(item: TranscriptItem): HTMLElement {
       return renderPermissionRow(item);
     case "handback":
       return renderHandback(item);
+    case "background":
+      return renderBackground(item);
     case "turn-summary": {
       const c = changeCounts(item.files);
       return h(
@@ -4935,6 +5141,12 @@ function dotOf(item: TranscriptItem): Dot {
     case "turn-summary":
     case "handback":
       return "none";
+    case "background":
+      return item.state === "error" || item.state === "failed"
+        ? "err"
+        : item.state === "completed"
+          ? "ok"
+          : "idle";
   }
 }
 
@@ -4945,7 +5157,7 @@ function showsTime(
 ): item is Extract<TranscriptItem, { kind: "assistant" }> {
   if (item.kind !== "assistant" || item.time === undefined) return false;
   const prev = tr.items[tr.indexOf(item.id) - 1];
-  return prev?.kind !== "assistant";
+  return prev?.kind !== "assistant" || !prev.text.trim();
 }
 
 /** An item in its timeline frame: the prompt with its time, or a rail entry with its dot. */
@@ -4958,6 +5170,10 @@ function renderEntry(item: TranscriptItem, tr: Transcript): HTMLElement {
       item.time !== undefined ? timestamp(item.time) : null,
       content,
     );
+  // Some models send a reply part with only whitespace before a tool call: no dot for it.
+  // It stays in the list (hidden) so text streamed into it later still shows.
+  if (item.kind === "assistant" && !item.text.trim())
+    return h("div", { className: "tl-item", "data-id": item.id, hidden: true });
   const ts = showsTime(item, tr) ? timestamp(item.time!) : null;
   return h(
     "div",
@@ -5376,6 +5592,32 @@ function renderHandback(item: Extract<TranscriptItem, { kind: "handback" }>): HT
   );
 }
 
+const BACKGROUND_LABEL: Record<string, string> = {
+  goal: "Goal",
+  shell: "Background command",
+  generate_image: "Image",
+  generate_video: "Video",
+  codemode: "Code mode",
+};
+
+/**
+ * Something OpenCode posted on its own: a goal's progress, a background shell's
+ * result, a finished image or video. One line, with the full text folded under it.
+ */
+function renderBackground(item: Extract<TranscriptItem, { kind: "background" }>): HTMLElement {
+  const label = BACKGROUND_LABEL[item.source] ?? capitalize(item.source.replace(/[_-]+/g, " "));
+  const first = (item.text.split("\n").find((l) => l.trim()) ?? "").trim();
+  const line = [label, item.command, item.state].filter(Boolean).join(" · ") + (first ? `: ${first}` : "");
+  const path = item.path;
+  const body: Node[] = [];
+  if (item.text.trim()) body.push(h("div", { className: "bg-text", dir: "auto" }, item.text.trim()));
+  if (path) body.push(h("div", { className: "tool-sub" }, pathLink(path, "background-path")));
+  const summary = [h("span", { className: "hb-line", dir: "auto", "data-testid": "background" }, line)];
+  return item.text.trim()
+    ? details(item.id, summary, body, "handback")
+    : h("div", { className: "handback-plain" }, ...summary, ...body);
+}
+
 /** Small "From subagent EXPLORE" line on requests raised by a subagent. */
 function fromSubagentTag(sessionID: string): HTMLElement | null {
   if (!state || sessionID === state.currentSession?.id || subView?.id === sessionID) return null;
@@ -5521,17 +5763,17 @@ function renderChanges(s: ViewState) {
           },
           `${changesOpen ? "▾" : "▸"} ${t("agentChanges")} · ${ac.files.length} file${ac.files.length === 1 ? "" : "s"}`,
         ),
-        h("span", { className: "adds" }, `+${c.add}`),
-        h("span", { className: "dels" }, `−${c.del}`),
+        c.add ? h("span", { className: "adds" }, `+${c.add}`) : null,
+        c.del ? h("span", { className: "dels" }, `−${c.del}`) : null,
         h(
           "button",
           {
-            className: "btn subtle small",
+            className: "link-btn changes-action",
             "data-testid": "view-agent-changes",
             onclick: () => send({ type: "openAgentDiffAll" }),
-            title: "Changes recorded by OpenCode's session snapshots, shown in VS Code's diff editor",
+            "data-tip": "Every change the agent made, from OpenCode's snapshots, in VS Code's diff editor",
           },
-          t("viewAgentChanges"),
+          t("reviewAll"),
         ),
       ),
       changesOpen ? fileList(ac.files, "openAgentDiff") : null,
@@ -5552,12 +5794,12 @@ function renderChanges(s: ViewState) {
             title: `${label} (HEAD ↔ working tree)${why}`,
           },
           label,
-          h("span", { className: "ws-aside" }, " (HEAD ↔ working tree)"),
         ),
         h(
           "button",
           {
-            className: "btn subtle small",
+            className: "link-btn changes-action",
+            "data-tip": "Everything that differs from your last commit, in VS Code's diff editor",
             "data-testid": "view-workspace-changes",
             onclick: () => send({ type: "openWorkspaceDiffAll" }),
           },

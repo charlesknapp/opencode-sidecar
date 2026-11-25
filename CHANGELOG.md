@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.6 (2026-11-24)
+
+**OpenCode 2.4**
+
+- **Subagent reports arrive live** again. OpenCode 2.4 hands them back through the session's inbox in a new wrapper; Sidecar reads both, so the one-line **Report from …** shows as soon as a subagent finishes.
+- **Background notices** get their own row instead of being dropped: a shell command that went to the background reports its result, and a finished image or video job names the file it saved.
+- **Goals** (`/goal`, which keeps OpenCode working until a reviewer confirms the objective) show as **Goal · set:** and the objective, then each round's reason and next step, without OpenCode's instructions to the model.
+- **Todo lists** (OpenCode's experimental todo tool, `experimental.todo`) show as a checklist with what is done, in progress, to do and cancelled, instead of looking like a file edit.
+- **Generated images and videos** show their prompt and link the file OpenCode saves.
+- The **count on Sidecar's icon** no longer waits on a request OpenCode already dropped (such as one a subagent was still asking when it ended): when a turn or a subagent ends, Sidecar checks which requests are really open.
+
+**Diffs and changes**
+
+- In a wide panel (700px and up), inline diffs show **old beside new**, with a divider you can drag (or move with ←/→) to share the width. Narrower panels keep the stacked view.
+- An inline diff says **Click to open in the diff editor** when you point at it.
+- Edits say what they did: **Changed 1 line**, **Added 3, removed 1 line**, instead of a net count or just "Modified".
+- The **Agent changes** strip: each file is one row that opens its diff (an icon at the end opens the file), the name first and its folder muted, no zero counts, and **new** or **deleted** as a small tag. **Review all** opens every change.
+
+**Look and feel**
+
+- The timeline is evenly spaced: a reply's text no longer carries extra space above and below, so its dot sits on its first line.
+- The streaming caret sits right after the last word, not on a line of its own.
+- A working step's dot breathes (a slow fade) instead of blinking.
+- **Steering** and **Queued** badges are readable in every theme.
+- A search's pattern shows as code, so `refreshToken(` reads as the text searched.
+- No stray dot for a reply part that holds only whitespace.
+
 ## 0.1.5 (2026-11-24)
 
 - The README (and so the Marketplace and Open VSX pages) opens with an animated demo of the timeline, the diff and live subagents. No change to the extension itself.

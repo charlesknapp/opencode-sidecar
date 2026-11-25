@@ -110,14 +110,17 @@ export function toPermissionRequest(v: unknown): PermissionRequest | null {
 /**
  * A subagent's report to its parent: an OpenCode synthetic message whose metadata
  * says `source: "subagent"`. The text arrives wrapped as
- * `<subagent sessionID=… state=… description=…>report</subagent>`; the wrapper is
+ * `<subagent sessionID=… state=… description=…>report</subagent>`, or since OpenCode 2.4
+ * `<background-result kind="subagent" …>report</background-result>`; the wrapper is
  * dropped. Other synthetic messages (e.g. shell notices) return null.
  */
 export function subagentReport(id: string, raw: Record<string, unknown>, time?: number): UiEvent | null {
   const meta = rec(raw.metadata);
   if (meta?.source !== "subagent") return null;
   const text = s(raw.text) ?? "";
-  const wrapped = /^\s*<subagent\b[^>]*>\r?\n?([\s\S]*?)\r?\n?<\/subagent>\s*$/.exec(text);
+  const wrapped =
+    /^\s*<subagent\b[^>]*>\r?\n?([\s\S]*?)\r?\n?<\/subagent>\s*$/.exec(text) ??
+    /^\s*<background-result\b[^\n]*>\r?\n([\s\S]*?)\r?\n?(?:<\/background-result>)?\s*$/.exec(text);
   return {
     type: "subagent.report",
     id,
@@ -127,6 +130,65 @@ export function subagentReport(id: string, raw: Record<string, unknown>, time?: 
     description: s(raw.description),
     text: (wrapped ? wrapped[1] : text).trim(),
     ...(time !== undefined ? { time } : {}),
+  };
+}
+
+/**
+ * Anything else OpenCode posts into a session on its own: a goal's progress, a
+ * background shell's result, a finished image or video job. A background shell's
+ * text arrives wrapped as `<background-result kind=… state=… command=…>…</background-result>`;
+ * the wrapper is dropped and its attributes fill in what the metadata leaves out.
+ */
+export function backgroundNotice(id: string, raw: Record<string, unknown>, time?: number): UiEvent | null {
+  const meta = rec(raw.metadata);
+  const source = s(meta?.source);
+  if (!source || source === "subagent") return null;
+  const text = s(raw.text) ?? "";
+  // The opening tag ends its line; attribute values (a shell command) may contain ">".
+  const wrapped = /^\s*<background-result\b([^\n]*)>\r?\n([\s\S]*?)\r?\n?(?:<\/background-result>)?\s*$/.exec(
+    text,
+  );
+  const attrs: Record<string, string> = {};
+  if (wrapped) for (const [, k, v] of wrapped[1].matchAll(/(\w+)="([^"]*)"/g)) attrs[k] = v;
+  const goal = source === "goal" ? goalNotice(text) : null;
+  return {
+    type: "background.notice",
+    id,
+    source,
+    state: goal?.state ?? s(meta?.state) ?? attrs.state ?? null,
+    text: goal?.text ?? (wrapped ? wrapped[2] : text).trim(),
+    // The description is the command as typed; the wrapper's attribute breaks on quotes in it.
+    command: source === "shell" ? (s(raw.description) ?? attrs.command ?? null) : null,
+    path: s(meta?.path) ?? null,
+    ...(time !== undefined ? { time } : {}),
+  };
+}
+
+/** Sentences of OpenCode's goal prompt that speak to the model, not to the user. */
+const GOAL_INSTRUCTIONS = [
+  /^A goal is now active for this session\b/,
+  /^The objective below is user-provided data\b/,
+  /^Start now\. Treat the objective as your directive\b/,
+  /^When you end a turn, a reviewer checks\b/,
+  /^If you are blocked and need something only the user can provide\b/,
+];
+
+/**
+ * A goal notice for people: the objective (OpenCode wraps it in `<untrusted_objective>`
+ * for the model) and any reason or next step, without the instructions to the model.
+ * "set" when the notice starts the goal. Null when the text has no objective to show.
+ */
+function goalNotice(text: string): { state: string | null; text: string } | null {
+  const objective = /<untrusted_objective>\s*([\s\S]*?)\s*<\/untrusted_objective>/.exec(text);
+  if (!objective) return null;
+  const rest = text
+    .replace(objective[0], "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !GOAL_INSTRUCTIONS.some((re) => re.test(l)));
+  return {
+    state: /^\s*A goal is now active\b/.test(text) ? "set" : null,
+    text: [objective[1].trim(), ...rest].join("\n"),
   };
 }
 
@@ -198,6 +260,12 @@ export class EventNormalizer {
       case "session.inbox.enqueued": {
         const item = rec(data.item);
         const payload = rec(item?.payload);
+        // OpenCode 2.4 delivers subagent reports and background notices through the inbox.
+        if (item?.type === "synthetic" && payload) {
+          const id = s(data.inboxID) ?? "?";
+          const report = subagentReport(id, payload) ?? backgroundNotice(id, payload);
+          return out(report ? [report] : []);
+        }
         if (item?.type !== "user" || !payload) return out([]);
         const msg = userMessageEvent(s(data.inboxID) ?? "?", s(payload.text) ?? "", payload.files);
         if (msg.type !== "user.message") return out([]);
@@ -259,10 +327,9 @@ export class EventNormalizer {
           true,
         );
       case "session.synthetic": {
-        const report = subagentReport(
-          s(data.id) ?? s(data.messageID) ?? `${sessionID ?? "?"}:${s(rec(data.metadata)?.childID) ?? "?"}`,
-          data,
-        );
+        const id =
+          s(data.id) ?? s(data.messageID) ?? `${sessionID ?? "?"}:${s(rec(data.metadata)?.childID) ?? "?"}`;
+        const report = subagentReport(id, data) ?? backgroundNotice(id, data);
         return out(report ? [report] : []);
       }
       case "session.text.delta":
@@ -558,7 +625,7 @@ export function historyToEvents(messages: readonly unknown[]): UiEvent[] {
         break;
       }
       case "synthetic": {
-        const report = subagentReport(id, m, created);
+        const report = subagentReport(id, m, created) ?? backgroundNotice(id, m, created);
         if (report) events.push(report);
         break;
       }

@@ -104,6 +104,30 @@ export function sessionMarkdown(items: readonly TranscriptItem[], meta: ExportMe
           "",
         );
         break;
+      case "background": {
+        agent();
+        const head =
+          it.source === "shell"
+            ? `Background command${it.command ? ` \`${it.command}\`` : ""}`
+            : it.source === "goal"
+              ? "Goal"
+              : /video/.test(it.source)
+                ? "Video"
+                : /image/.test(it.source)
+                  ? "Image"
+                  : it.source;
+        out.push(`> **${head}**${it.state ? `: ${it.state}` : ""}`);
+        if (it.text.trim())
+          out.push(
+            ">",
+            ...it.text
+              .trim()
+              .split("\n")
+              .map((l) => `> ${l}`),
+          );
+        out.push("");
+        break;
+      }
       case "notice":
         if (it.level === "error") out.push(`> ⚠ ${it.text}`, "");
         break;

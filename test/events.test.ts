@@ -382,19 +382,6 @@ describe("subagent reports (hand-back)", () => {
     ]);
   });
 
-  it("ignores other synthetic messages", () => {
-    const n = new EventNormalizer();
-    const out = n.normalize(
-      ev("session.synthetic", {
-        sessionID: S,
-        id: "x",
-        text: "Shell cancelled",
-        metadata: { source: "shell" },
-      }),
-    );
-    assert.deepEqual(out?.events, []);
-  });
-
   it("replays stored reports with their time, and keeps unwrapped text as is", () => {
     const events = historyToEvents([
       {
@@ -406,7 +393,6 @@ describe("subagent reports (hand-back)", () => {
         metadata: META,
       },
       { id: "msg_t", type: "synthetic", text: "plain report", metadata: { ...META, childID: "ses_2" } },
-      { id: "msg_u", type: "synthetic", text: "notice", metadata: { source: "shell", state: "cancelled" } },
     ]);
     assert.deepEqual(
       events.map((e) => (e.type === "subagent.report" ? [e.id, e.text, e.time] : e.type)),

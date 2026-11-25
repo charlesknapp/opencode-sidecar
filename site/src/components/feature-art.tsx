@@ -88,7 +88,7 @@ function Timeline() {
         </div>
         <Step dot="ok">
           Edit <span className={path}>src/auth/service.ts</span>
-          <div className="text-[#9d9d9d]">Added 2 lines</div>
+          <div className="text-[#9d9d9d]">Added 3, removed 1 line</div>
           <div className={`${box} mt-1.5 overflow-hidden py-1 ${code}`}>
             <div className="px-2 text-[#9d9d9d]">
               import {"{"} refreshToken {"}"} from &quot;./token&quot;

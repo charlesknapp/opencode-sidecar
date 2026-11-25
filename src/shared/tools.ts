@@ -1,4 +1,4 @@
-import type { DiffLine, FileChange, FileDiff, ToolCategory } from "./model";
+import type { DiffLine, FileChange, FileDiff, TodoEntry, TodoStatus, ToolCategory } from "./model";
 
 export interface ToolDescription {
   title: string;
@@ -13,6 +13,8 @@ export interface ToolDescription {
   written: { lines: string[]; total: number } | null;
   /** For a subagent call: the exact prompt (capped at MAX_PROMPT characters). */
   prompt: string | null;
+  /** For the todo tool: the list it writes. */
+  todos: TodoEntry[] | null;
 }
 
 const MAX_PROMPT = 20_000;
@@ -40,6 +42,9 @@ function basename(path: string): string {
 
 export function categorize(name: string): ToolCategory {
   const n = name.toLowerCase();
+  // Before the edit rule: "todowrite" is a list, not a file write.
+  if (/^todo(write|read)?$/.test(n)) return "todo";
+  if (/^(generate_(image|video)|(experimental_)?(image|video)_generate)$/.test(n)) return "media";
   if (/^(read|view|cat|open)/.test(n)) return "read";
   if (/(grep|glob|find|search|list|ls|codesearch)/.test(n) && !/web/.test(n)) return "search";
   if (/(shell|bash|exec|command|terminal)/.test(n)) return "shell";
@@ -60,6 +65,7 @@ export function describeTool(name: string, input: Record<string, unknown> | null
   const facts: Array<[string, string]> = [];
 
   for (const [key, value] of Object.entries(inp)) {
+    if (category === "todo" && key === "todos") continue; // shown as the checklist
     if (category === "edit" && /^(oldString|newString|content|patch|diff|old_string|new_string)$/.test(key)) {
       continue; // shown via the diff editor instead of inline
     }
@@ -97,6 +103,12 @@ export function describeTool(name: string, input: Record<string, unknown> | null
       title = desc ? `Subagent: ${clip(firstLine(desc), 60)}` : "Ran subagent";
       break;
     }
+    case "todo":
+      title = todoSummary(todos(inp.todos));
+      break;
+    case "media":
+      title = /video/.test(name.toLowerCase()) ? "Video" : "Image";
+      break;
     default:
       title = name;
   }
@@ -108,10 +120,45 @@ export function describeTool(name: string, input: Record<string, unknown> | null
     command,
     path,
     pattern,
-    description: category === "agent" ? null : str(inp.description),
+    description:
+      category === "agent"
+        ? null
+        : category === "media"
+          ? (str(inp.prompt) ?? str(inp.description))
+          : str(inp.description),
     written: category === "edit" && content !== null ? preview(content) : null,
     prompt: category === "agent" ? (str(inp.prompt)?.slice(0, MAX_PROMPT) ?? null) : null,
+    todos: category === "todo" && Array.isArray(inp.todos) ? todos(inp.todos) : null,
   };
+}
+
+const TODO_STATUSES: readonly TodoStatus[] = ["pending", "in_progress", "completed", "cancelled"];
+
+/** The well-formed entries of a todo list, in order; an unknown status counts as pending. */
+function todos(value: unknown): TodoEntry[] {
+  if (!Array.isArray(value)) return [];
+  const out: TodoEntry[] = [];
+  for (const t of value) {
+    if (!t || typeof t !== "object") continue;
+    const rec = t as Record<string, unknown>;
+    const content = str(rec.content);
+    if (content === null || typeof rec.content !== "string") continue;
+    const status = TODO_STATUSES.find((s) => s === rec.status) ?? "pending";
+    out.push({ content, status });
+  }
+  return out;
+}
+
+/** OpenCode's own summary: "2/5 completed, 1 in progress, 2 pending". */
+function todoSummary(list: TodoEntry[]): string {
+  if (!list.length) return "Todos cleared";
+  const count = (s: TodoStatus) => list.filter((t) => t.status === s).length;
+  return [
+    `${count("completed")}/${list.length} completed`,
+    ...(["in_progress", "pending", "cancelled"] as const).flatMap((s) =>
+      count(s) ? [`${count(s)} ${s.replace("_", " ")}`] : [],
+    ),
+  ].join(", ");
 }
 
 function preview(content: string): { lines: string[]; total: number } {

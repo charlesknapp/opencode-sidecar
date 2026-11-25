@@ -118,6 +118,19 @@ export class Transcript {
         if (ev.time !== undefined) item.time = ev.time;
         return [this.upsert(item)];
       }
+      case "background.notice": {
+        const item: TranscriptItem = {
+          kind: "background",
+          id: `background:${ev.id}`,
+          source: ev.source,
+          state: ev.state,
+          text: ev.text,
+          command: ev.command,
+          path: ev.path,
+        };
+        if (ev.time !== undefined) item.time = ev.time;
+        return [this.upsert(item)];
+      }
       case "tool.started": {
         const id = `tool:${ev.toolId}`;
         if (this.has(id)) return [];
@@ -149,6 +162,7 @@ export class Transcript {
         if (d.description) detail.description = d.description;
         if (d.written) detail.written = d.written;
         if (d.prompt) detail.prompt = d.prompt;
+        if (d.todos) detail.todos = d.todos;
         const status = prev?.kind === "tool" && prev.status !== "pending" ? prev.status : "running";
         return [
           this.upsert({ kind: "tool", id, name, title: d.title, category: d.category, status, detail }),
@@ -196,6 +210,14 @@ export class Transcript {
         const diffs = fileDiffsFromMetadata(ev.metadata);
         if (diffs.length) detail.diffs = diffs;
         if (ev.type === "tool.failed") detail.error = ev.error;
+        if (base.category === "media") {
+          const path = typeof ev.metadata?.path === "string" ? ev.metadata.path : null;
+          if (path) detail.path = path;
+          detail.media = {
+            kind: /video/i.test(base.name) || ev.metadata?.source === "generate_video" ? "video" : "image",
+            state: typeof ev.metadata?.state === "string" ? ev.metadata.state : null,
+          };
+        }
         if (base.category === "agent")
           detail.subagent =
             subagentSessionOf(ev.metadata, this.toolInputs.get(ev.toolId) ?? null) ?? detail.subagent;
@@ -325,6 +347,7 @@ const TIMED = new Set<UiEvent["type"]>([
   "reasoning.delta",
   "reasoning.completed",
   "subagent.report",
+  "background.notice",
 ]);
 
 /**

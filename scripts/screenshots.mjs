@@ -822,6 +822,8 @@ for (const [suffix, width] of [
   ["", 400],
   ["-300", 300],
   ["-520", 520],
+  // Wide enough that inline diffs put old beside new.
+  ["-900", 900],
 ]) {
   const state = base({ busy: true, task: null, currentSession: { id: "s", title: "Shared token refresh" } });
   scenes[`9-tools${suffix}`] = { state, items: toolItems, width, scroll: "top" };
@@ -838,6 +840,11 @@ for (const [suffix, width] of [
 
 // Docks at the narrowest width.
 scenes["6-subagents-300"] = { ...scenes["6-subagents"], width: 300 };
+// The Agent changes strip opened to its file rows.
+scenes["3-agent-changes-open"] = {
+  ...scenes["3-agent-changes"],
+  click: '[data-testid="agent-changes-toggle"]',
+};
 scenes["4-question-steer-300"] = { ...scenes["4-question-steer"], width: 300 };
 
 // Step 7: a finished turn with Copy/Bookmark, the commands, usage and bookmarks menus.
