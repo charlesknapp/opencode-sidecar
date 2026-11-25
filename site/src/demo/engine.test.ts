@@ -62,8 +62,10 @@ describe("the interactive demo", () => {
       "reasoning:r1",
       "tool:g1",
       "tool:rd1",
+      "tool:td1",
       "tool:sh1",
       "tool:e1",
+      "tool:td2",
       "assistant:a1",
       "tool:t1",
       "tool:t2",
@@ -85,9 +87,10 @@ describe("the interactive demo", () => {
       decision: "once",
     })
     h.flush()
-    expect(kinds(h.items()).slice(-4)).toEqual([
+    expect(kinds(h.items()).slice(-5)).toEqual([
       "permission:perm:p1",
       "tool:sh2",
+      "tool:td3",
       "turn-summary:ts",
       "assistant:a2",
     ])
@@ -95,6 +98,40 @@ describe("the interactive demo", () => {
       status: "once",
     })
     expect(h.state().busy).toBe(false)
+  })
+
+  it("keeps a todo list that updates as the task goes", () => {
+    const h = harness()
+    h.demo.handle({ type: "ready" })
+    h.demo.handle({ type: "send", text: PROMPT })
+    h.flush()
+    h.demo.handle({
+      type: "respondPermission",
+      requestId: "p1",
+      decision: "once",
+    })
+    h.flush()
+    const statuses = (id: string) => {
+      const item = h.items().find((i) => i.id === id) as {
+        category: string
+        title: string
+        detail: { todos: { status: string }[] }
+      }
+      expect(item.category).toBe("todo")
+      return [item.title, item.detail.todos.map((t) => t.status)]
+    }
+    expect(statuses("td1")).toEqual([
+      "0/4 completed, 1 in progress, 3 pending",
+      ["in_progress", "pending", "pending", "pending"],
+    ])
+    expect(statuses("td2")).toEqual([
+      "2/4 completed, 1 in progress, 1 pending",
+      ["completed", "completed", "in_progress", "pending"],
+    ])
+    expect(statuses("td3")).toEqual([
+      "4/4 completed",
+      ["completed", "completed", "completed", "completed"],
+    ])
   })
 
   it("respects a refusal: no tests, and the agent says so", () => {
@@ -109,6 +146,10 @@ describe("the interactive demo", () => {
     })
     h.flush()
     expect(kinds(h.items())).not.toContain("tool:sh2")
+    const last = h.items().find((i) => i.id === "td3") as {
+      detail: { todos: { status: string }[] }
+    }
+    expect(last.detail.todos.at(-1)?.status).toBe("cancelled")
     expect(String(h.items().at(-1)?.text)).toMatch(/didn't run the tests/)
     expect(h.state().busy).toBe(false)
   })

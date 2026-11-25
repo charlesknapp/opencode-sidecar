@@ -7,6 +7,7 @@ import { site } from "@/config/site"
 import { formatReleaseDate } from "@/lib/changelog"
 import { buildGuideStructuredData } from "@/lib/structured-data"
 import { anchorFor, GuideBlocks } from "@/components/guide-blocks"
+import { GuideToc } from "@/components/guide-toc"
 import { InlineMarkdown } from "@/components/inline-markdown"
 import { Cross } from "@/components/section"
 import { SiteFooter, SiteNav } from "@/components/site-chrome"
@@ -106,15 +107,12 @@ export default async function GuidePage({ params }: Props) {
           <aside className="hidden lg:block">
             <div className="sticky top-8">
               <p className="eyebrow">On this page</p>
-              <ul className="mt-3">
-                {sections.map((text) => (
-                  <li key={text}>
-                    <a href={`#${anchorFor(text)}`} className={asideLink}>
-                      {text}
-                    </a>
-                  </li>
-                ))}
-              </ul>
+              <GuideToc
+                sections={sections.map((text) => ({
+                  id: anchorFor(text),
+                  text,
+                }))}
+              />
               <p className="mt-10 eyebrow">More guides</p>
               <ul className="mt-3">
                 {others.map(({ slug, short }) => (

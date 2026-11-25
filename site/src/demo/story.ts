@@ -176,6 +176,39 @@ export const read: Json = {
   detail: detail({ path: "/projects/acme-shop/src/auth/service.ts" }),
 }
 
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled"
+
+const TODOS = [
+  "Reproduce the sign-out in a failing test",
+  "Make concurrent 401s share one refresh",
+  "Have subagents check the callers, tests and mobile app",
+  "Run the tests",
+]
+
+/** OpenCode's own summary of a todo list: "2/4 completed, 1 in progress, 1 pending". */
+const todoTitle = (statuses: readonly TodoStatus[]) => {
+  const count = (s: TodoStatus) => statuses.filter((x) => x === s).length
+  return [
+    `${count("completed")}/${statuses.length} completed`,
+    ...(["in_progress", "pending", "cancelled"] as const).flatMap((s) =>
+      count(s) ? [`${count(s)} ${s.replace("_", " ")}`] : []
+    ),
+  ].join(", ")
+}
+
+/** The agent's todo list as OpenCode's todowrite tool writes it, one row per update. */
+export const todos = (id: string, statuses: readonly TodoStatus[]): Json => ({
+  kind: "tool",
+  id,
+  name: "todowrite",
+  title: todoTitle(statuses),
+  category: "todo",
+  status: "completed",
+  detail: detail({
+    todos: TODOS.map((content, i) => ({ content, status: statuses[i] })),
+  }),
+})
+
 export const testRunning: Json = {
   kind: "tool",
   id: "sh1",

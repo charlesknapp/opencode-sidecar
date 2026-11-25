@@ -3,10 +3,13 @@ import Link from "next/link"
 import { guides } from "@/config/guides"
 import { comparison, faq, features, site, steps } from "@/config/site"
 import { formatReleaseDate, loadReleases } from "@/lib/changelog"
+import { extensionTests, roundedCount } from "@/lib/stats"
 import { buildStructuredData } from "@/lib/structured-data"
 import { ButtonLink } from "@/components/button-link"
+import { CountUp } from "@/components/count-up"
 import { DemoVideo } from "@/components/demo-video"
 import { FeatureCard } from "@/components/feature-card"
+import { HeroLines } from "@/components/hero-lines"
 import { InstallCommand } from "@/components/install-command"
 import { Mark } from "@/components/mark"
 import { Cross, Section } from "@/components/section"
@@ -27,8 +30,35 @@ const tryIt = [
 const inlineLink =
   "text-foreground underline decoration-line-hover underline-offset-4 transition-[text-decoration-color] duration-150 hover:decoration-foreground"
 
+/** A changelog line as plain text: no emphasis, code ticks or link targets. */
+const plain = (text: string) =>
+  text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/(\*\*|__|`|_)/g, "")
+
 export default function Home() {
-  const [latest] = loadReleases()
+  const releases = loadReleases()
+  const [latest] = releases
+  const numbers = [
+    {
+      value: roundedCount(extensionTests()),
+      label: "tests",
+      note: "unit and browser tests on every change",
+    },
+    {
+      value: String(releases.length),
+      label: "releases",
+      note: `since ${formatReleaseDate(releases.at(-1)!.date)}`,
+    },
+    {
+      value: "0",
+      label: "telemetry",
+      note: "only talks to your local OpenCode",
+    },
+    {
+      value: "MIT",
+      label: "open source",
+      note: "free, source on GitHub",
+    },
+  ]
   return (
     <>
       <script
@@ -40,7 +70,13 @@ export default function Home() {
         <div className="relative container-page pt-14 pb-20 lg:pt-24 lg:pb-28 xl:border-x xl:border-line">
           <Cross side="left" />
           <Cross side="right" />
-          <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:items-end lg:gap-16">
+          <div className="relative isolate grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:items-end lg:gap-16">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -inset-y-24 -right-8 left-0 -z-10 hidden lg:block"
+            >
+              <HeroLines />
+            </div>
             <div>
               <Link
                 href="/changelog"
@@ -58,8 +94,8 @@ export default function Home() {
               </h1>
             </div>
             <div>
-              <p className="max-w-[34rem] text-lead text-muted-foreground">
-                {site.summary}
+              <p className="max-w-120 text-lead text-muted-foreground">
+                {site.lead}
               </p>
               <div className="mt-8 flex flex-wrap gap-x-5 gap-y-4">
                 <ButtonLink href={site.links.marketplace} variant="primary">
@@ -70,17 +106,8 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mt-14 grid grid-cols-[minmax(0,1fr)] gap-4 lg:mt-16 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div className="relative mt-14 lg:mt-16">
             <InstallCommand />
-            <p className="text-sm text-subtle-foreground lg:max-w-[16rem]">
-              Free · Open source (MIT) · No telemetry ·{" "}
-              <a
-                href={site.links.openInVsCode}
-                className={`${inlineLink} whitespace-nowrap`}
-              >
-                Open it in VS Code directly
-              </a>
-            </p>
           </div>
 
           <div className="mt-10 lg:mt-12">
@@ -95,8 +122,29 @@ export default function Home() {
         </div>
       </header>
 
+      {/* A full-width band: the page rails stop here, so the strip reads edge to edge. */}
+      <section
+        aria-label="Works with"
+        className="border-t border-line bg-raised"
+      >
+        <div className="container-page flex flex-col gap-5 py-10 lg:flex-row lg:items-center lg:gap-12">
+          <p className="shrink-0 eyebrow">Works in</p>
+          <ul
+            aria-label="Works in"
+            className="flex flex-wrap gap-x-10 gap-y-2 text-[1.375rem] font-medium tracking-[-0.02em] text-muted-foreground"
+          >
+            {site.editors.map((editor) => (
+              <li key={editor}>{editor}</li>
+            ))}
+          </ul>
+          <p className="text-sm leading-relaxed text-subtle-foreground lg:ml-auto lg:max-w-[16rem] lg:text-right">
+            With any model OpenCode supports, local ones included.
+          </p>
+        </div>
+      </section>
+
       <main>
-        <Section id="try" index="01" label="Try it">
+        <Section id="try" index="01" label="Try it" crosses={false}>
           <div className="grid gap-12 lg:grid-cols-[1fr_440px] lg:items-center lg:gap-20">
             <div>
               <h2 id="try" className="max-w-lg text-h2">
@@ -158,7 +206,35 @@ export default function Home() {
           </div>
         </Section>
 
-        <Section id="compare" index="03" label="Compare">
+        {/* A full-width band, like "Works in": the rails stop here. */}
+        <section
+          aria-label="Sidecar in numbers"
+          className="border-t border-line bg-raised"
+        >
+          <div className="container-page">
+            <ul
+              aria-label="Sidecar in numbers"
+              className="grid grid-cols-2 lg:grid-cols-4"
+            >
+              {numbers.map(({ value, label, note }) => (
+                <li
+                  key={label}
+                  className="-mr-px -mb-px border-r border-b border-line py-8 pr-5 even:pl-5 lg:border-b-0 lg:px-8 lg:py-10 lg:first:pl-0 lg:last:border-r-0"
+                >
+                  <span className="block text-[clamp(2.25rem,4vw,3rem)] leading-none font-medium tracking-[-0.04em] tabular-nums">
+                    <CountUp value={value} />
+                  </span>
+                  <span className="mt-3 block eyebrow">{label}</span>
+                  <span className="mt-2 block text-sm leading-relaxed text-subtle-foreground">
+                    {note}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <Section id="compare" index="03" label="Compare" crosses={false}>
           <div>
             <h2 id="compare" className="max-w-2xl text-h2">
               Sidecar or the official OpenCode extension?
@@ -290,7 +366,61 @@ export default function Home() {
           </div>
         </Section>
 
-        <Section id="faq" index="05" label="FAQ">
+        <Section id="updates" index="05" label="Latest updates">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <h2 id="updates" className="text-h2">
+              Latest updates
+            </h2>
+            <Link
+              href="/changelog"
+              className="font-mono text-xs tracking-[0.08em] text-muted-foreground uppercase transition-[color] duration-150 hover:text-foreground"
+            >
+              All releases →
+            </Link>
+          </div>
+          <ul className="mt-12 grid overflow-hidden rounded-media border border-line md:grid-cols-3">
+            {releases.slice(0, 3).map((release) => {
+              const items = [
+                ...release.intro,
+                ...release.sections.flatMap((section) => section.items),
+              ]
+              return (
+                <li
+                  key={release.version}
+                  className="relative -mr-px -mb-px flex flex-col border-r border-b border-line p-7 transition-[background-color] duration-200 hover:bg-raised"
+                >
+                  <Link
+                    href={`/changelog#v${release.version}`}
+                    className="text-[1.75rem] leading-none font-medium tracking-[-0.03em] after:absolute after:inset-0"
+                  >
+                    {release.version}
+                    <span className="sr-only">
+                      , {formatReleaseDate(release.date)}
+                    </span>
+                  </Link>
+                  <time
+                    dateTime={release.date}
+                    className="mt-3 eyebrow"
+                    aria-hidden="true"
+                  >
+                    {formatReleaseDate(release.date)}
+                  </time>
+                  <p className="mt-5 line-clamp-3 text-[15px] leading-relaxed text-muted-foreground">
+                    {plain(items[0] ?? "")}
+                  </p>
+                  <span className="mt-auto pt-6 font-mono text-xs tracking-[0.08em] text-subtle-foreground uppercase">
+                    {items.length === 1
+                      ? "1 change"
+                      : `${items.length} changes`}{" "}
+                    →
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </Section>
+
+        <Section id="faq" index="06" label="FAQ">
           <div className="grid gap-12 lg:grid-cols-[1fr_2fr] lg:gap-20">
             <div>
               <h2 id="faq" className="text-h2 lg:sticky lg:top-12">
@@ -299,15 +429,25 @@ export default function Home() {
             </div>
             <div>
               {faq.map(({ question, answer }) => (
-                <div
+                <details
                   key={question}
-                  className="border-t border-line py-7 first:border-t-0 first:pt-0"
+                  className="group border-t border-line first:border-t-0"
                 >
-                  <h3 className="text-h3">{question}</h3>
-                  <p className="mt-2.5 max-w-[42rem] leading-relaxed text-muted-foreground">
+                  <summary className="-mx-3 my-1 flex cursor-pointer list-none items-center justify-between gap-6 rounded-lg px-3 py-4 transition-[background-color,color] duration-150 hover:text-foreground-hover focus-visible:bg-raised focus-visible:outline-1 focus-visible:outline-offset-0 focus-visible:outline-line-hover [&::-webkit-details-marker]:hidden">
+                    <h3 className="text-h3">{question}</h3>
+                    {/* A thin plus; its upright fades out to leave a minus when open. */}
+                    <span
+                      aria-hidden="true"
+                      className="relative size-3 shrink-0 text-muted-foreground transition-[color] duration-150 group-hover:text-foreground"
+                    >
+                      <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-current" />
+                      <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-current transition-[transform,opacity] duration-200 group-open:scale-y-0 group-open:opacity-0" />
+                    </span>
+                  </summary>
+                  <p className="max-w-[42rem] pb-6 leading-relaxed text-muted-foreground">
                     {answer}
                   </p>
-                </div>
+                </details>
               ))}
             </div>
           </div>

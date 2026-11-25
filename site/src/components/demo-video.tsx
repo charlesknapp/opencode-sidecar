@@ -23,7 +23,7 @@ export function DemoVideo({ label }: { label: string }) {
         ref={ref}
         aria-label={label}
         className="block aspect-video w-full object-cover"
-        poster="/demo-poster.jpg"
+        poster="/demo-loop-poster.jpg"
         autoPlay={!reducedMotion}
         controls={reducedMotion}
         muted
@@ -31,7 +31,7 @@ export function DemoVideo({ label }: { label: string }) {
         playsInline
         preload="metadata"
       >
-        <source src="/demo.mp4" type="video/mp4" />
+        <source src="/demo-loop.mp4" type="video/mp4" />
       </video>
     </div>
   )

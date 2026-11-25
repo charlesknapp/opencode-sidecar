@@ -24,11 +24,11 @@ describe("home page", () => {
     ).toHaveAttribute("href", site.links.openVsx)
   })
 
-  it("lets people with VS Code open the extension directly", () => {
+  it("lets people with VS Code open the extension directly, from the footer", () => {
     renderHome()
     expect(
-      within(screen.getByRole("banner")).getByRole("link", {
-        name: /open it in vs code/i,
+      within(screen.getByRole("contentinfo")).getByRole("link", {
+        name: /open in vs code/i,
       })
     ).toHaveAttribute("href", "vscode:extension/cadogy.opencode-sidecar")
   })
@@ -57,13 +57,46 @@ describe("home page", () => {
     ).toHaveAttribute("src", "/demo/index.html")
   })
 
-  it("answers the FAQ", () => {
+  it("answers the FAQ in questions that open, with every answer in the page", () => {
     renderHome()
-    faq.forEach(({ question }) =>
-      expect(
-        screen.getByRole("heading", { name: question })
-      ).toBeInTheDocument()
-    )
+    faq.forEach(({ question, answer }) => {
+      const heading = screen.getByRole("heading", { name: question })
+      const item = heading.closest("details")
+      expect(item).not.toBeNull()
+      expect(item).toHaveTextContent(answer)
+    })
+  })
+
+  it("names the editors it works in", () => {
+    renderHome()
+    const list = screen.getByRole("list", { name: /works in/i })
+    expect(
+      within(list)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent)
+    ).toEqual(site.editors)
+  })
+
+  it("shows real numbers about the project", () => {
+    renderHome()
+    const stats = screen.getByRole("list", { name: /in numbers/i })
+    expect(stats).toHaveTextContent(`${loadReleases().length}releases`)
+    expect(stats).toHaveTextContent(/0telemetry/)
+    expect(stats).toHaveTextContent(/\d+\+?tests/)
+  })
+
+  it("links the three latest releases to their changelog entries", () => {
+    renderHome()
+    const updates = screen.getByRole("region", { name: /latest updates/i })
+    loadReleases()
+      .slice(0, 3)
+      .forEach(({ version }) =>
+        expect(
+          within(updates).getByRole("link", {
+            name: new RegExp(`^${version.replace(/\./g, "\\.")}`),
+          })
+        ).toHaveAttribute("href", `/changelog#v${version}`)
+      )
   })
 
   it("says plainly that it is not an official OpenCode project", () => {

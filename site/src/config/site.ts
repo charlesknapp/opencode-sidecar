@@ -5,6 +5,8 @@ export const site = {
   title: "Sidecar for OpenCode: the OpenCode chat sidebar for VS Code",
   summary:
     "A free, open-source VS Code extension that gives the OpenCode coding agent a chat panel beside your code: every step on one timeline, live subagents you can stop, and permission requests answered where you type.",
+  /** The hero's one line; `summary` stays the fuller description for search and llms.txt. */
+  lead: "A free, open-source chat panel for the OpenCode coding agent, right beside your code.",
   extensionId: "cadogy.opencode-sidecar",
   publisher: "Cadogy",
   editors: ["VS Code", "Cursor", "Windsurf", "VSCodium"],
@@ -37,37 +39,37 @@ export const features: readonly Feature[] = [
   {
     title: "Every step on one timeline",
     description:
-      "Each prompt gets a timeline of what the agent did: thinking time, every tool call with its input and output, and edits as diffs with your theme's syntax colors. Click an edit to open it in VS Code's own diff editor.",
+      "Thinking, every tool call with its input and output, the todo list, and edits as diffs. Click an edit for VS Code's diff editor.",
     art: { name: "timeline", anchor: "top" },
   },
   {
     title: "Live subagents you can stop",
     description:
-      "Each subagent shows its task, its exact prompt, what it is doing right now, and its tool count and time. Stop any of them, or open one into its own conversation. Its report comes back as one line you can expand.",
+      "Each shows its task, prompt and live activity while it works in the background. Stop it, open its conversation, or expand its report.",
     art: { name: "subagents", anchor: "top" },
   },
   {
     title: "Nothing is approved for you",
     description:
-      "Permission requests and questions, including those raised deep inside a subagent, wait in place of the message box until you answer. You can also tell the agent what to do instead.",
+      "Permission requests and questions, even from subagents, wait in place of the message box until you answer or redirect the agent.",
     art: { name: "permission", anchor: "bottom" },
   },
   {
     title: "Budget Guard",
     description:
-      "Set a local limit on cost and steps for each task. When a task runs away, Budget Guard stops it, and you decide whether to continue once, raise the budget or start over.",
+      "A cost and step limit per task. When a task runs away, Budget Guard stops it: continue once, raise the budget or start over.",
     art: { name: "budget", anchor: "top" },
   },
   {
-    title: "Everything at hand in the message box",
+    title: "Everything in the message box",
     description:
-      "Type @ to mention a file, folder, subagent or skill, paste a screenshot, and open / for OpenCode's commands, including your own. Steer a running task or queue the next message, and rewind or fork from any prompt.",
+      "Type @ to mention files, subagents or skills and / for OpenCode's commands, /goal included. Steer, queue, rewind or fork.",
     art: { name: "composer", anchor: "bottom" },
   },
   {
     title: "One timeline for the whole session",
     description:
-      "Prompts stay pinned while you read their turn, answers can be copied or bookmarked, and sessions you start in OpenCode's terminal UI show up here too, because they are OpenCode's own.",
+      "Prompts stay pinned while you read, answers can be copied or bookmarked, and terminal UI sessions show up here too.",
     art: { name: "session", anchor: "top" },
   },
 ]
@@ -129,7 +131,7 @@ export const faq: readonly FaqEntry[] = [
   {
     question: "Which OpenCode versions does it support?",
     answer:
-      "OpenCode 2.x, with its background service running. OpenCode 1.x is not supported.",
+      "OpenCode 2.x, with its background service running. Sidecar keeps up with OpenCode 2.4, including goals, todo lists and background subagents. OpenCode 1.x is not supported.",
   },
   {
     question: "Can I use local models, such as Ollama or LM Studio?",

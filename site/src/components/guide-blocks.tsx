@@ -1,4 +1,5 @@
 import type { GuideBlock } from "@/config/guides"
+import { CopyButton } from "@/components/copy-button"
 import { FeatureArt } from "@/components/feature-art"
 import { FeatureCell } from "@/components/feature-cell"
 import { InlineMarkdown } from "@/components/inline-markdown"
@@ -63,8 +64,9 @@ function Block({ block }: { block: GuideBlock }) {
     case "code":
       return (
         <figure className="mt-6 border border-line-strong bg-[#09090a]">
-          <figcaption className="border-b border-line-strong px-5 py-2.5 eyebrow">
+          <figcaption className="flex items-center justify-between border-b border-line-strong py-1 pr-2 pl-5 eyebrow">
             {block.label}
+            <CopyButton text={block.code} label={`Copy ${block.label}`} />
           </figcaption>
           <pre className="overflow-x-auto p-5 font-mono text-[13px] leading-relaxed text-foreground">
             <code>{block.code}</code>

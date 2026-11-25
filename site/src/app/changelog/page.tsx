@@ -3,6 +3,7 @@ import Link from "next/link"
 
 import { site } from "@/config/site"
 import { formatReleaseDate, loadReleases } from "@/lib/changelog"
+import { ChangelogSpy } from "@/components/changelog-spy"
 import { InlineMarkdown } from "@/components/inline-markdown"
 import { SiteFooter, SiteNav } from "@/components/site-chrome"
 
@@ -38,6 +39,7 @@ export default function Changelog() {
                 Latest
                 <span className="text-foreground">v{latest.version}</span>
               </Link>
+              <ChangelogSpy versions={releases.map((r) => r.version)} />
               <a href={site.links.marketplace} className={asideLink}>
                 VS Code Marketplace <span aria-hidden="true">↗</span>
               </a>
@@ -52,17 +54,22 @@ export default function Changelog() {
 
           <main className="pb-24 lg:border-l lg:border-line lg:pt-24 lg:pl-12">
             <ol>
-              {releases.map((release) => (
+              {releases.map((release, index) => (
                 <li
                   key={release.version}
+                  data-release={release.version}
                   className="relative border-t border-line py-12 first:border-t-0 first:pt-0 lg:border-t-0"
                 >
                   <section aria-labelledby={`v${release.version}`}>
                     <div className="relative flex flex-wrap items-baseline gap-x-4 gap-y-1">
                       <span
                         aria-hidden="true"
-                        className="absolute top-[0.8em] -left-[calc(3rem+4px)] hidden size-[7px] bg-foreground lg:block"
-                      />
+                        className="release-marker absolute top-[0.8em] -left-[calc(3rem+4px)] hidden size-[7px] lg:block"
+                      >
+                        {index === 0 && (
+                          <span className="absolute inset-0 animate-ping bg-foreground opacity-40 [animation-duration:2.4s] motion-reduce:hidden" />
+                        )}
+                      </span>
                       <h2
                         id={`v${release.version}`}
                         className="scroll-mt-8 text-h2"

@@ -21,25 +21,28 @@ export function Section({
   label,
   children,
   className = "",
+  crosses = true,
 }: {
   id: string
   index?: string
   label?: string
   children: ReactNode
   className?: string
+  /** False under a full-width band, where the rails don't meet the section's top edge. */
+  crosses?: boolean
 }) {
   return (
     <section aria-labelledby={id} className="border-t border-line">
       <div
         className={`relative container-page section xl:border-x xl:border-line ${className}`}
       >
-        <Cross side="left" />
-        <Cross side="right" />
+        {crosses && <Cross side="left" />}
+        {crosses && <Cross side="right" />}
         {label && (
           <p className="mb-10 flex items-center gap-4 eyebrow lg:mb-12">
             <span className="text-muted-foreground tabular-nums">{index}</span>
             <span>{label}</span>
-            <span aria-hidden="true" className="h-px flex-1 bg-line" />
+            <span aria-hidden="true" className="rule-in h-px flex-1 bg-line" />
           </p>
         )}
         {children}

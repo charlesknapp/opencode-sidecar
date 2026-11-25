@@ -17,6 +17,7 @@ import {
   testsPass,
   thinking,
   thought,
+  todos,
   userItem,
   type SubagentId,
   type SubagentStatus,
@@ -136,9 +137,23 @@ export function createDemo({ post, after, now }: Deps) {
     }))
     at(1400, (s) => ({ ...s, items: [s.items[0], thought(started), grep] }))
     at(2300, (s) => ({ ...s, items: [...s.items, read] }))
+    at(2700, (s) => ({
+      ...s,
+      items: [
+        ...s.items,
+        todos("td1", ["in_progress", "pending", "pending", "pending"]),
+      ],
+    }))
     at(3100, (s) => ({ ...s, items: [...s.items, testRunning] }))
     at(4100, (s) => ({ ...s, items: replace(s.items, "sh1", testFailed) }))
     at(5100, (s) => ({ ...s, items: [...s.items, edit] }))
+    at(5700, (s) => ({
+      ...s,
+      items: [
+        ...s.items,
+        todos("td2", ["completed", "completed", "in_progress", "pending"]),
+      ],
+    }))
     at(6300, (s) => ({
       ...s,
       items: [...s.items, plan, ...subagentTools],
@@ -173,7 +188,12 @@ export function createDemo({ post, after, now }: Deps) {
       at(2300, (s) => ({
         ...s,
         busy: false,
-        items: [...s.items, summary, answer(true)],
+        items: [
+          ...s.items,
+          todos("td3", ["completed", "completed", "completed", "completed"]),
+          summary,
+          answer(true),
+        ],
       }))
       return
     }
@@ -181,7 +201,12 @@ export function createDemo({ post, after, now }: Deps) {
       ...s,
       busy: false,
       waiting: false,
-      items: [...s.items, summary, answer(false)],
+      items: [
+        ...s.items,
+        todos("td3", ["completed", "completed", "completed", "cancelled"]),
+        summary,
+        answer(false),
+      ],
       subagents: s.subagents && settle(s.subagents, ["sub-1", "sub-3"]),
     }))
   }
