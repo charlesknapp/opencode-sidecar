@@ -840,11 +840,6 @@ for (const [suffix, width] of [
 
 // Docks at the narrowest width.
 scenes["6-subagents-300"] = { ...scenes["6-subagents"], width: 300 };
-// The Agent changes strip opened to its file rows.
-scenes["3-agent-changes-open"] = {
-  ...scenes["3-agent-changes"],
-  click: '[data-testid="agent-changes-toggle"]',
-};
 scenes["4-question-steer-300"] = { ...scenes["4-question-steer"], width: 300 };
 
 // Step 7: a finished turn with Copy/Bookmark, the commands, usage and bookmarks menus.
@@ -993,7 +988,11 @@ for (const [name, scene] of chosen) {
       );
   }, scene);
   await new Promise((r) => setTimeout(r, 400));
-  if (scene.open) await page.click('[data-testid="agent-changes-toggle"]').catch(() => {});
+  if (scene.open) {
+    await page.click('[data-testid="agent-changes-toggle"]').catch(() => {});
+    // The strip opens upward, under the pointer: move it off so no row shows as hovered.
+    await page.mouse.move(0, 0);
+  }
   if (scene.click) await page.click(scene.click).catch(() => {});
   if (scene.type) {
     await page.evaluate((m) => (window.__mention = m), scene.mention ?? []);
