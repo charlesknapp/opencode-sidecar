@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.7 (2026-11-26)
 
 - **Type `/` for commands.** A `/` at the start of the message opens OpenCode's commands above the box, filtered as you type. Tab or Enter completes one; a command typed out in full still runs on Enter. ([#1](https://github.com/charlesknapp/opencode-sidecar/issues/1))
 - **Session history shows which sessions are working**, with a small spinner, including sessions started from OpenCode's terminal UI. ([#1](https://github.com/charlesknapp/opencode-sidecar/issues/1))
