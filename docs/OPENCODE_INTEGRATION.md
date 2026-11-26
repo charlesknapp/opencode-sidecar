@@ -6,7 +6,7 @@ Target: **OpenCode 2.x**. Sidecar uses the OpenCode v2 HTTP API, the same surfac
 
 OpenCode 2 runs one shared **background service** per user (`opencode service start|status|stop`), registered in `$XDG_STATE_HOME/opencode/service.json` (default `~/.local/state/opencode/service.json`) with its `url`, `pid` and `password`. Sidecar discovers it as the official client does:
 
-1. Read `service.json`; refuse a non-loopback `url`.
+1. Read `service.json`. A service bound to every interface (`opencode service set hostname 0.0.0.0`) registers that bind address; `0.0.0.0` and `::` are reached at `127.0.0.1` and `::1`. Any other non-loopback `url` is refused.
 2. Probe `GET /api/info` with HTTP Basic auth `opencode:<password>` and check the reported `pid` (this catches stale files).
 
 The password stays in memory and is only sent to that loopback URL. With `opencodeSidecar.serverUrl` set, that URL is used instead (loopback unless `allowRemoteServer` is on); the password is sent only to the registered service's own origin, otherwise `OPENCODE_SERVER_PASSWORD` is used if set.
@@ -15,7 +15,7 @@ The password stays in memory and is only sent to that loopback URL. With `openco
 
 ## Endpoints
 
-Workspace-scoped calls pass the open folder as `location[directory]`. ✓ marks calls checked against a live OpenCode service.
+Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode compares directories case-sensitively and its CLI records Windows drive letters in upper case, while VS Code reports them in lower case, so Sidecar upper-cases the drive letter (`c:\repo` → `C:\repo`). The session list also asks for the lower-case form, which older Sidecar versions recorded. ✓ marks calls checked against a live OpenCode service.
 
 | Purpose                     | Endpoint                                                                                                              |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------- |

@@ -508,6 +508,18 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A session OpenCode is working in: a small spinning ring before its title. */
+.session-run {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 1.5px solid var(--vscode-progressBar-background, var(--accent));
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
 /* Each row: the session, then Archive (or Restore) when hovered or focused. */
 .session-row {
   display: flex;

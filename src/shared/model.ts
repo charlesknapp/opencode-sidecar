@@ -107,6 +107,8 @@ export interface SessionSummary {
   forked?: boolean;
   /** The session is archived (hidden from the history list). */
   archived?: boolean;
+  /** OpenCode is working in the session right now (set for the history list). */
+  running?: boolean;
   /**
    * A rewind that has been staged but not committed (for example `/undo` in OpenCode's
    * terminal UI): the messages from `messageID` on are hidden until it is committed or

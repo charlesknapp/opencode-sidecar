@@ -5,6 +5,7 @@
 import type {
   BudgetLevel,
   CheckState,
+  CommandInfo,
   OnboardingStage,
   FileChange,
   FileDiff,
@@ -1396,7 +1397,11 @@ window.addEventListener("blur", () => hideTip());
 // Typing `@` opens a list above the message box: files and folders (found by
 // OpenCode), subagents and skills. The caret stays in the box; arrows move,
 // Enter or Tab picks, Escape closes. A pick inserts its token (`@src/a.ts`) and is
-// remembered, so the prompt carries it as an OpenCode mention.
+// remembered, so the prompt carries it as an OpenCode mention. A `/` at the start
+// of the message opens the same list with OpenCode's commands.
+
+/** A row in that list: something to mention, or a command to run. */
+type Suggestion = MentionCandidate | { kind: "command"; value: string; label: string; detail?: string };
 
 const mentionEl = h("div", {
   className: "menu mention-menu",
@@ -1410,17 +1415,20 @@ document.body.append(mentionEl);
 let mention: {
   start: number;
   query: string;
-  items: MentionCandidate[];
+  items: Suggestion[];
   active: number;
   requestId: string;
+  /** The list is OpenCode's commands for a `/command` being typed. */
+  slash?: boolean;
 } | null = null;
 let mentionTimer: ReturnType<typeof setTimeout> | undefined;
 
-const MENTION_ICONS: Record<MentionCandidate["kind"], keyof typeof ICON_PATHS> = {
+const MENTION_ICONS: Record<Suggestion["kind"], keyof typeof ICON_PATHS> = {
   file: "file",
   folder: "folder",
   agent: "agent",
   skill: "skill",
+  command: "slash",
 };
 
 /** The `@token` the caret is in: where its `@` is and what follows it. */
@@ -1431,11 +1439,61 @@ function mentionAtCaret(): { start: number; query: string } | null {
   return m ? { start: pos - m[2].length - 1, query: m[2] } : null;
 }
 
+/** The `/command` being typed: a slash that starts the message, with the caret still in its name. */
+function commandAtCaret(): { query: string } | null {
+  const pos = input.selectionStart;
+  if (pos !== input.selectionEnd) return null;
+  const m = /^\/([\w.:/-]*)$/.exec(input.value.slice(0, pos));
+  return m ? { query: m[1] } : null;
+}
+
+/** OpenCode's commands (and Compact) matching `query`: names that start with it first. */
+function commandSuggestions(query: string): Suggestion[] {
+  const q = query.toLowerCase();
+  const cmds = (state?.commands ?? []).filter((c) => c.name !== "compact");
+  if (state?.currentSession)
+    cmds.push({ name: "compact", description: "Summarize the conversation to free context" });
+  const rank = (c: CommandInfo) => {
+    const name = c.name.toLowerCase();
+    if (name === q) return -1;
+    if (name.startsWith(q)) return 0;
+    if (name.includes(q)) return 1;
+    return c.description?.toLowerCase().includes(q) ? 2 : 3;
+  };
+  return cmds
+    .map((c) => ({ c, r: rank(c) }))
+    .filter((x) => x.r < 3)
+    .sort((a, b) => a.r - b.r)
+    .map(({ c }) => ({
+      kind: "command",
+      value: c.name,
+      label: `/${c.name}`,
+      detail: c.description ?? undefined,
+    }));
+}
+
 function updateMention(): void {
+  if (!state || state.connection.kind !== "connected" || input.disabled) return closeMention();
+  const cmd = commandAtCaret();
+  if (cmd) {
+    // Opening the list asks OpenCode for its commands again, as the / button does.
+    if (!mention?.slash) send({ type: "refreshCommands" });
+    else if (mention.query === cmd.query) return;
+    clearTimeout(mentionTimer);
+    mention = {
+      start: 0,
+      query: cmd.query,
+      items: commandSuggestions(cmd.query),
+      active: 0,
+      requestId: "",
+      slash: true,
+    };
+    return renderMention();
+  }
   const at = mentionAtCaret();
-  if (!at || !state || state.connection.kind !== "connected" || input.disabled) return closeMention();
-  if (mention && mention.start === at.start && mention.query === at.query) return;
-  const keep = mention?.start === at.start ? mention.items : [];
+  if (!at) return closeMention();
+  if (mention && !mention.slash && mention.start === at.start && mention.query === at.query) return;
+  const keep = mention && !mention.slash && mention.start === at.start ? mention.items : [];
   mention = { start: at.start, query: at.query, items: keep, active: 0, requestId: `m${++requestSeq}` };
   const requestId = mention.requestId;
   clearTimeout(mentionTimer);
@@ -1499,6 +1557,7 @@ function renderMention(): void {
     ),
   );
   mentionEl.hidden = false;
+  mentionEl.setAttribute("aria-label", m.slash ? "Commands" : "Mention");
   input.setAttribute("aria-expanded", "true");
   input.setAttribute("aria-activedescendant", `mention-${m.active}`);
   const frame = boxEl.getBoundingClientRect();
@@ -1513,18 +1572,26 @@ function pickMention(i: number): void {
   const m = mention;
   const c = m?.items[i];
   if (!m || !c) return;
-  const token = `@${c.value}${c.kind === "folder" ? "/" : ""}`;
-  input.setRangeText(`${token} `, m.start, input.selectionStart, "end");
-  if (!mentions.some((x) => x.text === token)) mentions.push({ kind: c.kind, value: c.value, text: token });
+  if (c.kind === "command") input.setRangeText(`/${c.value} `, 0, input.selectionStart, "end");
+  else {
+    const token = `@${c.value}${c.kind === "folder" ? "/" : ""}`;
+    input.setRangeText(`${token} `, m.start, input.selectionStart, "end");
+    if (!mentions.some((x) => x.text === token)) mentions.push({ kind: c.kind, value: c.value, text: token });
+  }
   closeMention();
   input.focus();
   input.dispatchEvent(new Event("input"));
 }
 
-/** Keys for the open `@` list; returns true when the key was used. */
+/** Keys for the open `@` or `/` list; returns true when the key was used. */
 function mentionKey(e: KeyboardEvent): boolean {
   const m = mention;
   if (!m || mentionEl.hidden || e.isComposing) return false;
+  // A command typed out in full runs on Enter, as it did before the list existed; Tab still completes.
+  if (m.slash && e.key === "Enter" && !e.shiftKey && m.items[m.active]?.value === m.query) {
+    closeMention();
+    return false;
+  }
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     m.active = (m.active + (e.key === "ArrowDown" ? 1 : -1) + m.items.length) % m.items.length;
     renderMention();
@@ -2715,6 +2782,15 @@ function renderSessions(s: ViewState) {
         h(
           "span",
           { className: "session-item-title", dir: "auto" },
+          sess.running
+            ? h("span", {
+                className: "session-run",
+                role: "img",
+                "aria-label": "Working",
+                "data-tip": "OpenCode is working in this session",
+                "data-testid": "session-running",
+              })
+            : null,
           sess.forked
             ? h("span", { className: "fork-mark", "data-tip": "Forked session" }, icon("fork"))
             : null,
@@ -6097,6 +6173,12 @@ function render() {
   const cmdSig = JSON.stringify(state.commands);
   if (cmdSig !== commandsSignature) {
     commandsSignature = cmdSig;
+    // The same for the list under a `/command` being typed.
+    if (mention?.slash) {
+      mention.items = commandSuggestions(mention.query);
+      mention.active = Math.min(mention.active, Math.max(0, mention.items.length - 1));
+      renderMention();
+    }
     if (openMenuState?.anchor === slashBtn) {
       const q = openMenuState.el.querySelector<HTMLInputElement>(".menu-filter")?.value ?? "";
       closeMenu();

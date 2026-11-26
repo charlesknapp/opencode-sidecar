@@ -2166,6 +2166,38 @@ describe(
       });
     });
 
+    it("/ at the start of the message lists OpenCode's commands and inserts the pick (#1)", async () => {
+      await page.click("textarea");
+      await clearSent();
+      await page.keyboard.type("/");
+      assert.deepEqual(await lastSent("refreshCommands"), { type: "refreshCommands" });
+      const rows = () =>
+        page.$$eval('[data-testid="mention-option"]', (o) => o.map((x) => (x as HTMLElement).innerText));
+      assert.equal(await page.$eval('[data-testid="mention-menu"]', (l) => (l as HTMLElement).hidden), false);
+      assert.deepEqual(await rows(), [
+        "/init\ncreate AGENTS.md",
+        "/review\nreview changes",
+        "/compact\nSummarize the conversation to free context",
+      ]);
+      await page.keyboard.type("rev");
+      assert.deepEqual(await rows(), ["/review\nreview changes"]);
+      // Commands that arrive while the list is open show up in it.
+      await host({
+        type: "state",
+        state: baseState({ commands: [...baseState().commands, { name: "revert-all", description: null }] }),
+      });
+      assert.deepEqual(await rows(), ["/review\nreview changes", "/revert-all"]);
+      await page.keyboard.press("Tab");
+      assert.equal(await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).value), "/review ");
+      assert.equal(await page.$eval('[data-testid="mention-menu"]', (l) => (l as HTMLElement).hidden), true);
+      await page.keyboard.type("auth");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("runCommand"), { type: "runCommand", name: "review", text: "auth" });
+      // Mid-message, a slash is just text.
+      await page.keyboard.type("see a/b");
+      assert.equal(await page.$eval('[data-testid="mention-menu"]', (l) => (l as HTMLElement).hidden), true);
+    });
+
     it("Escape closes the @ list without stopping the agent, and a deleted token is not sent", async () => {
       await host({ type: "state", state: baseState({ busy: true }) });
       await page.click("textarea");
@@ -2234,11 +2266,22 @@ describe(
       await host({
         type: "state",
         state: baseState({
-          sessions: [sess("ses_1", "Token refresh"), { ...sess("ses_2", "Fork"), forked: true }],
+          sessions: [
+            sess("ses_1", "Token refresh"),
+            { ...sess("ses_2", "Fork"), forked: true },
+            { ...sess("ses_3", "Busy one"), running: true },
+          ],
         }),
       });
       await page.click('[data-testid="history-button"]');
       assert.equal(await page.$$eval(".fork-mark", (m) => m.length), 1, "forks are marked");
+      assert.deepEqual(
+        await page.$$eval('[data-testid="session-running"]', (m) =>
+          m.map((x) => x.closest(".session-item")!.querySelector(".session-item-title")!.textContent),
+        ),
+        ["Busy one"],
+        "sessions OpenCode is working in show a spinner",
+      );
       await clearSent();
       await page.hover(".session-row");
       await page.click('[data-testid="session-archive"]');

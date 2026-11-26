@@ -172,6 +172,20 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const rec = (v: unknown): Rec => (v && typeof v === "object" && !Array.isArray(v) ? (v as Rec) : {});
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
+/**
+ * A workspace path as OpenCode records it. VS Code reports Windows drive letters in
+ * lower case (`c:\repo`) while OpenCode's CLI and TUI record `C:\repo`, and OpenCode
+ * compares directories case-sensitively, so the drive letter is upper-cased.
+ */
+export function opencodeDirectory(directory: string): string {
+  return directory.replace(/^([a-z]):(?=[\\/]|$)/, (_, d: string) => `${d.toUpperCase()}:`);
+}
+
+/** Whether two workspace paths name the same folder as far as OpenCode is concerned. */
+export function sameDirectory(a: string | null, b: string | null): boolean {
+  return a === b || (a !== null && b !== null && opencodeDirectory(a) === opencodeDirectory(b));
+}
+
 /** An agent's or skill's first sentence, for one-line lists. */
 function firstSentence(v: unknown): string | undefined {
   return str(v)
@@ -316,7 +330,7 @@ export class HttpOpenCodeClient implements OpenCodeClient {
   }
 
   private loc(directory: string): Record<string, string> {
-    return { "location[directory]": directory };
+    return { "location[directory]": opencodeDirectory(directory) };
   }
 
   async info(): Promise<ServerInfo> {
@@ -447,6 +461,26 @@ export class HttpOpenCodeClient implements OpenCodeClient {
   }
 
   async listSessions(directory: string, limit: number, archived = false): Promise<SessionSummary[]> {
+    const canonical = opencodeDirectory(directory);
+    // Sessions Sidecar created before the drive letter was upper-cased are recorded
+    // under the lower-case form; list both so none of them disappear.
+    const legacy = canonical.replace(/^([A-Z]):/, (_, d: string) => `${d.toLowerCase()}:`);
+    const [main, older] = await Promise.all([
+      this.listSessionsIn(canonical, limit, archived),
+      legacy !== canonical ? this.listSessionsIn(legacy, limit, archived).catch(() => []) : [],
+    ]);
+    if (!older.length) return main;
+    const seen = new Set(main.map((x) => x.id));
+    return [...main, ...older.filter((x) => !seen.has(x.id))]
+      .sort((a, b) => b.updated - a.updated)
+      .slice(0, limit);
+  }
+
+  private async listSessionsIn(
+    directory: string,
+    limit: number,
+    archived: boolean,
+  ): Promise<SessionSummary[]> {
     // OpenCode's list includes archived sessions unless asked; forks are root sessions too.
     const d = rec(
       await this.request("GET", "/api/session", {
@@ -479,7 +513,7 @@ export class HttpOpenCodeClient implements OpenCodeClient {
     agent?: string;
     model?: ModelRef;
   }): Promise<SessionSummary> {
-    const body: Rec = { location: { directory: input.directory } };
+    const body: Rec = { location: { directory: opencodeDirectory(input.directory) } };
     if (input.agent) body.agent = input.agent;
     if (input.model) body.model = modelBody(input.model);
     const d = rec(await this.request("POST", "/api/session", { body }));

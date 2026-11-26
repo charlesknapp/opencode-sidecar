@@ -28,6 +28,36 @@ function setup(defaults = { model: "", agent: "" }) {
 
 const raw = (type: string, data: Record<string, unknown>) => ({ id: "evt", created: 1, type, data });
 
+describe("session controller: running sessions in the history (#1)", () => {
+  it("marks sessions OpenCode is working in, from its active list and live events", async () => {
+    const { c, client } = setup();
+    const summary = (id: string) => ({
+      id,
+      title: id,
+      created: 1,
+      updated: 1,
+      agent: null,
+      modelKey: null,
+      variant: null,
+      outcome: null,
+      cost: null,
+    });
+    client.sessions = [summary("ses_a"), summary("ses_b")];
+    client.active = new Set(["ses_a"]);
+    await c.setDirectory(DIR);
+    const running = () =>
+      c
+        .displaySessions()
+        .filter((s) => s.running)
+        .map((s) => s.id);
+    assert.deepEqual(running(), ["ses_a"], "seeded from OpenCode's active sessions");
+    c.handleRawEvent(raw("session.execution.started", { sessionID: "ses_b" }));
+    assert.deepEqual(running(), ["ses_a", "ses_b"]);
+    c.handleRawEvent(raw("session.execution.succeeded", { sessionID: "ses_a" }));
+    assert.deepEqual(running(), ["ses_b"]);
+  });
+});
+
 describe("session controller: always-allowed actions", () => {
   it("lists the open folder's saved permissions and removes one", async () => {
     const { c, client } = setup();

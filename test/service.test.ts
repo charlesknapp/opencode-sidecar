@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import {
   basicAuth,
+  connectableUrl,
   discoverServer,
   isLoopbackUrl,
   parseRegistration,
@@ -97,6 +98,36 @@ describe("server discovery", () => {
     const r = await discoverServer({ serverUrl: "", allowRemote: false }, d.deps);
     assert.ok(!r.ok && r.reason === "invalid-setting");
     assert.equal(d.seen.length, 0, "never contacted");
+  });
+
+  it("connects to a service bound to every interface through loopback (#2)", async () => {
+    const reg = JSON.stringify({ url: "http://0.0.0.0:28894", password: "pw", pid: 7 });
+    const d = deps(reg, { status: 200, body: { version: "2.4.0", pid: 7 } });
+    const r = await discoverServer({ serverUrl: "", allowRemote: false }, d.deps);
+    assert.ok(r.ok && r.source === "service");
+    if (r.ok) {
+      assert.equal(r.endpoint.url, "http://127.0.0.1:28894");
+      assert.equal(r.endpoint.authorization, basicAuth("pw"));
+    }
+    assert.equal(d.seen[0].url, "http://127.0.0.1:28894/api/info");
+  });
+
+  it("treats a wildcard server URL setting as this machine and reuses the service password", async () => {
+    const reg = JSON.stringify({ url: "http://0.0.0.0:28894", password: "pw" });
+    for (const serverUrl of ["http://0.0.0.0:28894", "http://127.0.0.1:28894"]) {
+      const d = deps(reg, { status: 200, body: { version: "x" } });
+      const r = await discoverServer({ serverUrl, allowRemote: false }, d.deps);
+      assert.ok(r.ok && r.source === "setting" && r.endpoint.authorization === basicAuth("pw"), serverUrl);
+      assert.equal(d.seen[0].url, "http://127.0.0.1:28894/api/info");
+    }
+  });
+
+  it("maps only wildcard hosts to loopback", () => {
+    assert.equal(connectableUrl("http://0.0.0.0:1"), "http://127.0.0.1:1");
+    assert.equal(connectableUrl("http://[::]:1"), "http://[::1]:1");
+    assert.equal(connectableUrl("http://0.0.0.0:1/base/"), "http://127.0.0.1:1/base/");
+    for (const u of ["http://127.0.0.1:1", "http://10.0.0.5:4096", "http://example.com/", "", "nonsense"])
+      assert.equal(connectableUrl(u), u);
   });
 
   it("refuses a remote configured server URL unless explicitly allowed", async () => {

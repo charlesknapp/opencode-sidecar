@@ -70,6 +70,27 @@ export function isLoopbackUrl(raw: string): boolean {
   return host === "localhost" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
 }
 
+/**
+ * The address to connect to for a server URL. A service bound to every interface
+ * (`opencode service set hostname 0.0.0.0`) registers its bind address, which is not
+ * a destination: `0.0.0.0` and `::` mean this machine, so they become 127.0.0.1 and ::1.
+ * Any other URL is returned unchanged.
+ */
+export function connectableUrl(raw: string): string {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return raw;
+  }
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  if (host === "0.0.0.0") u.hostname = "127.0.0.1";
+  else if (host === "::") u.hostname = "[::1]";
+  else return raw;
+  // Keep the registered form otherwise: no trailing slash added to a bare origin.
+  return /^[^/]*\/\/[^/]*$/.test(raw) ? u.href.replace(/\/$/, "") : u.href;
+}
+
 function sameOrigin(a: string, b: string): boolean {
   try {
     return new URL(a).origin === new URL(b).origin;
@@ -132,8 +153,9 @@ export async function discoverServer(
   settings: { serverUrl: string; allowRemote: boolean },
   deps: DiscoveryDeps,
 ): Promise<DiscoveryOutcome> {
-  const registration = parseRegistration(await deps.readFile(serviceFilePath(deps.env, deps.home)));
-  const configured = settings.serverUrl.trim();
+  const registered = parseRegistration(await deps.readFile(serviceFilePath(deps.env, deps.home)));
+  const registration = registered && { ...registered, url: connectableUrl(registered.url) };
+  const configured = connectableUrl(settings.serverUrl.trim());
 
   if (configured) {
     if (!/^https?:\/\//i.test(configured)) {

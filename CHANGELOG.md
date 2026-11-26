@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Type `/` for commands.** A `/` at the start of the message opens OpenCode's commands above the box, filtered as you type. Tab or Enter completes one; a command typed out in full still runs on Enter. ([#1](https://github.com/charlesknapp/opencode-sidecar/issues/1))
+- **Session history shows which sessions are working**, with a small spinner, including sessions started from OpenCode's terminal UI. ([#1](https://github.com/charlesknapp/opencode-sidecar/issues/1))
+- **Windows: sessions from OpenCode's CLI and TUI appear in the history.** VS Code reports the drive letter as `c:` and OpenCode records `C:`, and OpenCode's filter is case-sensitive, so they were missing. Sidecar now uses `C:`, and still lists sessions it created under `c:`. ([#3](https://github.com/charlesknapp/opencode-sidecar/issues/3))
+- **Connects to a service bound to every interface** (`opencode service set hostname 0.0.0.0`). Its registered `0.0.0.0` (or `::`) address is reached at loopback instead of being refused as remote. ([#2](https://github.com/charlesknapp/opencode-sidecar/issues/2))
+
 ## 0.1.6 (2026-11-24)
 
 **OpenCode 2.4**

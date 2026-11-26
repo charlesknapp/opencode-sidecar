@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { HttpOpenCodeClient, OpenCodeHttpError, toModelOption } from "../src/opencode/client";
+import {
+  HttpOpenCodeClient,
+  OpenCodeHttpError,
+  opencodeDirectory,
+  sameDirectory,
+  toModelOption,
+} from "../src/opencode/client";
 
 interface Captured {
   url: string;
@@ -163,6 +169,49 @@ describe("HTTP OpenCode client", () => {
     assert.equal(q.get("directory"), "/r");
     assert.equal(q.get("parentID"), "null");
     assert.equal(q.get("order"), "desc");
+  });
+
+  it("upper-cases Windows drive letters the way OpenCode records them (#3)", () => {
+    assert.equal(opencodeDirectory("c:\\Users\\me\\repo"), "C:\\Users\\me\\repo");
+    assert.equal(opencodeDirectory("d:/work"), "D:/work");
+    assert.equal(opencodeDirectory("c:"), "C:");
+    for (const p of ["C:\\repo", "/home/me/c:x", "/r", "\\\\server\\share"])
+      assert.equal(opencodeDirectory(p), p);
+    assert.ok(sameDirectory("c:\\repo", "C:\\repo"));
+    assert.ok(sameDirectory(null, null));
+    assert.ok(!sameDirectory("c:\\repo", "C:\\Repo"));
+    assert.ok(!sameDirectory("c:\\repo", null));
+  });
+
+  it("lists a Windows folder's sessions under both drive-letter cases, newest first (#3)", async () => {
+    const row = (id: string, updated: number, directory: string) => ({
+      id,
+      title: id,
+      time: { created: 1, updated },
+      location: { directory },
+    });
+    const { fn, captured } = mockFetch({
+      "GET /api/session": (req) => {
+        const dir = new URL(req.url).searchParams.get("directory");
+        // OpenCode filters case-sensitively: the TUI's sessions are under C:, Sidecar's old ones under c:.
+        return dir === "C:\\repo"
+          ? json({ data: [row("tui_new", 30, dir), row("tui_old", 10, dir)] })
+          : json({ data: [row("sidecar", 20, "c:\\repo")] });
+      },
+      "POST /api/session": () => json({ data: row("ses_new", 1, "C:\\repo") }),
+    });
+    const client = new HttpOpenCodeClient({ url: "http://127.0.0.1:9" }, fn);
+    const s = await client.listSessions("c:\\repo", 2);
+    assert.deepEqual(
+      s.map((x) => x.id),
+      ["tui_new", "sidecar"],
+    );
+    assert.deepEqual(
+      captured.map((c) => new URL(c.url).searchParams.get("directory")),
+      ["C:\\repo", "c:\\repo"],
+    );
+    await client.createSession({ directory: "c:\\repo" });
+    assert.deepEqual(captured.at(-1)?.body, { location: { directory: "C:\\repo" } });
   });
 
   it("lists and removes a folder's saved permissions, scoped to its OpenCode project", async () => {

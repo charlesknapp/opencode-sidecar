@@ -21,7 +21,7 @@ import { summarizeAnswer, validateAnswer } from "./forms";
 import { reconstructSides, type FileSides } from "./patch";
 import { MAX_SUBAGENTS, SubagentTracker } from "./subagents";
 import { displayTitle, isUsableTitle } from "./titles";
-import { OpenCodeHttpError, type FoundFile, type OpenCodeClient } from "../opencode/client";
+import { OpenCodeHttpError, sameDirectory, type FoundFile, type OpenCodeClient } from "../opencode/client";
 import { describeSensitive, EventNormalizer, historyToEvents } from "../opencode/events";
 import type {
   CommandInfo,
@@ -160,6 +160,8 @@ export class SessionController {
   private lastStep: { tokens: TokenUsage; modelKey: string | null; at: number | null } | null = null;
   /** OpenCode's slash commands for the open folder. */
   commands: CommandInfo[] = [];
+  /** Sessions with an execution in progress, from OpenCode's active list and the event stream. */
+  private running = new Set<string>();
   /** Subagents and skills a prompt can mention with `@`. */
   mentionAgents: AgentOption[] = [];
   skills: SkillOption[] = [];
@@ -314,7 +316,9 @@ export class SessionController {
 
   /** Session list with cleaned-up titles. Bad titles get a fallback fetched lazily. */
   displaySessions(): SessionSummary[] {
-    return this.sessions.map((s) => {
+    return this.sessions.map((session) => {
+      const working = this.running.has(session.id) || (session.id === this.current?.id && this.busy);
+      const s = working ? { ...session, running: true } : session;
       if (isUsableTitle(s.title)) return s;
       if (s.id === this.current?.id) return { ...s, title: this.currentTitle() ?? "Untitled session" };
       if (!this.titleCache.has(s.id)) {
@@ -513,9 +517,13 @@ export class SessionController {
     const dir = this.directory;
     if (!dir) return;
     try {
-      const sessions = await this.client.listSessions(dir, SESSION_LIST_LIMIT);
+      const [sessions, active] = await Promise.all([
+        this.client.listSessions(dir, SESSION_LIST_LIMIT),
+        this.client.activeSessions().catch(() => null),
+      ]);
       if (dir !== this.directory) return;
       this.sessions = sessions;
+      if (active) this.running = active;
       if (this.current) {
         const fresh = sessions.find((s) => s.id === this.current?.id);
         if (fresh) this.current = { ...fresh, cost: fresh.cost ?? this.current.cost };
@@ -1364,14 +1372,27 @@ export class SessionController {
 
   // ----------------------------------------------------------------- events
 
+  /** Notes a session starting or finishing work; true when a listed session changed. */
+  private trackRunning(sessionID: string, events: UiEvent[]): boolean {
+    let changed = false;
+    for (const ev of events) {
+      if (ev.type === "session.busy" && !this.running.has(sessionID)) {
+        this.running.add(sessionID);
+        changed = true;
+      } else if (ev.type === "session.idle" && this.running.delete(sessionID)) changed = true;
+    }
+    return changed && this.sessions.some((s) => s.id === sessionID);
+  }
+
   /** Entry point for every raw event from the OpenCode event stream. */
   handleRawEvent(raw: unknown): void {
     if (this.disposed) return;
     if (isCatalogEvent(raw)) this.scheduleCatalogRefresh();
     const env = this.normalizer.normalize(raw);
     if (!env) return;
-    if (env.sessionsChanged && (env.directory === null || env.directory === this.directory))
+    if (env.sessionsChanged && (env.directory === null || sameDirectory(env.directory, this.directory)))
       this.scheduleSessionsRefresh();
+    if (env.sessionID && this.trackRunning(env.sessionID, env.events)) this.sink.onStateChanged();
     if (!this.current || !env.sessionID) return;
     const root = this.current.id;
     if (env.parentID && this.subagents.created(env.sessionID, env.parentID, root, env.created))
