@@ -607,8 +607,10 @@ export class SessionController {
         return null;
       });
       let models: ModelOption[] | null;
+      let cold = false;
       try {
         models = await this.client.listModels(dir);
+        cold = models.length === 0;
         // A location that OpenCode has not loaded yet briefly reports no models. Refreshes
         // (after the first load) report what OpenCode lists right away.
         const retries = options.keepSelection ? 0 : 2;
@@ -642,7 +644,14 @@ export class SessionController {
         }),
         this.client.listProviders(dir).catch(() => null),
       ]);
-      const account = await accountP;
+      // A location that is still loading also lists no integrations, which reads as signed
+      // out: a signed-in user would be offered the sign-in. Read again once it has loaded.
+      const account = cold
+        ? await this.client.accountStatus(dir).catch((e: unknown) => {
+            this.log.error("Checking OpenCode connections failed", e);
+            return null;
+          })
+        : await accountP;
       const quota = await this.client.usageLimits(dir).catch((e: unknown) => {
         this.log.warn(`Reading usage limits failed: ${e instanceof Error ? e.message : String(e)}`);
         return null;

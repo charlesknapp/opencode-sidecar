@@ -145,6 +145,28 @@ describe("session controller: catalog and selection", () => {
     assert.equal(client.callsTo("listModels").length, 2);
   });
 
+  it("reads the account again when the location was still loading (it lists no integrations then)", async () => {
+    const { c, client } = setup();
+    client.modelResponses = [[], client.models];
+    // Seen live: a cold folder's integration list is empty, so a signed-in user read as signed out.
+    let reads = 0;
+    client.accountStatus = async () => {
+      reads++;
+      return reads === 1
+        ? { opencode: "none" as const, otherProviders: false }
+        : { opencode: "connected" as const, otherProviders: true };
+    };
+    await c.setDirectory(DIR);
+    assert.deepEqual(c.account, { opencode: "connected", otherProviders: true });
+    assert.equal(reads, 2);
+  });
+
+  it("reads the account once for a folder OpenCode has loaded", async () => {
+    const { c, client } = setup();
+    await c.setDirectory(DIR);
+    assert.equal(client.callsTo("accountStatus").length, 1);
+  });
+
   it("marks models unavailable when loading fails", async () => {
     const { c, client } = setup();
     client.listModels = async () => {
