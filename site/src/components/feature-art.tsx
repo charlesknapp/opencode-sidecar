@@ -647,6 +647,594 @@ function Sessions() {
   )
 }
 
+/** One text leaving while another takes its place, at the same spot. */
+function Swap({
+  from,
+  to,
+  d,
+  className = "",
+  toClass = "",
+}: {
+  from: ReactNode
+  to: ReactNode
+  d: number
+  className?: string
+  toClass?: string
+}) {
+  return (
+    <span className={`relative inline-grid ${className}`}>
+      <span
+        data-leave=""
+        style={vars({ "--d": `${d}ms` })}
+        className="col-start-1 row-start-1 whitespace-nowrap"
+      >
+        {from}
+      </span>
+      <span
+        data-enter=""
+        style={vars({ "--d": `${d + 100}ms` })}
+        className={`col-start-1 row-start-1 whitespace-nowrap ${toClass}`}
+      >
+        {to}
+      </span>
+    </span>
+  )
+}
+
+const btn = "rounded-[2px] bg-[#313131] px-2 py-0.5 text-[#cccccc]"
+const primary = "rounded-[2px] bg-[#0078d4] px-2 py-0.5 text-white"
+const badge =
+  "inline-block rounded-[3px] border border-current px-1 text-[9.5px] leading-[14px]"
+const muted = "text-[#9d9d9d]"
+const green = "text-[#73c991]"
+const yellow = "text-[#cca700]"
+const red = "text-[#f85149]"
+
+/** One of Sidecar's panels (Providers, MCP servers, Agents), as a modal over the chat. */
+function Panel({
+  title,
+  note,
+  children,
+  foot,
+}: {
+  title: string
+  note: string
+  children: ReactNode
+  foot: ReactNode
+}) {
+  return (
+    <div className="flex h-full flex-col p-3">
+      <div className="text-[13px] font-medium">{title}</div>
+      <div className={`mt-0.5 truncate ${muted}`}>{note}</div>
+      <div className="mt-2 min-h-0 flex-1 space-y-2 overflow-hidden">
+        {children}
+      </div>
+      <div className="mt-2 flex justify-end gap-1.5 border-t border-[#2b2b2b] pt-2">
+        {foot}
+      </div>
+    </div>
+  )
+}
+
+function Row({ children }: { children: ReactNode }) {
+  return <div className={`${box} px-2.5 py-1.5`}>{children}</div>
+}
+
+const sub = "mt-1 text-[10px] font-medium tracking-wide text-[#9d9d9d]"
+
+const localModels = [
+  ["OpenCode Go", "Qwen3.7 Plus", "262k context"],
+  ["Ollama", "qwen3:8b", "41k context"],
+  [null, "gpt-oss:20b", "131k context"],
+  ["LM Studio", "qwen3-coder-30b", "262k context"],
+] as const
+
+function Models() {
+  return (
+    <div className="flex h-full flex-col justify-end">
+      <div
+        className={`${box} relative mx-3 mb-1.5 py-1 shadow-[0_8px_24px_rgb(0_0_0/0.45)]`}
+      >
+        <div className={`px-2.5 pb-0.5 ${muted}`}>Select a model</div>
+        <div className="relative">
+          <span
+            data-move=""
+            style={vars({
+              "--d": "250ms",
+              "--dur": "420ms",
+              "--to": "translateY(calc(100% + 16px))",
+            })}
+            className="absolute inset-x-1 top-[16px] h-[32px] rounded-[3px] bg-[#04395e]"
+          />
+          {localModels.map(([group, name, context], i) => (
+            <div key={name} className="relative">
+              {group && <div className={`px-2.5 ${muted}`}>{group}</div>}
+              <div className="flex h-[32px] items-center px-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate">{name}</div>
+                  <div className={`text-[10px] ${muted}`}>{context}</div>
+                </div>
+                {i === 0 && (
+                  <span data-leave="" style={vars({ "--d": "700ms" })}>
+                    ✓
+                  </span>
+                )}
+                {i === 1 && (
+                  <span data-enter="" style={vars({ "--d": "800ms" })}>
+                    ✓
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-1 border-t border-[#2b2b2b] px-2.5 pt-1.5">
+          <div className="flex items-center gap-2">
+            <span className="truncate">Budget Guard (Medium)</span>
+            <span className="ml-auto flex gap-1.5">
+              {[0, 1, 2, 3, 4].map((dot) => (
+                <span
+                  key={dot}
+                  className={`size-1 rounded-full ${
+                    dot === 2 ? "scale-[2.4] bg-[#cccccc]" : "bg-[#6e6e6e]"
+                  }`}
+                />
+              ))}
+            </span>
+          </div>
+          <div className="mt-1 py-0.5">Manage providers…</div>
+        </div>
+      </div>
+      <div className={`${box} mx-3 mb-3`}>
+        <div className={`h-7 px-3 pt-1.5 ${muted}`}>Ask anything...</div>
+        <div className={`flex items-center gap-3 px-3 pb-2 ${muted}`}>
+          <span>+</span>
+          <span>/</span>
+          <Swap
+            d={850}
+            from={
+              <>
+                Qwen3.7 Plus <span className="opacity-70">high</span>
+              </>
+            }
+            to="qwen3:8b"
+            toClass="text-[#cccccc]"
+          />
+          <span className="ml-auto">Build</span>
+          <span className="grid size-5 place-items-center rounded-[3px] bg-[#0078d4] text-white">
+            ↑
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const checklist = [
+  ["Extension installed", "✓", null],
+  ["OpenCode installed", "✓", null],
+  ["OpenCode connected", "○", 450],
+  ["Account signed in", "…", 700],
+  ["Models available", "…", 900],
+] as const
+
+function Setup() {
+  return (
+    <div className="relative h-full">
+      <div
+        data-leave=""
+        style={vars({ "--d": "1300ms" })}
+        className="absolute inset-0 p-4"
+      >
+        <div className="text-[14px] font-medium">OpenCode is installed</div>
+        <p className={`mt-1 ${muted}`}>
+          Its background service is not running. Start it to continue.
+        </p>
+        <div className="mt-2.5 flex gap-1.5">
+          <span className={`${primary} relative`}>
+            Start OpenCode
+            <span
+              data-enter=""
+              style={vars({ "--d": "200ms", "--dur": "200ms" })}
+              className="absolute inset-0 rounded-[2px] ring-2 ring-[#4daafc]/60"
+            />
+          </span>
+          <span className={btn}>Check again</span>
+        </div>
+        <ul className="mt-3 space-y-1 border-t border-[#2b2b2b] pt-2.5">
+          {checklist.map(([label, mark, d]) => (
+            <li key={label} className="flex gap-2">
+              {d === null ? (
+                <span className={`w-3 ${green}`}>✓</span>
+              ) : (
+                <Swap
+                  d={d}
+                  className="w-3"
+                  from={
+                    <span className={mark === "○" ? yellow : muted}>
+                      {mark}
+                    </span>
+                  }
+                  to={<span className={green}>✓</span>}
+                />
+              )}
+              <span
+                className={label === "OpenCode connected" ? "font-medium" : ""}
+              >
+                {label}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <div className={`mt-2.5 ${muted}`}>
+          Need help? <span className="text-[#4daafc]">View setup guide</span>
+        </div>
+      </div>
+      <div
+        data-enter=""
+        style={vars({ "--d": "1450ms" })}
+        className="absolute inset-0 flex flex-col"
+      >
+        <div className="grid flex-1 place-items-center px-6 text-center">
+          <div>
+            <div className="text-[14px] font-medium">Ask OpenCode anything</div>
+            <div className={`mt-1 ${muted}`}>
+              Type / for commands and settings, @ to mention a file, agent or
+              skill.
+            </div>
+          </div>
+        </div>
+        <Composer />
+      </div>
+    </div>
+  )
+}
+
+const modesToImport = [
+  {
+    name: "docs-writer",
+    mode: "Primary and subagent",
+    from: "Docs Writer · .roomodes",
+    on: true,
+  },
+  {
+    name: "orchestrator",
+    mode: "Primary",
+    from: "Orchestrator · .roomodes",
+    on: true,
+  },
+  {
+    name: "architect",
+    mode: "Primary and subagent",
+    from: "Architect · Roo Code (global)",
+    on: false,
+  },
+] as const
+
+function Check({ on, d }: { on: boolean; d?: number }) {
+  const mark = "grid size-3 place-items-center rounded-[2px] text-[9px]"
+  return on ? (
+    <span className={`${mark} bg-[#0078d4] text-white`}>✓</span>
+  ) : (
+    <span className="relative size-3 shrink-0">
+      <span className={`${mark} absolute inset-0 border border-[#6e6e6e]`} />
+      <span
+        data-enter=""
+        style={vars({ "--d": `${d ?? 0}ms` })}
+        className={`${mark} absolute inset-0 bg-[#0078d4] text-white`}
+      >
+        ✓
+      </span>
+    </span>
+  )
+}
+
+function Import() {
+  return (
+    <Panel
+      title="Import Roo Code modes"
+      note="Each mode becomes an agent file. Its role and instructions become the prompt, its tool groups permissions."
+      foot={
+        <>
+          <span className={btn}>Back</span>
+          <Swap
+            d={700}
+            from={
+              <span className={`${primary} inline-block`}>Import 2 modes</span>
+            }
+            to={
+              <span className={`${primary} inline-block`}>Import 3 modes</span>
+            }
+          />
+        </>
+      }
+    >
+      {modesToImport.map((item) => (
+        <Row key={item.name}>
+          <div className="flex items-center gap-2">
+            <Check on={item.on} d={500} />
+            <span className="font-medium">{item.name}</span>
+            <span className={`${badge} ${muted}`}>{item.mode}</span>
+          </div>
+          <div className={`mt-0.5 truncate pl-5 ${muted}`}>{item.from}</div>
+          {item.name === "docs-writer" && (
+            <div className={`truncate pl-5 ${muted}`}>
+              • MCP tools are not limited: OpenCode&apos;s permissions name each
+              MCP tool, not a group.
+            </div>
+          )}
+        </Row>
+      ))}
+    </Panel>
+  )
+}
+
+function Providers() {
+  return (
+    <Panel
+      title="Providers"
+      note="OpenCode signs in and stores the keys. Sidecar never sees or keeps them."
+      foot={
+        <>
+          <span className={btn}>Reload config</span>
+          <span className={btn}>Check setup</span>
+          <span className={primary}>Done</span>
+        </>
+      }
+    >
+      <div className={sub}>Connected</div>
+      <Row>
+        <div className="flex items-center gap-2">
+          <span className="font-medium">OpenCode</span>
+          <span className={`${badge} ${green}`}>Connected</span>
+        </div>
+        <div className={muted}>Free models, no sign-in · 6 models</div>
+      </Row>
+      <Row>
+        <div className="flex items-center gap-2">
+          <span className="font-medium">Anthropic</span>
+          <Swap
+            d={900}
+            from={<span className={`${badge} ${yellow}`}>Needs sign-in</span>}
+            to={<span className={`${badge} ${green}`}>Connected</span>}
+          />
+        </div>
+        <div className={muted}>OAuth · 9 models</div>
+        <div className="mt-1 flex gap-1.5">
+          <span className={`${btn} relative`}>
+            Sign in again
+            <span
+              data-enter=""
+              style={vars({ "--d": "250ms", "--dur": "200ms" })}
+              className="absolute inset-0 rounded-[2px] ring-2 ring-[#4daafc]/60"
+            />
+          </span>
+          <span className={btn}>Disconnect</span>
+        </div>
+      </Row>
+      <div className={sub}>Connect a provider</div>
+      <div className={`${box} px-2.5 py-1 ${muted}`}>Search providers</div>
+    </Panel>
+  )
+}
+
+function Mcp() {
+  return (
+    <Panel
+      title="MCP servers"
+      note="Changes here last for this OpenCode run. OpenCode's config is not changed."
+      foot={
+        <>
+          <span className={btn}>Reload config</span>
+          <span className={primary}>Done</span>
+        </>
+      }
+    >
+      <Row>
+        <div className="flex items-center gap-2">
+          <span className="font-medium">github</span>
+          <span className={`${badge} ${green}`}>Connected</span>
+          <span className={`${btn} ml-auto`}>Disconnect</span>
+        </div>
+      </Row>
+      <Row>
+        <div className="flex items-center gap-2">
+          <span className="font-medium">sentry</span>
+          <Swap
+            d={1000}
+            from={<span className={`${badge} ${yellow}`}>Needs sign-in</span>}
+            to={<span className={`${badge} ${green}`}>Connected</span>}
+          />
+          <Swap
+            d={1000}
+            className="ml-auto justify-items-end"
+            from={<span className={`${btn} inline-block`}>Sign in</span>}
+            to={<span className={`${btn} inline-block`}>Disconnect</span>}
+          />
+        </div>
+      </Row>
+      <Row>
+        <div className="flex items-center gap-2">
+          <span className="font-medium">docs</span>
+          <Swap
+            d={300}
+            from={<span className={`${badge} ${red}`}>Failed</span>}
+            to={
+              <Swap
+                d={650}
+                from={<span className={`${badge} ${muted}`}>Connecting…</span>}
+                to={<span className={`${badge} ${green}`}>Connected</span>}
+              />
+            }
+          />
+          <span className="ml-auto flex gap-1.5">
+            <Swap
+              d={750}
+              className="justify-items-end"
+              from={<span className={`${btn} inline-block`}>Retry</span>}
+              to={<span className={`${btn} inline-block`}>Disconnect</span>}
+            />
+            <span className={btn}>Remove</span>
+          </span>
+        </div>
+        <div className={muted}>added for this OpenCode run</div>
+      </Row>
+      <div className={sub}>Add a server for this OpenCode run</div>
+      <div className="flex gap-1.5">
+        <span className={`${box} w-14 px-2 py-0.5 ${muted}`}>Name</span>
+        <span className={`${box} min-w-0 flex-1 truncate px-2 py-0.5 ${muted}`}>
+          npx -y some-server, or https://…
+        </span>
+        <span className={btn}>Add</span>
+      </div>
+    </Panel>
+  )
+}
+
+function Aside() {
+  return (
+    <>
+      <Header title="Token refresh" />
+      <div className={`${box} mx-3 mt-2.5 p-2.5`}>
+        <div className="flex items-center gap-2">
+          <span className="font-medium">Ask aside</span>
+          <Swap
+            d={1250}
+            className={muted}
+            from={
+              <Swap d={550} from="Answering…" to="Not added to this session" />
+            }
+            to="Added to session"
+          />
+          <span className={`ml-auto ${muted}`}>˄ ×</span>
+        </div>
+        <div className="mt-2 rounded-[3px] bg-[#2a2d2e] px-2 py-1">
+          what does the retry option in fetchUser do?
+        </div>
+        <div className="relative mt-1.5 h-[3.2em]">
+          <span
+            data-leave=""
+            style={vars({ "--d": "500ms" })}
+            className={`absolute inset-0 ${muted}`}
+          >
+            Thinking…
+          </span>
+          <span
+            data-enter=""
+            style={vars({ "--d": "650ms" })}
+            className="absolute inset-0"
+          >
+            It retries a failed request up to <b>3 times</b>, waiting longer
+            each time, and only for network errors, never for a 401.
+          </span>
+        </div>
+        <div className="mt-2 flex items-center gap-1.5">
+          <span
+            className={`${box} min-w-0 flex-1 truncate px-2 py-0.5 ${muted}`}
+          >
+            Ask a follow-up…
+          </span>
+          <span className={btn}>Ask</span>
+          <span
+            data-enter=""
+            style={vars({ "--d": "750ms" })}
+            className="inline-flex"
+          >
+            <Swap
+              d={1200}
+              from={
+                <span className={`${btn} inline-block`}>Add to session</span>
+              }
+              to={
+                <span className={`${btn} inline-block opacity-60`}>
+                  Added to session
+                </span>
+              }
+            />
+          </span>
+        </div>
+      </div>
+      <div className="space-y-3 p-3">
+        <Step dot="ok">
+          Edit <span className={path}>src/auth/service.ts</span>
+        </Step>
+        <Step dot="run">
+          Shell <span className={code}>npm test -- race</span>
+          <div className={muted}>
+            <Swap d={600} from="Running · 0:04" to="Running · 0:06" />
+          </div>
+        </Step>
+      </div>
+    </>
+  )
+}
+
+function Goal() {
+  return (
+    <>
+      <Header title="Auth tests" />
+      <div className="relative mx-3 mt-2.5 rounded-[3px] border border-[#2b2b2b] bg-[#1f1f1f] py-2 pr-2.5 pl-3">
+        <span className="absolute inset-y-0 left-0 w-[3px] rounded-l-[3px] bg-[#0078d4]" />
+        <span
+          data-enter=""
+          style={vars({ "--d": "1100ms" })}
+          className="absolute inset-y-0 left-0 w-[3px] rounded-l-[3px] bg-[#73c991]"
+        />
+        <div className="flex items-center gap-2">
+          <span className="font-medium">◎ Goal</span>
+          <span className="min-w-0 flex-1 truncate">
+            make every test in test/auth pass
+          </span>
+          <Swap
+            d={1100}
+            from={<span className={badge}>In progress</span>}
+            to={<span className={`${badge} ${green}`}>Achieved</span>}
+          />
+          <span className={muted}>˄</span>
+        </div>
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <Swap
+            d={1100}
+            className={`mr-auto ${muted}`}
+            from="Round 3 of 50"
+            to="3 rounds"
+          />
+          <span className={btn}>Rounds</span>
+          <Swap
+            d={1100}
+            className="justify-items-end"
+            from={
+              <span className="flex gap-1.5">
+                <span className={btn}>Pause</span>
+                <span className={btn}>End goal</span>
+              </span>
+            }
+            to={<span className={`${btn} inline-block`}>Clear</span>}
+          />
+        </div>
+      </div>
+      <div className="space-y-3 p-3">
+        <Step dot="ok">
+          Edit <span className={path}>test/auth/refresh.test.ts</span>
+        </Step>
+        <Step dot="run">
+          Shell <span className={code}>npm test -- test/auth</span>
+          <div className={muted}>
+            <Swap
+              d={700}
+              from="Running · 0:03"
+              to={<span className={green}>12 passing</span>}
+            />
+          </div>
+        </Step>
+        <Step dot="idle" enter style={vars({ "--d": "900ms" })}>
+          Every test in <span className={path}>test/auth</span> passes.
+        </Step>
+      </div>
+    </>
+  )
+}
+
 const arts: Record<ArtName, () => ReactNode> = {
   timeline: Timeline,
   subagents: Subagents,
@@ -657,6 +1245,13 @@ const arts: Record<ArtName, () => ReactNode> = {
   review: Review,
   modes: Modes,
   sessions: Sessions,
+  models: Models,
+  setup: Setup,
+  import: Import,
+  providers: Providers,
+  mcp: Mcp,
+  aside: Aside,
+  goal: Goal,
 }
 
 export function FeatureArt({ name }: { name: ArtName }) {

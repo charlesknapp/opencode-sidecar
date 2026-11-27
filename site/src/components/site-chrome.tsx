@@ -65,16 +65,17 @@ const footerLinks = [
     ],
   },
   {
-    title: "Guides",
-    links: guides.map(({ slug, short }) => [short, `/guides/${slug}`] as const),
-  },
-  {
     title: "More",
     links: [
       ["OpenCode", site.links.opencode],
       ["The one-minute film", site.links.video],
       ["llms.txt", "/llms.txt"],
     ],
+  },
+  {
+    title: "Guides",
+    links: guides.map(({ slug, nav }) => [nav, `/guides/${slug}`] as const),
+    all: ["All guides", "/guides"],
   },
 ] as const
 
@@ -88,7 +89,7 @@ export function SiteFooter() {
       <div className="relative container-page pt-16 pb-10 xl:border-x xl:border-line">
         <Cross side="left" />
         <Cross side="right" />
-        <div className="grid gap-12 md:grid-cols-2 md:gap-8 lg:grid-cols-[1.4fr_repeat(4,1fr)]">
+        <div className="grid gap-12 md:grid-cols-2 md:gap-8 lg:grid-cols-[1.4fr_repeat(3,1fr)]">
           <div>
             <Link
               href="/"
@@ -112,9 +113,32 @@ export function SiteFooter() {
             </Link>
           </div>
           {footerLinks.map((group) => (
-            <div key={group.title}>
-              <h2 className="eyebrow">{group.title}</h2>
-              <ul className="mt-4">
+            <div
+              key={group.title}
+              className={
+                "all" in group
+                  ? "md:col-span-2 lg:col-span-3 lg:col-start-2"
+                  : ""
+              }
+            >
+              <div className="flex items-baseline gap-6">
+                <h2 className="eyebrow">{group.title}</h2>
+                {"all" in group && (
+                  <Link
+                    href={group.all[1]}
+                    className="font-mono text-xs tracking-[0.08em] text-subtle-foreground uppercase transition-[color] duration-150 hover:text-foreground"
+                  >
+                    {group.all[0]} →
+                  </Link>
+                )}
+              </div>
+              <ul
+                className={`mt-4 ${
+                  "all" in group
+                    ? "grid gap-x-8 sm:grid-cols-2 lg:grid-cols-3"
+                    : ""
+                }`}
+              >
                 {group.links.map(([name, href]) => (
                   <li key={name}>
                     {href.startsWith("/") ? (

@@ -16,6 +16,8 @@ describe("site footer", () => {
       [/report an issue/i, site.links.issues],
       [/source on github/i, site.links.source],
       [/llms\.txt/i, "/llms.txt"],
+      [/all guides/i, "/guides"],
+      [/^mcp servers$/i, "/guides/opencode-mcp-servers-vs-code"],
     ] as const) {
       expect(within(footer).getByRole("link", { name })).toHaveAttribute(
         "href",

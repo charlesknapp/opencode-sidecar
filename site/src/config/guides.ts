@@ -16,6 +16,8 @@ export type Guide = {
   slug: string
   title: string
   short: string
+  /** A few words for the footer. */
+  nav: string
   description: string
   summary: string
   updated: string
@@ -27,6 +29,7 @@ export const guides: readonly Guide[] = [
     slug: "opencode-local-models-vs-code",
     title: "Use OpenCode with local models in VS Code",
     short: "Local models: Ollama and LM Studio",
+    nav: "Local models",
     description:
       "Run the OpenCode agent on Ollama or LM Studio and chat with it in VS Code through Sidecar. No account or API key for the model.",
     summary:
@@ -67,6 +70,11 @@ export const guides: readonly Guide[] = [
         ],
       },
       { type: "h2", text: "Pick the model in Sidecar" },
+      {
+        type: "art",
+        name: "models",
+        caption: "Hover: pick a model Ollama serves.",
+      },
       {
         type: "steps",
         items: [
@@ -122,6 +130,7 @@ export const guides: readonly Guide[] = [
     slug: "opencode-cursor-windsurf-vscodium",
     title: "OpenCode in Cursor, Windsurf and VSCodium",
     short: "Cursor, Windsurf and VSCodium",
+    nav: "Cursor and Windsurf",
     description:
       "Install Sidecar for OpenCode from Open VSX in Cursor, Windsurf or VSCodium, and use the OpenCode agent in a chat panel there.",
     summary:
@@ -159,6 +168,12 @@ codium --install-extension cadogy.opencode-sidecar`,
       },
       { type: "h2", text: "Set up OpenCode" },
       {
+        type: "art",
+        name: "setup",
+        caption:
+          "Hover: start OpenCode; the checklist fills in and the chat opens.",
+      },
+      {
         type: "steps",
         items: [
           "Click the Sidecar icon in the Activity Bar.",
@@ -183,6 +198,7 @@ codium --install-extension cadogy.opencode-sidecar`,
     title:
       "Keep the OpenCode agent in check: permissions, approval modes and Budget Guard",
     short: "Permissions, approval modes and Budget Guard",
+    nav: "Permissions",
     description:
       "Answer OpenCode's permission requests in Sidecar, pick Ask, Balanced or Auto, edit permission rules, and stop a runaway task at a cost or step limit.",
     summary:
@@ -218,6 +234,12 @@ codium --install-extension cadogy.opencode-sidecar`,
         text: "For a command you run often with small differences, choose **Always allow commands like this…** in the request. Sidecar suggests a pattern you can edit, such as `npm test *` for `npm test -- --grep foo`, says whether it covers the request, and saves it for this session or, when OpenCode offers _always_, for the folder.",
       },
       { type: "h2", text: "Choose an approval mode" },
+      {
+        type: "art",
+        name: "modes",
+        caption:
+          "Hover: switch to Balanced, and the next edit runs without asking.",
+      },
       {
         type: "p",
         text: "The badge in the header shows how much the agent may do without asking, as OpenCode reports it. It is just a shield until you pick a mode. Click it to switch:",
@@ -290,6 +312,7 @@ codium --install-extension cadogy.opencode-sidecar`,
     slug: "review-opencode-changes-vs-code",
     title: "Review the OpenCode agent's changes hunk by hunk in VS Code",
     short: "Review changes hunk by hunk",
+    nav: "Reviewing changes",
     description:
       "Keep or undo each change the OpenCode agent made, right in the editor, without touching your own edits. Then stage only what you kept.",
     summary:
@@ -368,6 +391,7 @@ codium --install-extension cadogy.opencode-sidecar`,
     slug: "roo-code-kilo-code-modes-opencode-agents",
     title: "Move from Roo Code or Kilo Code: modes as OpenCode agents",
     short: "Roo Code and Kilo Code modes as agents",
+    nav: "Roo and Kilo modes",
     description:
       "Import your Roo Code or Kilo Code custom modes as OpenCode agents with Sidecar, and create or edit OpenCode agents in a form.",
     summary:
@@ -375,6 +399,11 @@ codium --install-extension cadogy.opencode-sidecar`,
     updated: "2026-11-27",
     blocks: [
       { type: "h2", text: "Import your modes" },
+      {
+        type: "art",
+        name: "import",
+        caption: "Hover: check one more mode to import.",
+      },
       {
         type: "steps",
         items: [
@@ -506,6 +535,7 @@ You review code changes. Point out bugs, risky edits and missing tests. Do not e
     slug: "opencode-providers-setup-check",
     title: "Connect OpenCode providers and fix setup problems in VS Code",
     short: "Providers and fixing setup problems",
+    nav: "Providers and setup",
     description:
       "Connect model providers through OpenCode's own sign-in in Sidecar, read each provider's state, and find setup problems with one report.",
     summary:
@@ -513,6 +543,11 @@ You review code changes. Point out bugs, risky edits and missing tests. Do not e
     updated: "2026-11-27",
     blocks: [
       { type: "h2", text: "Open the Providers panel" },
+      {
+        type: "art",
+        name: "providers",
+        caption: "Hover: sign in to a provider again.",
+      },
       {
         type: "p",
         text: "Type **/** in the message box and choose **Providers…**, or click **Manage providers…** under the model list, or run **Sidecar: Manage Providers**. Each connected provider shows:",
@@ -588,6 +623,7 @@ You review code changes. Point out bugs, risky edits and missing tests. Do not e
     slug: "opencode-several-sessions-side-questions",
     title: "Run several OpenCode sessions, side questions and goals in VS Code",
     short: "Several sessions, side questions and goals",
+    nav: "Sessions and goals",
     description:
       "Watch several OpenCode sessions at once with Sidecar's session strip, ask side questions with /btw, and follow a /goal from a header.",
     summary:
@@ -624,6 +660,12 @@ You review code changes. Point out bugs, risky edits and missing tests. Do not e
       },
       { type: "h2", text: "Ask aside with /btw" },
       {
+        type: "art",
+        name: "aside",
+        caption:
+          "Hover: the answer arrives while the agent works, then joins the session.",
+      },
+      {
         type: "p",
         text: "Type `/btw` and your question, or pick **Ask aside…** in the **/** palette, to ask something without derailing the agent or adding to its context.",
       },
@@ -647,6 +689,11 @@ You review code changes. Point out bugs, risky edits and missing tests. Do not e
         text: "Copies never show in History. One left behind when VS Code closed is deleted at the next start.",
       },
       { type: "h2", text: "Follow a goal" },
+      {
+        type: "art",
+        name: "goal",
+        caption: "Hover: the tests pass and the goal is achieved.",
+      },
       {
         type: "p",
         text: "OpenCode's `/goal` keeps the agent working toward an objective over several rounds. While a session has one, a one-line header above the conversation shows the objective and whether it is in progress, achieved or stopped.",
@@ -676,6 +723,7 @@ You review code changes. Point out bugs, risky edits and missing tests. Do not e
     slug: "opencode-mcp-servers-vs-code",
     title: "Manage OpenCode MCP servers in VS Code",
     short: "MCP servers",
+    nav: "MCP servers",
     description:
       "See each OpenCode MCP server's state in Sidecar, connect, retry or sign in with OAuth, and add a server for one OpenCode run.",
     summary:
@@ -683,6 +731,11 @@ You review code changes. Point out bugs, risky edits and missing tests. Do not e
     updated: "2026-11-27",
     blocks: [
       { type: "h2", text: "Open the panel" },
+      {
+        type: "art",
+        name: "mcp",
+        caption: "Hover: retry a failed server and sign in to another.",
+      },
       {
         type: "p",
         text: "Type **/** in the message box and choose **MCP servers…**. Each server shows its state as OpenCode reports it:",

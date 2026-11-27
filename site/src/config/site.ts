@@ -42,6 +42,13 @@ export type ArtName =
   | "review"
   | "modes"
   | "sessions"
+  | "models"
+  | "setup"
+  | "import"
+  | "providers"
+  | "mcp"
+  | "aside"
+  | "goal"
 
 export const features: readonly Feature[] = [
   {

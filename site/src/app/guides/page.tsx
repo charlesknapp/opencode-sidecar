@@ -9,7 +9,7 @@ import { SiteFooter, SiteNav } from "@/components/site-chrome"
 export const metadata: Metadata = {
   title: `Guides · ${site.name}`,
   description:
-    "How to run OpenCode with local models, install it in Cursor, Windsurf and VSCodium, and keep the agent in check with permissions and Budget Guard.",
+    "How to use OpenCode in VS Code with Sidecar: local models, other editors, permissions, reviewing changes, agents, providers, sessions and MCP servers.",
   alternates: { canonical: "/guides" },
 }
 
