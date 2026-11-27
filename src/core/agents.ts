@@ -8,6 +8,7 @@
 import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
 import type { AgentMode, AgentRow, AgentsView } from "../shared/model";
+import { isBuiltInAgent } from "../shared/agentName";
 import { parseRules, type PermissionRule } from "../shared/approval";
 import { draftFromFile, parseAgentFile } from "./agentFile";
 import { YamlError } from "./yaml";
@@ -250,6 +251,8 @@ export function deriveAgentRows(input: {
         row.otherRules = d.otherRules;
         if (d.legacy) row.legacy = true;
       }
+      // OpenCode applies a file named after a built-in on top of it.
+      if (isBuiltInAgent(a.id)) row.overrides = true;
       rows.push(row);
     } else if (input.documentAgents[a.id])
       rows.push({ ...base, source: "config", file: input.documentAgents[a.id], editable: false });

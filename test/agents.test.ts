@@ -38,6 +38,7 @@ import {
   parseModesFile,
   regexToGlobs,
 } from "../src/core/roomodes";
+import { BUILT_IN_AGENTS, isBuiltInAgent, overrideWarning } from "../src/shared/agentName";
 import { SessionController } from "../src/core/sessionController";
 import { parseYaml, yamlEntry, yamlString, YamlError } from "../src/core/yaml";
 import { evaluate } from "../src/shared/approval";
@@ -257,6 +258,25 @@ describe("agent names", () => {
     for (const n of ["con", "NUL", "com1", "Lpt9", "aux"]) assert.match(validateAgentName(n)!, /Windows/, n);
     assert.match(validateAgentName("Build", ["build", "plan"])!, /exists/);
     assert.equal(validateAgentName("builder", ["build"]), null);
+  });
+
+  it("knows OpenCode's built-in agents a file can override, by their exact id", () => {
+    assert.deepEqual(BUILT_IN_AGENTS, ["build", "plan", "general", "explore"]);
+    assert.ok(isBuiltInAgent("plan"));
+    for (const n of ["Build", "builder", "title", "summary", "compaction", "docs"])
+      assert.ok(!isBuiltInAgent(n), n);
+  });
+
+  it("says how an override applies, for this folder or every folder", () => {
+    const one = overrideWarning(["build"], "project");
+    assert.match(one, /^The file overrides OpenCode's built-in build agent in this folder\./);
+    assert.match(one, /on top of the built-in/);
+    assert.match(one, /permissions come after the built-in's own rules/);
+    assert.match(one, /Delete the file to get the built-in back\.$/);
+    assert.match(
+      overrideWarning(["build", "plan", "explore"], "global"),
+      /^The files override OpenCode's built-in build, plan and explore agents in every folder\. OpenCode applies each/,
+    );
   });
 
   it("turns mode slugs and titles into valid names", () => {
@@ -885,6 +905,24 @@ describe("agent sources", () => {
     assert.equal(rows.find((r) => r.id === "shared")?.file, ".opencode/agents/shared.md");
     assert.match(rows.find((r) => r.id === "broken")!.problem!, /did not load it.*line 2/);
     assert.equal(rows.find((r) => r.id === "shared")?.draft?.mode, "subagent");
+    assert.ok(rows.every((r) => !r.overrides));
+
+    // A file named after a built-in agent overrides it: listed as the file's, marked so.
+    write(path.join(folder, ".opencode", "agents", "plan.md"), "---\ndescription: Mine\n---\nPlan.\n");
+    write(path.join(global, "agents", "explore.md"), "---\nmode: subagent\n---\nE\n");
+    const over = deriveAgentRows({
+      details: [detail("build"), detail("plan"), detail("explore", "subagent")],
+      files: await scanAgentFiles([global, path.join(folder, ".opencode")], folder),
+      documentAgents: {},
+      folder,
+    });
+    const brief = (id: string) => {
+      const r = over.find((x) => x.id === id)!;
+      return [r.source, r.file, r.editable, r.overrides ?? false];
+    };
+    assert.deepEqual(brief("plan"), ["project", ".opencode/agents/plan.md", true, true]);
+    assert.deepEqual(brief("explore"), ["global", path.join(global, "agents", "explore.md"), true, true]);
+    assert.deepEqual(brief("build"), ["built-in", null, false, false]);
   });
 
   it("reads a mode's rule files in name order, skipping binary and large ones", async () => {
@@ -1019,6 +1057,10 @@ describe("agent messages from the webview", () => {
     assert.ok(!ok({ type: "saveAgent", draft: draft({ scope: "elsewhere" as never }), editing: null }));
     assert.ok(!ok({ type: "saveAgent", draft: draft(), editing: "../../etc/passwd" }));
     assert.ok(!ok({ type: "saveAgent", draft: draft(), editing: "C:\\x" }));
+    // Overriding a built-in agent: only `true`, after the webview asked.
+    assert.ok(ok({ type: "saveAgent", draft: draft({ name: "build" }), editing: null, override: true }));
+    assert.ok(!ok({ type: "saveAgent", draft: draft(), editing: null, override: false }));
+    assert.ok(!ok({ type: "saveAgent", draft: draft(), editing: null, override: "yes" }));
   });
 
   it("checks agent ids and import keys", () => {
@@ -1029,6 +1071,8 @@ describe("agent messages from the webview", () => {
     assert.ok(!ok({ type: "deleteAgent", id: "a\nb" }));
     assert.ok(ok({ type: "importModes", keys: ["C:\\repo\\.roomodes#docs"], scope: "project" }));
     assert.ok(!ok({ type: "importModes", keys: [1], scope: "project" }));
+    assert.ok(ok({ type: "importModes", keys: ["k"], scope: "global", override: true }));
+    assert.ok(!ok({ type: "importModes", keys: ["k"], scope: "global", override: 1 }));
     assert.ok(!ok({ type: "importModes", keys: [], scope: "nowhere" }));
     assert.ok(ok({ type: "previewImport" }) && ok({ type: "loadAgents" }));
   });

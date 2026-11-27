@@ -22,6 +22,7 @@ import type {
   FormAnswer,
   FormField,
   GoalState,
+  ImportItem,
   ImportPreview,
   InboxDelivery,
   InstructionRow,
@@ -51,7 +52,7 @@ import {
   type ApprovalMode,
   type RuleEffect,
 } from "../shared/approval";
-import { validateAgentName } from "../shared/agentName";
+import { isBuiltInAgent, overrideWarning, validateAgentName } from "../shared/agentName";
 import { mcpNameError, parseMcpTarget } from "../shared/mcp";
 import type { HostMessage, OfficialLink, ViewState, WebviewMessage } from "../shared/protocol";
 import { formatRate, ThroughputMeter } from "../shared/throughput";
@@ -3900,11 +3901,21 @@ function openAgents(o: { import?: boolean } = {}): void {
   // ------------------------------------------------------------ the list
 
   async function remove(a: AgentRow): Promise<void> {
-    const pick = await confirmDialog({
-      title: `Delete ${a.name}?`,
-      body: `${a.file ?? "Its file"} is deleted, and OpenCode stops offering this agent. This can't be undone.`,
-      choices: [{ value: "yes", label: "Delete", danger: true, testid: "agent-delete-confirm" }],
-    });
+    const pick = await confirmDialog(
+      a.overrides
+        ? {
+            title: `Remove the override of ${a.id}?`,
+            body: `${a.file ?? "Its file"} is deleted, and OpenCode uses its built-in ${a.id} agent again. This can't be undone.`,
+            choices: [
+              { value: "yes", label: "Remove override", danger: true, testid: "agent-delete-confirm" },
+            ],
+          }
+        : {
+            title: `Delete ${a.name}?`,
+            body: `${a.file ?? "Its file"} is deleted, and OpenCode stops offering this agent. This can't be undone.`,
+            choices: [{ value: "yes", label: "Delete", danger: true, testid: "agent-delete-confirm" }],
+          },
+    );
     if (pick === "yes") send({ type: "deleteAgent", id: a.id });
   }
 
@@ -3913,7 +3924,7 @@ function openAgents(o: { import?: boolean } = {}): void {
     const custom = a.source === "project" || a.source === "global";
     const meta = [
       a.model ? agentModelName(a.model) : "",
-      a.file ?? (a.source === "built-in" ? "Built into OpenCode" : ""),
+      a.overrides ? "" : (a.file ?? (a.source === "built-in" ? "Built into OpenCode" : "")),
     ].filter(Boolean);
     return h(
       "li",
@@ -3934,6 +3945,13 @@ function openAgents(o: { import?: boolean } = {}): void {
         ),
       ),
       a.description ? h("div", { className: "agent-desc", dir: "auto" }, a.description) : null,
+      a.overrides
+        ? h(
+            "div",
+            { className: "provider-meta", "data-testid": "agent-override", dir: "auto" },
+            `Built-in, overridden by ${a.file}`,
+          )
+        : null,
       meta.length
         ? h("div", { className: "provider-meta", "data-testid": "agent-meta" }, meta.join(" · "))
         : null,
@@ -3948,7 +3966,14 @@ function openAgents(o: { import?: boolean } = {}): void {
             a.file
               ? smallBtn("Open file", "agent-open", () => send({ type: "openAgentFile", id: a.id }))
               : null,
-            custom ? smallBtn("Delete", "agent-delete", () => void remove(a), busy) : null,
+            custom
+              ? smallBtn(
+                  a.overrides ? "Remove override" : "Delete",
+                  "agent-delete",
+                  () => void remove(a),
+                  busy,
+                )
+              : null,
           )
         : null,
     );
@@ -4171,11 +4196,37 @@ function openAgents(o: { import?: boolean } = {}): void {
     const variantField = field("Variant", variantIn);
     modelIn.addEventListener("change", paintVariants);
     const taken = (agentsView?.agents ?? []).map((x) => x.id);
+    // A built-in agent without a file can be overridden by one of its exact name (after asking).
+    const overrides = (name: string) =>
+      !a &&
+      isBuiltInAgent(name) &&
+      !!agentsView?.agents.some((x) => x.id === name && x.source === "built-in");
+    const overrideNote = h("p", {
+      className: "banner warn",
+      role: "note",
+      "data-testid": "agent-override-warning",
+    });
+    // Also while editing an override, so its effect stays in view.
+    const paintOverride = () => {
+      const name = a ? a.id : nameIn.value.trim();
+      const on = a ? !!a.overrides : overrides(name);
+      overrideNote.hidden = !on;
+      overrideNote.textContent = on
+        ? overrideWarning([name], a ? d.scope : (scopeIn.value as AgentDraft["scope"]))
+        : "";
+    };
+    nameIn.addEventListener("input", paintOverride);
+    scopeIn.addEventListener("change", paintOverride);
 
     const collect = (): AgentDraft | null => {
       error.textContent = "";
       const name = nameIn.value.trim();
-      const problem = a ? null : validateAgentName(name, taken);
+      const problem = a
+        ? null
+        : validateAgentName(
+            name,
+            taken.filter((t) => !(t === name && overrides(name))),
+          );
       if (problem) {
         error.textContent = problem;
         nameIn.focus();
@@ -4203,17 +4254,32 @@ function openAgents(o: { import?: boolean } = {}): void {
         scope: a ? d.scope : (scopeIn.value as AgentDraft["scope"]),
       };
     };
-    const save = (open: boolean) => {
+    const save = async (open: boolean) => {
       const draft = collect();
       if (!draft) return;
+      const override = overrides(draft.name);
+      if (override) {
+        const pick = await confirmDialog({
+          title: `Override the built-in ${draft.name} agent?`,
+          body: overrideWarning([draft.name], draft.scope),
+          choices: [{ value: "yes", label: "Override", testid: "agent-override-confirm" }],
+        });
+        if (pick !== "yes") return;
+      }
       saving = true;
       saveBtn.disabled = openBtn.disabled = true;
       status.textContent = "Saving…";
-      send({ type: "saveAgent", draft, editing: a ? a.id : null, ...(open ? { open: true } : {}) });
+      send({
+        type: "saveAgent",
+        draft,
+        editing: a ? a.id : null,
+        ...(open ? { open: true } : {}),
+        ...(override ? { override: true } : {}),
+      });
     };
     const saveBtn = h(
       "button",
-      { className: "btn primary", "data-testid": "agent-save", onclick: () => save(false) },
+      { className: "btn primary", "data-testid": "agent-save", onclick: () => void save(false) },
       "Save",
     );
     const openBtn = h(
@@ -4222,14 +4288,14 @@ function openAgents(o: { import?: boolean } = {}): void {
         className: "btn subtle",
         "data-testid": "agent-open-editor",
         "data-tip": "Save, then edit the Markdown file itself",
-        onclick: () => save(true),
+        onclick: () => void save(true),
       },
       "Save and open in editor",
     );
     nameIn.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        save(false);
+        void save(false);
       }
     });
     body.replaceChildren(
@@ -4241,6 +4307,7 @@ function openAgents(o: { import?: boolean } = {}): void {
             ? "The file name; it can't be changed here."
             : "Letters, digits, - and _. It is the file name and how you @mention it.",
         ),
+        overrideNote,
         field("Description", descIn, "OpenCode shows it, and agents read it to pick a subagent."),
         field("Mode", modeIn),
         field("Model", modelIn),
@@ -4287,6 +4354,7 @@ function openAgents(o: { import?: boolean } = {}): void {
       saveBtn,
     );
     paintVariants();
+    paintOverride();
     (a ? descIn : nameIn).focus();
     formResult = (r) => {
       saving = false;
@@ -4327,6 +4395,14 @@ function openAgents(o: { import?: boolean } = {}): void {
       previewError,
     );
     const items = preview?.items ?? [];
+    // A mode named after a built-in agent: checking it shows what overriding that agent does.
+    const warnings: Array<{ it: ImportItem; el: HTMLElement }> = [];
+    const paintWarnings = () => {
+      for (const { it, el } of warnings) {
+        el.hidden = !checked.has(it.key);
+        el.textContent = el.hidden ? "" : overrideWarning([it.name], importScope);
+      }
+    };
     if (preview === undefined)
       note.textContent = "Looking for .roomodes, .kilocodemodes and global custom modes…";
     else if (preview === null) note.textContent = previewError || "No modes found.";
@@ -4340,7 +4416,12 @@ function openAgents(o: { import?: boolean } = {}): void {
             else checked.delete(it.key);
             runBtn.disabled = !checked.size || saving;
             runBtn.textContent = runLabel();
+            paintWarnings();
           });
+          const warning = it.overrides
+            ? h("p", { className: "banner warn", role: "note", "data-testid": "import-override" })
+            : null;
+          if (warning) warnings.push({ it, el: warning });
           return h(
             "li",
             { className: "rule provider import-row", "data-testid": "import-row", "data-id": it.key },
@@ -4356,6 +4437,7 @@ function openAgents(o: { import?: boolean } = {}): void {
             it.conflict
               ? h("div", { className: "import-conflict", "data-testid": "import-conflict" }, it.conflict)
               : null,
+            warning,
             it.notes.length
               ? h(
                   "ul",
@@ -4373,7 +4455,10 @@ function openAgents(o: { import?: boolean } = {}): void {
       agentsView?.globalDir ? h("option", { value: "global" }, `Global (${agentsView.globalDir})`) : null,
     ) as HTMLSelectElement;
     scopeIn.value = importScope;
-    scopeIn.addEventListener("change", () => (importScope = scopeIn.value as AgentDraft["scope"]));
+    scopeIn.addEventListener("change", () => {
+      importScope = scopeIn.value as AgentDraft["scope"];
+      paintWarnings();
+    });
     const runLabel = () => `Import ${checked.size} mode${checked.size === 1 ? "" : "s"}`;
     const runBtn = h(
       "button",
@@ -4381,15 +4466,30 @@ function openAgents(o: { import?: boolean } = {}): void {
         className: "btn primary",
         "data-testid": "import-run",
         disabled: !checked.size || saving,
-        onclick: () => {
-          if (!checked.size) return;
+        onclick: async () => {
+          if (!checked.size || saving) return;
+          const picked = items.filter((i) => checked.has(i.key));
+          // One question for every built-in agent the import overrides.
+          const overrides = picked.filter((i) => i.overrides).map((i) => i.name);
+          if (overrides.length) {
+            const pick = await confirmDialog({
+              title:
+                overrides.length === 1
+                  ? `Override the built-in ${overrides[0]} agent?`
+                  : `Override ${overrides.length} built-in agents?`,
+              body: overrideWarning(overrides, importScope),
+              choices: [{ value: "yes", label: "Override and import", testid: "import-override-confirm" }],
+            });
+            if (pick !== "yes") return;
+          }
           saving = true;
           runBtn.disabled = true;
           status.textContent = "Importing…";
           send({
             type: "importModes",
-            keys: items.filter((i) => checked.has(i.key)).map((i) => i.key),
+            keys: picked.map((i) => i.key),
             scope: importScope,
+            ...(overrides.length ? { override: true } : {}),
           });
         },
       },
@@ -4417,6 +4517,7 @@ function openAgents(o: { import?: boolean } = {}): void {
         status,
       ]),
     );
+    paintWarnings();
     foot.replaceChildren(
       ...nonNull([
         h(

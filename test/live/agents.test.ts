@@ -299,6 +299,85 @@ describe("custom agents (live)", () => {
     assert.ok((await c.listSubagents(dir)).some((a) => a.id === "live-docs"));
   });
 
+  it("applies agents/build.md on top of the built-in Build agent, and brings it back once deleted", async (t) => {
+    const c = live(t);
+    if (!c) return;
+    const dir = await folder(c);
+    const builtIn = (await c.listAgentDetails(dir)).find((a) => a.id === "build");
+    assert.ok(builtIn, "OpenCode has a built-in build agent");
+    assert.equal(
+      deriveAgentRows({ details: [builtIn], files: new Map(), documentAgents: {}, folder: dir })[0].source,
+      "built-in",
+    );
+    // What the form writes for an override: description, mode, prompt and one switch.
+    const d: AgentDraft = {
+      ...emptyDraft(),
+      name: "build",
+      description: "Overridden build",
+      permissions: { shell: "deny" },
+      prompt: "You are the overridden build agent.",
+    };
+    const file = agentFilePath(projectConfigDir(dir), "build");
+    write(file, newAgentFile(d));
+    const over = (
+      await until(c, dir, (l) => l.some((a) => a.id === "build" && a.description === d.description))
+    ).filter((a) => a.id === "build");
+    assert.equal(over.length, 1, "still one build agent");
+    // Merged, not replaced: the file's fields win, the rest (and every built-in rule) stays.
+    assert.equal(over[0].name, builtIn.name);
+    assert.equal(over[0].mode, "primary");
+    assert.equal(over[0].system, d.prompt);
+    assert.deepEqual(over[0].permissions.slice(0, -2), [
+      ...builtIn.permissions.slice(0, -2),
+      { action: "shell", resource: "*", effect: "deny" },
+    ]);
+    assert.deepEqual(over[0].permissions.slice(-2), builtIn.permissions.slice(-2), "the browser rules last");
+    assert.ok(over[0].permissions.some((r) => r.action === "question" && r.effect === "allow"));
+
+    // The panel's row: the file's, marked as overriding the built-in, editable in the form.
+    const sources = await c.configSources(dir);
+    const row = deriveAgentRows({
+      details: await c.listAgentDetails(dir),
+      files: await scanAgentFiles([...sources.directories, projectConfigDir(dir)], dir),
+      documentAgents: {},
+      folder: dir,
+    }).find((r) => r.id === "build");
+    assert.equal(row?.source, "project");
+    assert.equal(row?.overrides, true);
+    assert.equal(row?.file, ".opencode/agents/build.md");
+    assert.deepEqual(row?.draft, d);
+
+    // An empty body leaves the agent with no prompt: explore's own is replaced too.
+    const explore = (await c.listAgentDetails(dir)).find((a) => a.id === "explore")!;
+    assert.ok(explore.system, "the built-in explore agent has a prompt");
+    const exploreFile = agentFilePath(projectConfigDir(dir), "explore");
+    write(exploreFile, "---\ndescription: Mine\n---\n");
+    const mine = (
+      await until(c, dir, (l) => l.some((a) => a.id === "explore" && a.description === "Mine"))
+    ).find((a) => a.id === "explore")!;
+    assert.equal(mine.system, "");
+    assert.equal(mine.mode, "subagent", "the mode it does not set stays the built-in's");
+
+    // Removing the overrides brings the built-in definitions back.
+    fs.rmSync(file);
+    fs.rmSync(exploreFile);
+    const back = await until(
+      c,
+      dir,
+      (l) =>
+        l.some((a) => a.id === "build" && a.description === builtIn.description) &&
+        l.some((a) => a.id === "explore" && a.system === explore.system),
+    );
+    assert.deepEqual(
+      back.find((a) => a.id === "build"),
+      builtIn,
+    );
+    assert.deepEqual(
+      back.find((a) => a.id === "explore"),
+      explore,
+    );
+  });
+
   it("the controller waits for a saved agent and refreshes the agent picker", async (t) => {
     const c = live(t);
     if (!c) return;

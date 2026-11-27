@@ -896,7 +896,9 @@ async function projectInstructions(api: TestApi): Promise<void> {
 /**
  * A fixture .roomodes is imported as OpenCode agents through the panel's handlers, the
  * imported agent is picked and a tiny prompt runs on it: OpenCode records that agent on
- * the reply. The mode file and the agent files are removed afterwards.
+ * the reply. A mode named plan overrides the built-in Plan agent only when the import says
+ * it was confirmed, and Remove override brings the built-in back. The mode file and the
+ * agent files are removed afterwards.
  */
 async function customAgents(api: TestApi): Promise<void> {
   const root = api.workspace().active!.path;
@@ -920,19 +922,34 @@ async function customAgents(api: TestApi): Promise<void> {
           roleDefinition: "You coordinate complex work by delegating it with new_task.",
           groups: [],
         },
+        {
+          slug: "plan",
+          name: "Plan",
+          roleDefinition: "You plan before anyone builds.",
+          whenToUse: "Acceptance plan override",
+          groups: ["read"],
+        },
       ],
     }),
   );
   const c = () => api.controller()!;
+  const planFile = path.join(agentsDir, "agents", "plan.md");
   try {
     await api.handle({ type: "previewImport" });
-    const items = api.importItems().filter((i) => i.source === ".roomodes");
+    const all = api.importItems().filter((i) => i.source === ".roomodes");
+    const plan = all.find((i) => i.name === "plan");
+    const items = all.filter((i) => i !== plan);
     check(
       "Agents: the import preview lists the fixture's modes",
       items.length === 2 &&
         items.find((i) => i.name === "accept-terse")?.mode === "all" &&
         items.find((i) => i.name === "accept-orchestrator")?.mode === "primary",
       JSON.stringify(items),
+    );
+    check(
+      "Agents: a mode named after a built-in agent is an unchecked override",
+      !!plan?.overrides && !plan.checked && /built-in/.test(plan.conflict ?? ""),
+      JSON.stringify(plan),
     );
     await api.handle({ type: "importModes", keys: items.map((i) => i.key), scope: "project" });
     check(
@@ -957,8 +974,34 @@ async function customAgents(api: TestApi): Promise<void> {
       reply?.agent === "accept-terse",
       `${r.outcome}; agent ${String(reply?.agent)}`,
     );
+    if (plan) {
+      const builtIn = (await c().agentDetails()).find((a) => a.id === "plan");
+      await api.handle({ type: "importModes", keys: [plan.key], scope: "project" });
+      check("Agents: an override is not written unconfirmed", !fs.existsSync(planFile));
+      await api.handle({ type: "importModes", keys: [plan.key], scope: "project", override: true });
+      await c().awaitAgents((l) =>
+        l.some((a) => a.id === "plan" && a.description === "Acceptance plan override"),
+      );
+      const over = (await c().agentDetails()).find((a) => a.id === "plan");
+      check(
+        "Agents: OpenCode applies the file on top of the built-in plan agent",
+        fs.existsSync(planFile) &&
+          over?.description === "Acceptance plan override" &&
+          over.name === builtIn?.name &&
+          /plan before anyone builds/.test(over.system),
+        JSON.stringify(over),
+      );
+      await api.handle({ type: "deleteAgent", id: "plan" });
+      const back = (await c().agentDetails()).find((a) => a.id === "plan");
+      check(
+        "Agents: Remove override brings the built-in back",
+        !fs.existsSync(planFile) && JSON.stringify(back) === JSON.stringify(builtIn),
+        JSON.stringify(back),
+      );
+    }
   } finally {
     fs.rmSync(modes, { force: true });
+    fs.rmSync(planFile, { force: true });
     for (const n of ["accept-terse", "accept-orchestrator"])
       fs.rmSync(path.join(agentsDir, "agents", `${n}.md`), { force: true });
     if (!hadConfig) fs.rmSync(agentsDir, { recursive: true, force: true });

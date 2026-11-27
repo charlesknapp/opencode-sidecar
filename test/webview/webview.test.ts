@@ -3775,6 +3775,176 @@ describe(
       );
     });
 
+    it("New agent named after a built-in warns in the form, asks before saving and sends the override", async () => {
+      await openAgentsPanel();
+      await page.click('[data-testid="agents-new"]');
+      const warning = () =>
+        page.$eval('[data-testid="agent-override-warning"]', (e) =>
+          (e as HTMLElement).hidden ? null : (e as HTMLElement).innerText,
+        );
+      assert.equal(await warning(), null);
+      await setValue("agent-name", "build");
+      assert.match(
+        (await warning())!,
+        /^The file overrides OpenCode's built-in build agent in this folder\./,
+      );
+      assert.match((await warning())!, /permissions come after the built-in's own rules/);
+      await setValue("agent-scope", "global");
+      assert.match((await warning())!, /build agent in every folder\./);
+      await setValue("agent-scope", "project");
+      await setValue("agent-name", "builder");
+      assert.equal(await warning(), null, "only the exact name overrides");
+      await setValue("agent-name", "build");
+      await setValue("agent-description", "My build");
+      await clearSent();
+      await page.click('[data-testid="agent-save"]');
+      assert.match(
+        await text('[data-testid="dialog"]'),
+        /Override the built-in build agent\?.*in this folder/s,
+      );
+      await page.keyboard.press("Escape");
+      assert.deepEqual(await sent(), [], "cancelled: nothing saved");
+      assert.equal(await value("agent-name"), "build", "the form stays");
+      await page.click('[data-testid="agent-save"]');
+      await page.click('[data-testid="agent-override-confirm"]');
+      const s = await lastSent("saveAgent");
+      assert.equal(s?.override, true);
+      assert.equal((s?.draft as { name: string }).name, "build");
+      assert.equal(s?.editing, null);
+      await host({ type: "agentResult", ok: true, id: "build" });
+      // An ordinary name sends no override.
+      await page.click('[data-testid="agents-new"]');
+      await setValue("agent-name", "reviewer");
+      await clearSent();
+      await page.click('[data-testid="agent-save"]');
+      assert.equal(await page.$('[data-testid="dialog"]'), null);
+      assert.equal((await lastSent("saveAgent"))?.override, undefined);
+    });
+
+    it("an overridden built-in says which file overrides it, and Remove override asks first", async () => {
+      const view: AgentsView = {
+        ...AGENTS,
+        agents: [
+          ...AGENTS.agents.filter((a) => a.id !== "build"),
+          {
+            id: "build",
+            name: "Build",
+            description: "My build",
+            mode: "primary",
+            model: null,
+            source: "project",
+            file: ".opencode/agents/build.md",
+            editable: true,
+            problem: null,
+            draft: { ...DOCS_DRAFT, name: "build", description: "My build", mode: "primary" },
+            overrides: true,
+          },
+        ],
+      };
+      await openAgentsPanel(view);
+      const rows = await agentRows();
+      assert.ok(
+        rows.includes(
+          "Build Primary This project My build Built-in, overridden by .opencode/agents/build.md Edit Open file Remove override",
+        ),
+        rows.join("\n"),
+      );
+      await clearSent();
+      await page.click('[data-id="build"] [data-testid="agent-delete"]');
+      assert.match(
+        await text('[data-testid="dialog"]'),
+        /Remove the override of build\?.*\.opencode\/agents\/build\.md is deleted, and OpenCode uses its built-in build agent again/s,
+      );
+      await page.keyboard.press("Escape");
+      assert.deepEqual(await sent(), []);
+      await page.click('[data-id="build"] [data-testid="agent-delete"]');
+      await page.click('[data-testid="agent-delete-confirm"]');
+      assert.deepEqual(await sent(), [{ type: "deleteAgent", id: "build" }]);
+      // Editing it keeps the effect in view.
+      await page.click('[data-id="build"] [data-testid="agent-edit"]');
+      assert.match(
+        await text('[data-testid="agent-override-warning"]'),
+        /overrides OpenCode's built-in build agent in this folder/,
+      );
+      await page.keyboard.press("Escape");
+    });
+
+    it("the import preview warns for a mode that overrides a built-in once checked, and asks once for all", async () => {
+      const over = (name: string, label: string) => ({
+        key: `C:\\repo\\.roomodes#${name}`,
+        name,
+        label,
+        description: label,
+        mode: "all" as const,
+        source: ".roomodes",
+        conflict: `Overrides OpenCode's built-in ${label} agent`,
+        overrides: true,
+        notes: [],
+        checked: false,
+      });
+      await openAgentsPanel();
+      await page.click('[data-testid="agents-import-open"]');
+      await host({
+        type: "agentImport",
+        preview: { items: [PREVIEW.items[0], over("plan", "Plan"), over("explore", "Explore")] },
+      });
+      const warnings = () =>
+        page.$$eval('[data-testid="import-override"]', (els) =>
+          els.map((e) => ((e as HTMLElement).hidden ? null : (e as HTMLElement).innerText)),
+        );
+      assert.deepEqual(await warnings(), [null, null], "unchecked by default, no warning yet");
+      await page.click('[data-id="C:\\\\repo\\\\.roomodes#plan"] input');
+      const [plan, explore] = await warnings();
+      assert.match(plan!, /^The file overrides OpenCode's built-in plan agent in this folder\./);
+      assert.equal(explore, null);
+      await setValue("import-scope", "global");
+      assert.match((await warnings())[0]!, /plan agent in every folder\./);
+      await page.click('[data-id="C:\\\\repo\\\\.roomodes#explore"] input');
+      await page.click('[data-id="C:\\\\repo\\\\.roomodes#plan"] input');
+      assert.equal((await warnings())[0], null, "unchecking hides it");
+      await page.click('[data-id="C:\\\\repo\\\\.roomodes#plan"] input');
+      assert.equal(await text('[data-testid="import-run"]'), "Import 3 modes");
+      await clearSent();
+      await page.click('[data-testid="import-run"]');
+      assert.match(
+        await text('[data-testid="dialog"]'),
+        /Override 2 built-in agents\?.*built-in plan and explore agents in every folder/s,
+      );
+      await page.keyboard.press("Escape");
+      assert.deepEqual(await sent(), [], "cancelled: nothing imported");
+      assert.equal(
+        await page.$eval('[data-testid="import-run"]', (b) => (b as HTMLButtonElement).disabled),
+        false,
+      );
+      await page.click('[data-testid="import-run"]');
+      await page.click('[data-testid="import-override-confirm"]');
+      assert.deepEqual(await sent(), [
+        {
+          type: "importModes",
+          keys: [
+            "C:\\repo\\.roomodes#docs-writer",
+            "C:\\repo\\.roomodes#plan",
+            "C:\\repo\\.roomodes#explore",
+          ],
+          scope: "global",
+          override: true,
+        },
+      ]);
+      // The warnings fit a narrow panel.
+      await page.setViewport({ width: 300, height: 700 });
+      assert.ok(
+        await page.$eval('[data-testid="agents-panel"]', (el) => {
+          const r = el.getBoundingClientRect();
+          return (
+            el.scrollWidth <= el.clientWidth + 1 &&
+            Array.from(el.querySelectorAll<HTMLElement>('[data-testid="import-override"]')).every(
+              (x) => x.getBoundingClientRect().right <= r.right + 1,
+            )
+          );
+        }),
+      );
+    });
+
     it("the import preview lists each mode with its notes, leaves conflicts unchecked and imports the checked ones", async () => {
       await openAgentsPanel();
       await clearSent();

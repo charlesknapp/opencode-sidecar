@@ -1441,7 +1441,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       case "loadAgents":
         return this.agents.postView();
       case "saveAgent":
-        return this.agents.save(msg.draft, msg.editing, msg.open);
+        return this.agents.save(msg.draft, msg.editing, msg.open, msg.override);
       case "deleteAgent":
         return this.agents.remove(msg.id);
       case "openAgentFile":
@@ -1449,7 +1449,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       case "previewImport":
         return this.agents.preview();
       case "importModes":
-        return this.agents.importModes(msg.keys, msg.scope);
+        return this.agents.importModes(msg.keys, msg.scope, msg.override);
       case "loadProviders":
         return this.postProviders();
       case "providerConnect":

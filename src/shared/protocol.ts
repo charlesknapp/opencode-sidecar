@@ -257,7 +257,7 @@ export type WebviewMessage =
    * Save the form: a new agent (`editing` null) or the custom agent `editing`. The host
    * asks before it replaces a file or writes outside the folder. `open`: then open the file.
    */
-  | { type: "saveAgent"; draft: AgentDraft; editing: string | null; open?: boolean }
+  | { type: "saveAgent"; draft: AgentDraft; editing: string | null; open?: boolean; override?: boolean }
   /** Delete a custom agent's file (the webview has asked for confirmation). */
   | { type: "deleteAgent"; id: string }
   /** Open an agent's file in the editor. */
@@ -265,7 +265,7 @@ export type WebviewMessage =
   /** Look for Roo Code and Kilo Code modes to import. */
   | { type: "previewImport" }
   /** Import the checked modes of the last preview as agents. */
-  | { type: "importModes"; keys: string[]; scope: "project" | "global" }
+  | { type: "importModes"; keys: string[]; scope: "project" | "global"; override?: boolean }
   /** A finished code block: insert it at the cursor of the last editor, or open it in a new one. */
   | { type: "insertCode"; text: string }
   | { type: "openCode"; text: string; lang: string }
@@ -541,7 +541,8 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   saveAgent: (m) =>
     isDraft(m.draft) &&
     (m.editing === null || isAgentId(m.editing)) &&
-    (m.open === undefined || typeof m.open === "boolean"),
+    (m.open === undefined || typeof m.open === "boolean") &&
+    (m.override === undefined || m.override === true),
   deleteAgent: (m) => isAgentId(m.id),
   openAgentFile: (m) => isAgentId(m.id),
   previewImport: () => true,
@@ -549,7 +550,8 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
     Array.isArray(m.keys) &&
     m.keys.length <= 500 &&
     m.keys.every((k) => isStr(k, 300)) &&
-    (m.scope === "project" || m.scope === "global"),
+    (m.scope === "project" || m.scope === "global") &&
+    (m.override === undefined || m.override === true),
   insertCode: (m) => typeof m.text === "string" && m.text.length <= MAX_COPY,
   openCode: (m) =>
     typeof m.text === "string" &&
@@ -683,10 +685,10 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   providerConnect: ["id"],
   providerReauth: ["id"],
   providerDisconnect: ["id"],
-  saveAgent: ["draft", "editing", "open"],
+  saveAgent: ["draft", "editing", "open", "override"],
   deleteAgent: ["id"],
   openAgentFile: ["id"],
-  importModes: ["keys", "scope"],
+  importModes: ["keys", "scope", "override"],
   insertCode: ["text"],
   openCode: ["text", "lang"],
   resolveRevert: ["action"],

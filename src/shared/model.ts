@@ -527,6 +527,8 @@ export interface AgentRow {
   otherRules?: number;
   /** The file uses OpenCode 1's fields (tools, permission, temperature), which saving rewrites. */
   legacy?: boolean;
+  /** The file is named after one of OpenCode's built-in agents, which it overrides. */
+  overrides?: boolean;
 }
 
 export interface AgentsView {
@@ -553,6 +555,8 @@ export interface ImportItem {
   source: string;
   /** What importing it would replace or override; such modes start unchecked. */
   conflict: string | null;
+  /** Its name is one of OpenCode's built-in agents: importing it overrides that agent. */
+  overrides?: boolean;
   /** What does not carry over exactly. */
   notes: string[];
   checked: boolean;

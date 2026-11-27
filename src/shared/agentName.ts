@@ -18,3 +18,23 @@ export function validateAgentName(name: string, taken: readonly string[] = []): 
   if (taken.some((t) => t.toLowerCase() === name.toLowerCase())) return `An agent named “${name}” exists.`;
   return null;
 }
+
+/**
+ * OpenCode 2.4.2's built-in agents that a file of the same name (exactly: ids are case
+ * sensitive) overrides. Its hidden compaction, title and summary agents are not offered.
+ */
+export const BUILT_IN_AGENTS: readonly string[] = ["build", "plan", "general", "explore"];
+
+export const isBuiltInAgent = (name: string): boolean => BUILT_IN_AGENTS.includes(name);
+
+/**
+ * What an agent file named after a built-in does. Checked live: OpenCode applies the file
+ * on top of its built-in agent rather than replacing it, field by field.
+ */
+export function overrideWarning(names: readonly string[], scope: "project" | "global"): string {
+  const many = names.length > 1;
+  const which = many
+    ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]} agents`
+    : `${names[0]} agent`;
+  return `${many ? "The files override" : "The file overrides"} OpenCode's built-in ${which} ${scope === "global" ? "in every folder" : "in this folder"}. OpenCode applies ${many ? "each" : "it"} on top of the built-in: the description, mode, model and temperature it sets replace the built-in's, its text replaces the built-in's prompt (an empty one leaves none), and its permissions come after the built-in's own rules, so they win where both match. Delete the file to get the built-in back.`;
+}

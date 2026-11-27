@@ -1,8 +1,10 @@
 // VS Code side of the Agents panel: reads and writes OpenCode's agent files, asks before
 // it replaces a file or writes outside the folder, opens files in the editor, and imports
-// Roo Code / Kilo Code modes. OpenCode notices a changed file itself; the controller waits
-// for its agent list to show the change (and has OpenCode reload its config when it does
-// not), so a new agent can be picked without restarting anything.
+// Roo Code / Kilo Code modes. A file named after a built-in agent overrides it; the webview
+// asks first and says so in the message, which the host requires. OpenCode notices a
+// changed file itself; the controller waits for its agent list to show the change (and has
+// OpenCode reload its config when it does not), so a new agent can be picked without
+// restarting anything.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -39,6 +41,7 @@ import {
   type RooMode,
 } from "../core/roomodes";
 import type { SessionController } from "../core/sessionController";
+import { isBuiltInAgent } from "../shared/agentName";
 import type { AgentDraft, AgentsView, ImportItem } from "../shared/model";
 import type { HostMessage } from "../shared/protocol";
 import type { Logger } from "./log";
@@ -152,7 +155,7 @@ export class AgentsHost {
    * that changed are rewritten). Then waits for OpenCode to list it and, for a new agent
    * that can drive a session, selects it.
    */
-  async save(draft: AgentDraft, editing: string | null, open = false): Promise<void> {
+  async save(draft: AgentDraft, editing: string | null, open = false, override = false): Promise<void> {
     const c = this.deps.controller();
     const folder = this.deps.folder();
     if (!c || !folder) return this.fail("Open a folder first.");
@@ -179,13 +182,17 @@ export class AgentsHost {
       }
       if (!(await this.allowOutside(file, folder, "Save"))) return this.fail("Not saved.");
     } else {
-      // A file OpenCode did not load can be replaced (after asking); any other agent's name is taken.
+      // A file OpenCode did not load can be replaced (after asking), a built-in agent without
+      // a file overridden (after the webview asked); any other agent's name is taken.
       const broken = (id: string) => this.files.has(id) && !this.details.some((a) => a.id === id);
+      const builtIn = (id: string) => isBuiltInAgent(id) && !this.files.has(id);
       const taken = [...new Set([...this.details.map((a) => a.id), ...this.files.keys()])].filter(
-        (t) => !(t === draft.name && broken(t)),
+        (t) => !(t === draft.name && (broken(t) || builtIn(t))),
       );
       const problem = validateAgentName(draft.name, taken);
       if (problem) return this.fail(problem);
+      if (builtIn(draft.name) && !override)
+        return this.fail(`Not saved: ${draft.name} is a built-in agent. Confirm the override first.`);
       const dir = draft.scope === "global" ? this.globalDir(folder) : projectConfigDir(folder);
       if (!dir) return this.fail("OpenCode did not report its global config folder.");
       file = agentFilePath(dir, draft.name);
@@ -211,7 +218,9 @@ export class AgentsHost {
           (a) =>
             a.id === id &&
             a.mode === draft.mode &&
-            a.description === draft.description.trim() &&
+            // Without a description of its own, an overridden built-in keeps OpenCode's.
+            (a.description === draft.description.trim() ||
+              (!draft.description.trim() && isBuiltInAgent(id))) &&
             oneLine(a.system) === oneLine(prompt),
         ),
       );
@@ -237,7 +246,7 @@ export class AgentsHost {
     if (pick === "Open File") await this.openPath(file);
   }
 
-  /** Deletes a custom agent's file (the webview has asked first). */
+  /** Deletes a custom agent's file, or a built-in's override (the webview has asked first). */
   async remove(id: string): Promise<void> {
     const c = this.deps.controller();
     const folder = this.deps.folder();
@@ -247,13 +256,18 @@ export class AgentsHost {
     const ref = this.files.get(id);
     if (!ref) return this.fail("Its file is gone. Reload the list.");
     if (!(await this.allowOutside(ref.path, folder, "Delete"))) return;
+    const was = JSON.stringify(this.details.find((a) => a.id === id) ?? null);
     this.setBusy("Deleting…");
     try {
       await fs.promises.rm(ref.path);
       this.deps.log.info(`Deleted agent ${id} (${ref.path})`);
-      // A global agent of the same name takes over from a deleted project one.
+      // A global agent of the same name takes over from a deleted project one; a built-in
+      // stays listed, as OpenCode's own definition again.
       const shadowed = (await scanAgentFiles(this.sources.directories, folder)).has(id);
-      await c.awaitAgents((list) => shadowed || !list.some((a) => a.id === id));
+      await c.awaitAgents((list) => {
+        const now = list.find((a) => a.id === id);
+        return shadowed || (isBuiltInAgent(id) ? !!now && JSON.stringify(now) !== was : !now);
+      });
       this.deps.post({ type: "agentResult", ok: true, id });
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
@@ -333,7 +347,7 @@ export class AgentsHost {
       const others = [...new Set(all.filter((x) => x.mode !== mode).map((x) => toAgentName(x.mode.slug)))];
       const agent = modeToAgent(mode, { models, rules, others });
       const ref = this.files.get(agent.name);
-      const builtIn = this.details.find((a) => a.id === agent.name && !this.files.has(a.id));
+      const builtIn = ref ? undefined : this.details.find((a) => a.id === agent.name);
       const conflict = names.has(agent.name)
         ? `Same name as the mode from ${names.get(agent.name)}`
         : ref
@@ -355,6 +369,7 @@ export class AgentsHost {
         mode: agent.draft.mode,
         source: file.label,
         conflict,
+        ...(builtIn && isBuiltInAgent(agent.name) ? { overrides: true } : {}),
         notes,
         checked: !conflict,
       };
@@ -366,8 +381,11 @@ export class AgentsHost {
     });
   }
 
-  /** Writes the checked modes of the last preview as agent files, then waits for OpenCode to list them. */
-  async importModes(keys: string[], scope: AgentDraft["scope"]): Promise<void> {
+  /**
+   * Writes the checked modes of the last preview as agent files, then waits for OpenCode to
+   * list them. `override`: the webview asked about the built-in agents they override.
+   */
+  async importModes(keys: string[], scope: AgentDraft["scope"], override = false): Promise<void> {
     const c = this.deps.controller();
     const folder = this.deps.folder();
     if (!c || !folder) return this.fail("Open a folder first.");
@@ -376,6 +394,8 @@ export class AgentsHost {
     if (!picked.length) return this.fail("Pick at least one mode.");
     const names = picked.map((p) => p.agent.name);
     if (new Set(names).size !== names.length) return this.fail("Two of the picked modes have the same name.");
+    if (!override && picked.some((p) => p.item.overrides))
+      return this.fail("Not imported: confirm the built-in agents they override first.");
     const dir = scope === "global" ? this.globalDir(folder) : projectConfigDir(folder);
     if (!dir) return this.fail("OpenCode did not report its global config folder.");
     if (!(await this.allowOutside(path.join(dir, "agents"), folder, "Import")))
