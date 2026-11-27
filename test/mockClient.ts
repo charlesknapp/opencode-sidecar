@@ -128,9 +128,16 @@ export class MockClient implements OpenCodeClient {
     if (!query) return [];
     return this.files.filter((f) => f.path.toLowerCase().includes(query.toLowerCase())).slice(0, limit);
   }
+  forkError: Error | null = null;
+  deleteError: Error | null = null;
+  promptError: Error | null = null;
+  /** When set, `forkSession` waits for it (to close an aside while its copy is made). */
+  forkGate: Promise<void> | null = null;
   async forkSession(id: string, before?: string): Promise<SessionSummary> {
     if (before) this.record("forkSession", id, before);
     else this.record("forkSession", id);
+    if (this.forkGate) await this.forkGate;
+    if (this.forkError) throw this.forkError;
     const from = this.sessions.find((x) => x.id === id);
     const s: SessionSummary = {
       id: `ses_${++this.counter}`,
@@ -153,6 +160,7 @@ export class MockClient implements OpenCodeClient {
   }
   async deleteSession(id: string) {
     this.record("deleteSession", id);
+    if (this.deleteError) throw this.deleteError;
     this.sessions = this.sessions.filter((x) => x.id !== id);
   }
   mcp: McpServerInfo[] = [];
@@ -240,6 +248,7 @@ export class MockClient implements OpenCodeClient {
   }
   async prompt(id: string, input: PromptInput) {
     this.record("prompt", id, input);
+    if (this.promptError) throw this.promptError;
     return { id: `msg_${++this.counter}` };
   }
   async switchModel(id: string, model: { providerID: string; id: string; variant?: string }) {

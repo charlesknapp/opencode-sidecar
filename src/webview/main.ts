@@ -3,6 +3,7 @@
 // innerHTML, no eval.
 
 import type {
+  AsideView,
   BudgetLevel,
   CheckState,
   CommandInfo,
@@ -199,6 +200,12 @@ const ICON_PATHS: Record<string, string[]> = {
     "M2.5 11l3.5-3.5 3 3 2-2 2.5 2.5",
     "F:M10.8 5.2a1.1 1.1 0 1 1 0 2.2a1.1 1.1 0 1 1 0-2.2z",
   ],
+  // Ask aside: a speech bubble with a question mark.
+  aside: [
+    "M3.5 3h9a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7l-3 2.5V11h-.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z",
+    "M6.6 5.6a1.4 1.4 0 1 1 2 1.3c-.4.2-.6.5-.6.9",
+    "F:M8 9.1a.55.55 0 1 1 0 1.1a.55.55 0 1 1 0-1.1z",
+  ],
   // Pasted text: a clipboard with lines of text.
   paste: [
     "M6 2.5h4v2H6z",
@@ -305,6 +312,13 @@ const listEl = h("div", {
 const workingEl = h("div", { className: "working", "data-testid": "working", hidden: true });
 scroller.append(emptyEl, listEl, workingEl);
 const subHeaderEl = h("section", { className: "subagent-header", "aria-label": "Subagent", hidden: true });
+/** The side question (`/btw`) card, above the conversation. */
+const asideEl = h("section", {
+  className: "aside",
+  "aria-label": "Side question",
+  "data-testid": "aside",
+  hidden: true,
+});
 const changesEl = h("section", { className: "changes", "aria-label": "Changed files" });
 const pendingEl = h("section", { className: "pending", "aria-label": "Pending messages" });
 /** A rewind staged in another OpenCode client: Restore or Apply. */
@@ -326,7 +340,7 @@ const jumpEl = h("button", {
   onclick: () => jumpToLatest(),
 });
 const bottomEl = h("div", { className: "bottom" }, jumpEl, stripsEl, composerEl);
-app.append(headerEl, bannerEl, bookmarksEl, sessionsEl, subHeaderEl, scroller, bottomEl, statusLive);
+app.append(headerEl, bannerEl, bookmarksEl, sessionsEl, subHeaderEl, asideEl, scroller, bottomEl, statusLive);
 // The conversation scrolls under the floating box; its last line stays reachable above it.
 // The box keeps clear of the chat's scrollbar, whatever width the theme gives it.
 const fitBottom = new ResizeObserver(() => {
@@ -810,6 +824,162 @@ function renderPasteView(live: readonly Paste[]): void {
     h("pre", { className: "paste-text", tabindex: "0", "aria-label": `Pasted text #${p.n}` }, p.text),
   );
 }
+
+// ------------------------------------------------------------- ask aside
+//
+// `/btw <question>` (or Ask aside in the / palette) asks in a copy of the session that
+// only this card shows; the main session keeps working undisturbed. The card is built
+// once, so a follow-up being typed survives the answer streaming in.
+
+/** The side question from the host; null when none is open. */
+let aside: AsideView | null = null;
+/** The card is open, also before its first question. */
+let asideShown = false;
+const asideStatus = h("span", { className: "aside-status", "data-testid": "aside-status" });
+const asideBody = h("div", { className: "aside-body", "data-testid": "aside-body" });
+const asideInput = h("input", {
+  className: "aside-input",
+  type: "text",
+  dir: "auto",
+  "aria-label": "Side question",
+  "data-testid": "aside-input",
+});
+const asideAskBtn = h(
+  "button",
+  { className: "btn small", "data-testid": "aside-ask", onclick: () => askAside(asideInput.value) },
+  "Ask",
+);
+const asideMainBtn = h(
+  "button",
+  {
+    className: "btn small",
+    "data-testid": "aside-to-main",
+    "data-tip": "Add this answer to the session as a message (queued while the agent works)",
+    onclick: () => send({ type: "asideToMain" }),
+  },
+  "Send to main",
+);
+asideEl.append(
+  h(
+    "div",
+    { className: "aside-head" },
+    icon("aside"),
+    h("span", { className: "aside-title" }, "Ask aside"),
+    asideStatus,
+    h("span", { className: "grow" }),
+    h(
+      "button",
+      {
+        className: "ico",
+        "aria-label": "Close the side question",
+        "data-tip": "Close (the side thread is deleted)",
+        "data-testid": "aside-close",
+        onclick: () => closeAside(),
+      },
+      icon("close"),
+    ),
+  ),
+  asideBody,
+  h("div", { className: "aside-foot" }, asideInput, asideAskBtn, asideMainBtn),
+);
+asideInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    askAside(asideInput.value);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    input.focus();
+  }
+});
+asideInput.addEventListener("input", () => renderAside());
+
+const asideBusy = () => aside?.status === "starting" || aside?.status === "running";
+
+/** Opens the card; with `focus`, its question field takes the caret. */
+function openAside(focus: boolean): void {
+  asideShown = true;
+  renderAside();
+  if (focus) asideInput.focus();
+}
+
+/** Asks in the side thread; while it is still answering the question waits in the field. */
+function askAside(text: string): void {
+  const q = text.trim();
+  if (!q || state?.connection.kind !== "connected") return;
+  if (asideBusy()) {
+    asideInput.value = q;
+    openAside(true);
+    return;
+  }
+  send({ type: "askAside", text: q });
+  asideInput.value = "";
+  openAside(false);
+}
+
+function closeAside(): void {
+  if (aside) send({ type: "closeAside" });
+  aside = null;
+  asideShown = false;
+  asideInput.value = "";
+  renderAside();
+  input.focus();
+}
+
+function renderAside(): void {
+  asideEl.hidden = !asideShown;
+  if (!asideShown) return;
+  const a = aside;
+  const turns = a?.turns ?? [];
+  const busy = asideBusy();
+  asideStatus.textContent = busy ? "Answering…" : "Not added to this session";
+  // State pushes repaint the controls only; the answer is rebuilt when it changed.
+  const sig = JSON.stringify(a);
+  if (sig !== asideSignature) {
+    asideSignature = sig;
+    paintAsideBody(a);
+  }
+  asideInput.placeholder = turns.length ? "Ask a follow-up…" : "Ask a side question…";
+  const connected = state?.connection.kind === "connected";
+  asideAskBtn.disabled = !connected || busy || !asideInput.value.trim();
+  const last = [...turns].reverse().find((tn) => tn.done && tn.answer.trim());
+  asideMainBtn.hidden = !last;
+  asideMainBtn.disabled = !connected || !!last?.sent;
+  asideMainBtn.textContent = last?.sent ? "Sent to main" : "Send to main";
+}
+
+let asideSignature = "";
+
+function paintAsideBody(a: AsideView | null): void {
+  const turns = a?.turns ?? [];
+  const stick = asideBody.scrollHeight - asideBody.scrollTop - asideBody.clientHeight < 24;
+  const nodes: Node[] = [];
+  if (a?.error) nodes.push(h("div", { className: "aside-err", role: "alert" }, a.error));
+  turns.forEach((tn, i) => {
+    nodes.push(h("div", { className: "aside-q", dir: "auto" }, tn.question));
+    if (tn.answer)
+      nodes.push(
+        h(
+          "div",
+          { className: "msg assistant aside-a" + (tn.done ? "" : " streaming") },
+          h("div", { className: "msg-body" }, ...renderBlocks(parseMarkdown(tn.answer), `aside:${i}`)),
+        ),
+      );
+    else if (!tn.done && !a?.error)
+      nodes.push(h("div", { className: "aside-wait" }, markSpinner(), a?.activity ?? "Thinking…"));
+    if (tn.error) nodes.push(h("div", { className: "aside-err", role: "alert" }, tn.error));
+  });
+  if (!turns.length)
+    nodes.push(
+      h(
+        "div",
+        { className: "aside-note" },
+        "Ask a quick question about this session. It runs in a copy, so the agent's work and context stay as they are.",
+      ),
+    );
+  asideBody.replaceChildren(...nodes);
+  asideBody.hidden = nodes.length === 0;
+  if (stick) asideBody.scrollTop = asideBody.scrollHeight;
+}
 boxEl.addEventListener("dragover", (e) => {
   if (!Array.from(e.dataTransfer?.items ?? []).some((i) => i.kind === "file")) return;
   e.preventDefault();
@@ -895,7 +1065,11 @@ function submit(flip = false) {
   const full = expandPastes(text);
   const cmd = /^\/([\w.:/-]+)(?:\s+([\s\S]*))?$/.exec(full.trim());
   const known = cmd && (state.commands ?? []).some((c) => c.name === cmd[1]);
-  if (cmd && known)
+  // /btw is Sidecar's side question, unless OpenCode has a command of that name.
+  if (cmd && cmd[1] === "btw" && !known) {
+    if (cmd[2]?.trim()) askAside(cmd[2]);
+    else openAside(true);
+  } else if (cmd && known)
     send(
       state.busy
         ? { type: "runCommand", name: cmd[1], text: cmd[2] ?? "", delivery }
@@ -1704,6 +1878,8 @@ function commandSuggestions(query: string): Suggestion[] {
   const cmds = (state?.commands ?? []).filter((c) => c.name !== "compact");
   if (state?.currentSession)
     cmds.push({ name: "compact", description: "Summarize the conversation to free context" });
+  if (!cmds.some((c) => c.name === "btw"))
+    cmds.push({ name: "btw", description: "Ask a side question without adding it to this session" });
   const rank = (c: CommandInfo) => {
     const name = c.name.toLowerCase();
     if (name === q) return -1;
@@ -2006,6 +2182,12 @@ function commandsMenu(): MenuEntry[] {
       sub: "Summarize the conversation to free context",
       disabled: !s?.currentSession,
       testid: "command-compact",
+    }),
+    item("Ask aside…", () => openAside(true), {
+      icon: "aside",
+      sub: "A quick question in a copy of this session (/btw)",
+      disabled: !connected,
+      testid: "command-aside",
     }),
     item(
       "Rename session…",
@@ -6455,6 +6637,7 @@ function render() {
   renderComposer(state);
   renderWorking(state);
   renderDock();
+  renderAside();
   // A state push rebuilds the header; drop a menu whose <select> is gone.
   if (selectMenu && !selectMenu.select.isConnected) closeSelectMenu();
   // Subagent cards show live progress from the state, not from transcript events.
@@ -6617,6 +6800,13 @@ window.addEventListener("message", (e: MessageEvent) => {
     }
     case "focusInput":
       input.focus();
+      break;
+    case "aside":
+      // Closed by the host (another folder, a reconnect): the card goes too.
+      if (msg.aside) asideShown = true;
+      else if (aside) asideShown = false;
+      aside = msg.aside;
+      renderAside();
       break;
     case "showHistory":
       if (!sessionsOpen) {

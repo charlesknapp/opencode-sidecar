@@ -78,6 +78,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   /** Live events of the open subagent conversation, batched like `pendingEvents`. */
   private pendingSubagent: { sessionID: string; events: UiEvent[] } | null = null;
   private subagentTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The side question card, pushed at most every 30 ms while its answer streams. */
+  private asideTimer: ReturnType<typeof setTimeout> | undefined;
   private stateTimer: ReturnType<typeof setTimeout> | undefined;
   private connecting: Promise<void> | undefined;
   private starting: Promise<void> | undefined;
@@ -246,6 +248,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }, 30);
   }
 
+  private queueAside(): void {
+    if (this.asideTimer) return;
+    this.asideTimer = setTimeout(() => {
+      this.asideTimer = undefined;
+      this.post({ type: "aside", aside: this.controller?.asideView() ?? null });
+    }, 30);
+  }
+
+  /** Deletes an open side question's session before the extension stops (bounded wait). */
+  async shutdown(): Promise<void> {
+    const c = this.controller;
+    if (c) await Promise.race([c.closeAside(), new Promise((r) => setTimeout(r, 1500))]);
+  }
+
   private viewState(): ViewState {
     const c = this.controller;
     const cfg = readConfig();
@@ -360,6 +376,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private teardown(): void {
+    void this.controller?.closeAside();
     this.subscription?.dispose();
     this.subscription = undefined;
     this.controller?.dispose();
@@ -428,6 +445,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.post({ type: "subagentTranscript", sessionID, items });
         },
         onSubagentEvents: (sessionID, events) => this.queueSubagentEvents(sessionID, events),
+        onAsideChanged: () => this.queueAside(),
       },
       this.log,
       () => {
@@ -443,6 +461,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       },
     );
     this.controller = controller;
+    // Side-question sessions an earlier run could not delete (VS Code closed with one open).
+    void controller.cleanupAsides();
     this.subscription = client.subscribe({
       onEvent: (raw) => controller.handleRawEvent(raw),
       onOpen: () => {
@@ -802,6 +822,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             this.post({ type: "subagentTranscript", sessionID: viewing.id, items: c.subagentItems() });
         }
         this.post({ type: "state", state: this.viewState() });
+        this.post({ type: "aside", aside: c?.asideView() ?? null });
         if (this.focusPending) {
           this.focusPending = false;
           this.post({ type: "focusInput" });
@@ -822,6 +843,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         } else this.post({ type: "state", state: this.viewState() });
         return;
       }
+      case "askAside":
+        return c?.askAside(msg.text);
+      case "closeAside":
+        return c?.closeAside();
+      case "asideToMain":
+        await c?.asideToMain();
+        return;
       case "findMentions":
         this.post({
           type: "mentionResults",
@@ -1458,6 +1486,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.teardown();
     clearTimeout(this.flushTimer);
     clearTimeout(this.stateTimer);
+    clearTimeout(this.asideTimer);
     for (const d of this.disposables) d.dispose();
   }
 

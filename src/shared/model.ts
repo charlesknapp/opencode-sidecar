@@ -384,6 +384,29 @@ export type SubagentStatus = "running" | "waiting" | "completed" | "failed" | "s
 export type SubagentActivity =
   { kind: "tool"; title: string; category: ToolCategory } | { kind: "writing" } | { kind: "thinking" };
 
+/** One question asked aside and its answer, streamed as it arrives. */
+export interface AsideTurn {
+  question: string;
+  answer: string;
+  /** A readable error when the model or OpenCode failed this question. */
+  error: string | null;
+  done: boolean;
+  /** Its answer was sent to the main session. */
+  sent?: boolean;
+}
+
+/**
+ * A side question (`/btw`): asked in a hidden copy of the open session, so the main
+ * session's context and run are untouched. `error` is set when the copy could not be made.
+ */
+export interface AsideView {
+  status: "starting" | "running" | "idle";
+  turns: AsideTurn[];
+  error: string | null;
+  /** What the side thread is doing while it has no text yet ("Reading files…"). */
+  activity: string | null;
+}
+
 /** Progress of one subagent session started (directly or through other subagents) by the open session. */
 export interface SubagentView {
   sessionID: string;

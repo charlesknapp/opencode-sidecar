@@ -3303,6 +3303,105 @@ kbd {
   margin: 0 2px;
 }
 
+/* Ask aside: a card above the conversation for a side question, its answer and a
+   follow-up field; the body scrolls so the chat stays in view. */
+.aside {
+  margin: 6px 10px 0;
+  border: 1px solid var(--rail);
+  border-radius: 6px;
+  background: var(--box-bg);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: 45vh;
+}
+.aside-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 2px 10px;
+  min-width: 0;
+}
+.aside-head > .i {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  flex: none;
+}
+.aside-title {
+  font-weight: 600;
+  flex: none;
+}
+.aside-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.88em;
+}
+.aside-head .grow {
+  flex: 1;
+}
+.aside-body {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 2px 10px 8px;
+  min-height: 0;
+}
+.aside-q {
+  margin-top: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--bubble-bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.aside-q:first-child {
+  margin-top: 0;
+}
+.aside-a {
+  margin-top: 4px;
+}
+.aside-wait {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--muted);
+}
+.aside-err {
+  margin-top: 4px;
+  color: var(--err);
+  overflow-wrap: anywhere;
+}
+.aside-note {
+  color: var(--muted);
+  font-size: 0.92em;
+}
+.aside-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--rail);
+}
+.aside-input {
+  flex: 1 1 140px;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--vscode-input-border, var(--rail));
+  border-radius: 4px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font: inherit;
+}
+.aside-foot .btn {
+  flex: none;
+  padding-block: 3px;
+}
+
 /* Drill-in: breadcrumb and live status above the subagent's conversation. */
 .subagent-header {
   padding: 6px 16px 8px;

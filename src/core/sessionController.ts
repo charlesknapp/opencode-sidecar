@@ -27,6 +27,7 @@ import type {
   CommandInfo,
   AccountStatus,
   AgentOption,
+  AsideView,
   BudgetLevel,
   BudgetView,
   ContextAttachment,
@@ -69,6 +70,8 @@ export interface ControllerSink {
   onSubagentTranscript?(sessionID: string, items: TranscriptItem[]): void;
   /** Live events of the subagent conversation the user opened. */
   onSubagentEvents?(sessionID: string, events: UiEvent[]): void;
+  /** The side question (`/btw`) changed: opened, streamed, answered or closed (null). */
+  onAsideChanged?(aside: AsideView | null): void;
 }
 
 /** What the sidebar shows for the Current / Last Task. */
@@ -112,6 +115,14 @@ export type AgentChanges =
   { status: "none" } | { status: "ok"; files: FileChange[] } | { status: "unavailable"; reason: string };
 
 export const HISTORY_LIMIT = 400;
+/** Workspace-state key of the side-question sessions not deleted yet. */
+export const ASIDES_KEY = "opencodeSidecar.asides";
+/** What a side question asks the model, around the question itself. */
+export const ASIDE_PREFIX =
+  "Side question, asked while you work. Answer it briefly from what you already know about this conversation and the code. Do not change files, run commands or continue the task.\n\n";
+/** Sent back when a side question's agent asks for a permission. */
+const ASIDE_REJECT = "This is a side question: answer without running tools or changing files.";
+const ASIDE_MAX_ANSWER = 20_000;
 const SESSION_LIST_LIMIT = 30;
 
 export function contextTokens(t: TokenUsage): number {
@@ -215,6 +226,14 @@ export class SessionController {
   private catalogRefreshAgain = false;
   /** Controller-generated events (budget/context) raised while applying a batch; flushed after it. */
   private deferred: UiEvent[] = [];
+  /**
+   * The side question (`/btw`): a copy of the open session (or a new one) that only the
+   * aside card shows. `parts` holds the current answer's text parts in order.
+   */
+  private aside: (AsideView & { id: string | null; token: number; parts: Map<string, string> }) | null = null;
+  private asideToken = 0;
+  /** Side-question sessions (and their subagents) not deleted yet: never listed in History. */
+  private readonly asideIds = new Set<string>();
 
   constructor(
     private readonly client: OpenCodeClient,
@@ -247,6 +266,7 @@ export class SessionController {
       );
     });
     this.budget.level = this.defaults().budgetLevel ?? "off";
+    for (const id of this.store.get<string[]>(ASIDES_KEY) ?? []) this.asideIds.add(id);
   }
 
   dispose(): void {
@@ -341,6 +361,8 @@ export class SessionController {
   async setDirectory(directory: string | null): Promise<void> {
     // Same folder: nothing to do if its catalog is loaded or still loading.
     if (this.directory === directory && (this.models !== null || this.loadingDirectory === directory)) return;
+    // A side question belongs to the folder it was asked in.
+    if (this.aside) void this.closeAside();
     this.directory = directory;
     this.loadingDirectory = directory;
     this.clearSession();
@@ -522,7 +544,8 @@ export class SessionController {
         this.client.activeSessions().catch(() => null),
       ]);
       if (dir !== this.directory) return;
-      this.sessions = sessions;
+      // A side question's session is a fork, which OpenCode lists like any other.
+      this.sessions = sessions.filter((s) => !this.asideIds.has(s.id));
       if (active) this.running = active;
       if (this.current) {
         const fresh = sessions.find((s) => s.id === this.current?.id);
@@ -1253,6 +1276,243 @@ export class SessionController {
     return item?.kind === "user" ? item.text : "";
   }
 
+  // ------------------------------------------------------------ side questions
+  //
+  // `/btw <question>` asks in a copy of the open session (OpenCode's fork), so the
+  // answer can use the conversation while the main session's context, run, queue and
+  // requests stay as they are. The copy runs the Plan agent when OpenCode lists it (it
+  // cannot edit files), and is deleted when the aside closes.
+
+  /** The side question for the view, or null. */
+  asideView(): AsideView | null {
+    const a = this.aside;
+    if (!a) return null;
+    return {
+      status: a.status,
+      turns: a.turns.map((t) => ({ ...t })),
+      error: a.error,
+      activity: a.activity,
+    };
+  }
+
+  private asideChanged(): void {
+    this.sink.onAsideChanged?.(this.asideView());
+  }
+
+  /** Remembers a side-question session until it is deleted (cleaned up at the next start). */
+  private async trackAside(id: string, keep: boolean): Promise<void> {
+    if (keep) this.asideIds.add(id);
+    else this.asideIds.delete(id);
+    const saved = new Set(this.store.get<string[]>(ASIDES_KEY) ?? []);
+    if (keep) saved.add(id);
+    else saved.delete(id);
+    await this.store.update(ASIDES_KEY, saved.size ? [...saved] : undefined);
+  }
+
+  /**
+   * Asks a side question: the first one makes the side thread, later ones follow up in
+   * it. Does nothing while the side thread is still answering.
+   */
+  async askAside(question: string): Promise<void> {
+    const q = question.trim();
+    if (!q || !this.directory) return;
+    let a = this.aside;
+    if (a && a.status !== "idle") return;
+    if (!a || !a.id) {
+      a = {
+        id: null,
+        token: ++this.asideToken,
+        status: "starting",
+        turns: [],
+        error: null,
+        activity: null,
+        parts: new Map(),
+      };
+      this.aside = a;
+    }
+    a.turns.push({ question: q, answer: "", error: null, done: false });
+    a.parts = new Map();
+    a.status = a.id ? "running" : "starting";
+    a.error = null;
+    a.activity = null;
+    this.asideChanged();
+    const turn = a.turns[a.turns.length - 1];
+    const token = a.token;
+    try {
+      if (!a.id) {
+        const id = await this.openAsideSession();
+        if (this.aside?.token !== token) {
+          // Closed while the copy was being made.
+          await this.dropAsideSession(id, false);
+          return;
+        }
+        a.id = id;
+        a.status = "running";
+      }
+      await this.client.prompt(a.id, { text: ASIDE_PREFIX + q, files: [] });
+      this.log.info(`Side question sent to ${a.id} (${q.length} chars)`);
+    } catch (e) {
+      if (this.aside?.token !== token) return;
+      this.log.error("Side question failed", e);
+      const msg = friendlyError(
+        e,
+        a.id ? "Could not ask the side question" : "Could not start the side thread",
+      );
+      if (a.id) turn.error = msg;
+      else a.error = msg;
+      turn.done = true;
+      a.status = "idle";
+    }
+    this.asideChanged();
+  }
+
+  /**
+   * A copy of the open session for a side question, with the main session's model and
+   * the Plan agent. With nothing to copy yet (OpenCode cannot fork an empty session),
+   * a new session in the folder.
+   */
+  private async openAsideSession(): Promise<string> {
+    const agent = this.agents?.some((x) => x.id === "plan") ? "plan" : (this.selectedAgent ?? undefined);
+    const model = this.modelRef();
+    const from = this.current;
+    const fresh = async () => {
+      const s = await this.client.createSession({ directory: this.directory!, agent, model });
+      await this.trackAside(s.id, true);
+      this.log.info(`Side thread ${s.id} started in a new session`);
+      return s.id;
+    };
+    if (!from || !this.transcript.items.length) return fresh();
+    let s: SessionSummary;
+    try {
+      s = await this.client.forkSession(from.id);
+    } catch (e) {
+      // "Cannot fork empty session": a session with no messages yet.
+      if (e instanceof OpenCodeHttpError && e.status === 400 && /empty/i.test(e.message)) return fresh();
+      throw e;
+    }
+    await this.trackAside(s.id, true);
+    this.log.info(`Side thread ${s.id} forked from ${from.id}`);
+    // The copy keeps the session's own model and agent; the ones picked now win.
+    const variant = (v: string | null) => (v && v !== "default" ? v : null);
+    if (model && (s.modelKey !== this.selectedModel || variant(s.variant) !== this.selectedVariant))
+      await this.client.switchModel(s.id, model);
+    if (agent && s.agent !== agent) await this.client.switchAgent(s.id, agent);
+    return s.id;
+  }
+
+  /** Stops (when running) and deletes a side-question session; kept for later cleanup if that fails. */
+  private async dropAsideSession(id: string, running: boolean): Promise<void> {
+    if (running) await this.client.interrupt(id).catch(() => false);
+    try {
+      await this.client.deleteSession(id);
+      await this.trackAside(id, false);
+      this.log.info(`Deleted side thread ${id}`);
+    } catch (e) {
+      // A session that is already gone is as good as deleted.
+      if (e instanceof OpenCodeHttpError && e.status === 404) await this.trackAside(id, false);
+      else this.log.warn(`Deleting side thread ${id} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * Closes the side question and deletes its session: it was only ever a scratch copy,
+   * and archiving would keep a full copy of the conversation in the Archived list.
+   */
+  async closeAside(): Promise<void> {
+    const a = this.aside;
+    if (!a) return;
+    this.aside = null;
+    this.asideChanged();
+    if (a.id) await this.dropAsideSession(a.id, a.status !== "idle");
+  }
+
+  /**
+   * Sends the latest side answer to the main session as a short note: queued while the
+   * agent works, so its task is not steered off course. Returns false when nothing was sent.
+   */
+  async asideToMain(): Promise<boolean> {
+    const turn = [...(this.aside?.turns ?? [])].reverse().find((t) => t.done && t.answer.trim());
+    if (!turn) return false;
+    const answer =
+      turn.answer.length > ASIDE_MAX_ANSWER ? `${turn.answer.slice(0, ASIDE_MAX_ANSWER)}…` : turn.answer;
+    const text = `For context, I asked a side question.\n\nQuestion: ${turn.question}\n\nAnswer:\n${answer.trim()}`;
+    const sent = await this.send(text, [], this.busy ? "queue" : undefined);
+    if (sent) {
+      turn.sent = true;
+      this.asideChanged();
+    }
+    return sent;
+  }
+
+  /** Deletes side-question sessions left by an earlier run (VS Code closed with one open). */
+  async cleanupAsides(): Promise<void> {
+    const open = this.aside?.id;
+    for (const id of this.store.get<string[]>(ASIDES_KEY) ?? [])
+      if (id !== open) await this.dropAsideSession(id, true);
+  }
+
+  /** Events of the side question's session (and its subagents) go to the aside card only. */
+  private applyAside(sessionID: string, events: readonly UiEvent[]): void {
+    const a = this.aside;
+    const turn = a?.turns[a.turns.length - 1];
+    let changed = false;
+    for (const ev of events) {
+      // Nothing may wait on an answer nobody sees: the side thread gets no tools that ask.
+      if (ev.type === "permission.requested") {
+        void this.client
+          .replyPermission(ev.request.sessionID, ev.request.id, "reject", ASIDE_REJECT)
+          .catch(() => undefined);
+        continue;
+      }
+      if (ev.type === "form.requested") {
+        void this.client.cancelForm(ev.form.sessionID, ev.form.id).catch(() => undefined);
+        continue;
+      }
+      if (!a || !turn || sessionID !== a.id) continue;
+      switch (ev.type) {
+        case "assistant.delta":
+          a.parts.set(ev.partId, (a.parts.get(ev.partId) ?? "") + ev.delta);
+          break;
+        case "assistant.completed":
+          a.parts.set(ev.partId, ev.text);
+          break;
+        case "tool.started":
+          a.activity = `Using ${ev.name}…`;
+          changed = true;
+          continue;
+        case "session.busy":
+          a.status = "running";
+          changed = true;
+          continue;
+        case "session.error": {
+          const model = this.models?.find((m) => m.key === ev.modelKey);
+          const raw = ev.error ?? { type: "unknown", message: ev.message, status: null, body: null };
+          const f = classifyError(raw, {
+            modelName: model?.name ?? null,
+            providerName: model?.providerName ?? null,
+          });
+          turn.error = f.detail && f.detail !== f.title ? `${f.title} ${f.detail}` : f.title;
+          changed = true;
+          continue;
+        }
+        case "session.idle":
+          a.status = "idle";
+          a.activity = null;
+          turn.done = true;
+          if (ev.outcome === "failed" && !turn.error && !turn.answer)
+            turn.error = "The side question failed.";
+          changed = true;
+          continue;
+        default:
+          continue;
+      }
+      turn.answer = [...a.parts.values()].filter((t) => t.trim()).join("\n\n");
+      a.activity = null;
+      changed = true;
+    }
+    if (changed) this.asideChanged();
+  }
+
   /** Files and folders of the open folder matching `query`, ranked by OpenCode. */
   async findFiles(query: string, limit: number): Promise<FoundFile[]> {
     if (!this.directory || !query) return [];
@@ -1475,6 +1735,12 @@ export class SessionController {
     if (env.sessionsChanged && (env.directory === null || sameDirectory(env.directory, this.directory)))
       this.scheduleSessionsRefresh();
     if (env.sessionID && this.trackRunning(env.sessionID, env.events)) this.sink.onStateChanged();
+    // A side question's session and its subagents never reach the main conversation.
+    if (env.sessionID && env.parentID && this.asideIds.has(env.parentID)) this.asideIds.add(env.sessionID);
+    if (env.sessionID && this.asideIds.has(env.sessionID)) {
+      this.applyAside(env.sessionID, env.events);
+      return;
+    }
     if (!this.current || !env.sessionID) return;
     const root = this.current.id;
     if (env.parentID && this.subagents.created(env.sessionID, env.parentID, root, env.created))

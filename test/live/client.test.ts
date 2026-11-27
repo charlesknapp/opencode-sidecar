@@ -20,7 +20,9 @@ import {
 import { EventNormalizer, historyToEvents, type NormalizedEnvelope } from "../../src/opencode/events";
 import { discoverServer } from "../../src/opencode/service";
 import { buildPrompt } from "../../src/core/context";
-import type { SessionSummary } from "../../src/shared/model";
+import { ASIDES_KEY, SessionController } from "../../src/core/sessionController";
+import type { SessionSummary, UiEvent } from "../../src/shared/model";
+import { MemoryStore } from "../mockClient";
 
 /** Free model used by the one test that needs a reply. */
 const FREE_MODEL = { providerID: "opencode", id: "big-pickle" };
@@ -390,6 +392,75 @@ describe("live OpenCode service", () => {
       if (!stored.some((m) => m.type === "user")) await new Promise((r) => setTimeout(r, 200));
     }
     assert.equal(stored.find((m) => m.type === "user")?.text, payload.text);
+  });
+
+  it("asks aside in a fork the History never lists, then deletes it (one model call)", async (t) => {
+    const c = live(t);
+    if (!c) return;
+    const models = await c.listModels(dir);
+    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
+      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
+    // The main session has some history (a shell command, no model call) and the Build agent.
+    const main = await c.createSession({ directory: dir, agent: "build", model: FREE_MODEL });
+    created.add(main.id);
+    await c.runShell(main.id, "echo sidecar-aside");
+    for (let i = 0; i < 60 && !(await c.listMessages(main.id, 5)).length; i++)
+      await new Promise((r) => setTimeout(r, 250));
+    const store = new MemoryStore();
+    const mainEvents: UiEvent[] = [];
+    const ctl = new SessionController(
+      c,
+      store,
+      { onEvents: (e) => mainEvents.push(...e), onTranscriptReset() {}, onStateChanged() {} },
+      { info() {}, warn() {}, error() {} },
+      () => ({ model: `${FREE_MODEL.providerID}/${FREE_MODEL.id}`, agent: "build" }),
+    );
+    const sub = c.subscribe({ onEvent: (r) => ctl.handleRawEvent(r), onOpen() {}, onClose() {} });
+    try {
+      await ctl.setDirectory(dir);
+      assert.ok(await ctl.openSession(main.id));
+      const before = ctl.transcript.items.length;
+      mainEvents.length = 0;
+      await ctl.askAside("Reply with the single word OK.");
+      const fork = (store.get<string[]>(ASIDES_KEY) ?? [])[0];
+      assert.ok(fork && fork !== main.id, "the side thread is tracked for cleanup");
+      created.add(fork);
+      const copy = await c.getSession(fork);
+      assert.equal(copy.forked, true);
+      assert.equal(copy.agent, "plan", "the side thread cannot edit files");
+      assert.equal(copy.modelKey, "opencode/big-pickle");
+      // OpenCode lists the fork; Sidecar's History does not.
+      assert.ok((await c.listSessions(dir, 50)).some((x) => x.id === fork));
+      await ctl.refreshSessions();
+      assert.ok(!ctl.displaySessions().some((x) => x.id === fork));
+      assert.ok(ctl.displaySessions().some((x) => x.id === main.id));
+
+      const deadline = Date.now() + 120_000;
+      while (ctl.asideView()?.status !== "idle" && Date.now() < deadline)
+        await new Promise((r) => setTimeout(r, 250));
+      const turn = ctl.asideView()?.turns[0];
+      assert.ok(turn?.done, "the side question finished");
+      // Nothing of the side thread reached the main conversation or its history.
+      assert.equal(ctl.transcript.items.length, before);
+      assert.deepEqual(mainEvents, []);
+      assert.equal((await c.listMessages(main.id, 10)).length, 1);
+      if (turn.error && /limit/i.test(turn.error)) {
+        const stored = (await c.listMessages(fork, 10)) as Array<{ error?: { type?: string } }>;
+        assert.ok(
+          stored.some((m) => m.error?.type === "provider.free-limit"),
+          turn.error,
+        );
+        t.diagnostic("the free model usage limit is reached for today: the answer was not checked");
+      } else assert.match(turn.answer, /ok/i, turn.error ?? "");
+
+      await ctl.closeAside();
+      assert.equal(store.get(ASIDES_KEY), undefined);
+      await assert.rejects(c.getSession(fork), (e) => e instanceof OpenCodeHttpError && e.status === 404);
+      assert.equal((await c.listMessages(main.id, 10)).length, 1, "the main session is as it was");
+    } finally {
+      sub.dispose();
+      ctl.dispose();
+    }
   });
 
   it("prompts a free model and replays the reply (one model call)", async (t) => {

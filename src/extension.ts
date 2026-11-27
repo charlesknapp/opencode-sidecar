@@ -4,6 +4,8 @@ import { AGENT_SCHEME, AgentDocumentProvider, EMPTY_SCHEME, EmptyDocumentProvide
 import { Logger } from "./host/log";
 import { TOOL_TEXT_SCHEME, ToolTextProvider } from "./host/toolText";
 
+let shutdown: (() => Promise<void>) | undefined;
+
 /**
  * Activation is cheap: it registers the view, commands, a Status Bar item and an output
  * channel. Nothing connects to OpenCode until the sidebar is shown, and nothing takes focus.
@@ -32,13 +34,16 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("opencodeSidecar.showHistory", () => provider.showHistory()),
     vscode.commands.registerCommand("opencodeSidecar.exportSession", () => provider.exportSession()),
   );
+  shutdown = () => provider.shutdown();
   log.info("Sidecar activated");
   // Exported for the local acceptance harness; not a public API.
   return { testApi: provider.testApi };
 }
 
-export function deactivate(): void {
+export function deactivate(): Promise<void> | undefined {
   // Disposables registered on the context are cleaned up by VS Code. The shared
   // OpenCode background service is intentionally left running: it is owned by
-  // OpenCode and may be serving other clients (TUI, other windows).
+  // OpenCode and may be serving other clients (TUI, other windows). An open side
+  // question's session is deleted (or, if VS Code does not wait, at the next start).
+  return shutdown?.();
 }

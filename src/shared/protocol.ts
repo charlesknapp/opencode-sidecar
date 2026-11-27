@@ -4,6 +4,7 @@
 
 import type {
   AgentOption,
+  AsideView,
   BookmarkView,
   BudgetLevel,
   BudgetLimits,
@@ -121,7 +122,9 @@ export type HostMessage =
   /** The open folder's "always allow" rules; null with `error` when OpenCode could not list them. */
   | { type: "savedPermissions"; items: SavedPermission[] | null; error?: string }
   /** The folder's MCP servers; null with `error` when OpenCode could not list them. */
-  | { type: "mcpServers"; items: McpServerInfo[] | null; error?: string };
+  | { type: "mcpServers"; items: McpServerInfo[] | null; error?: string }
+  /** The side question (`/btw`) card; null when it is closed. */
+  | { type: "aside"; aside: AsideView | null };
 
 export type WebviewMessage =
   | { type: "ready" }
@@ -219,6 +222,12 @@ export type WebviewMessage =
   | { type: "runCommand"; name: string; text: string; delivery?: InboxDelivery }
   | { type: "compact" }
   | { type: "shellCommand"; command: string }
+  /** Ask a side question (`/btw`), or follow up in the open side thread. */
+  | { type: "askAside"; text: string }
+  /** Close the side question; its session is deleted. */
+  | { type: "closeAside" }
+  /** Send the latest side answer to the main session (queued while the agent works). */
+  | { type: "asideToMain" }
   | { type: "toggleBookmark"; itemId: string }
   | { type: "openBookmark"; id: string }
   | { type: "removeBookmark"; id: string };
@@ -387,6 +396,9 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   compact: () => true,
   shellCommand: (m) =>
     typeof m.command === "string" && m.command.trim().length > 0 && m.command.length <= 20_000,
+  askAside: (m) => typeof m.text === "string" && m.text.trim().length > 0 && m.text.length <= MAX_TEXT,
+  closeAside: () => true,
+  asideToMain: () => true,
   toggleBookmark: (m) => isStr(m.itemId),
   openBookmark: (m) => isStr(m.id),
   removeBookmark: (m) => isStr(m.id),
@@ -431,6 +443,7 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   renameSession: ["title"],
   runCommand: ["name", "text", "delivery"],
   shellCommand: ["command"],
+  askAside: ["text"],
   toggleBookmark: ["itemId"],
   openBookmark: ["id"],
   removeBookmark: ["id"],

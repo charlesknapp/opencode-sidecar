@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { summarizeTask } from "../../src/core/currentTask";
+import { opencodeDirectory } from "../../src/opencode/client";
 import { serviceFilePath } from "../../src/opencode/service";
 import type { TranscriptItem, UiEvent } from "../../src/shared/model";
 import type { WebviewMessage } from "../../src/shared/protocol";
@@ -413,6 +414,82 @@ async function pastedText(api: TestApi): Promise<void> {
     JSON.stringify(user?.text).slice(0, 120),
   );
   check("The model read the pasted text", /\b12\b/.test(lastAssistantText(api)), lastAssistantText(api));
+  await askAside(api);
+}
+
+// ============================================================ ask aside
+
+/** `/btw` while the main session works: answered in a hidden fork, then sent to main and closed. */
+async function askAside(api: TestApi): Promise<void> {
+  const c = () => api.controller()!;
+  await api.handle({ type: "newSession" });
+  await sendAndWait(api, "Remember the word PINEAPPLE. Reply with the single word OK.");
+  const main = c().current!.id;
+  const mainItems = items(api).length;
+  const slow = waitCommand(25, "main-done");
+  const { since } = await sendShell(
+    api,
+    `Run the shell command \`${slow.command}\` exactly as written and wait for it, then reply DONE.`,
+    slow.pattern,
+  );
+  const existing = await storedSessions(api);
+  await api.handle({
+    type: "askAside",
+    text: "Which word did I ask you to remember? Reply with that word only.",
+  });
+  await waitFor("side answer", () => c().asideView()?.status === "idle" || undefined, 120_000);
+  const turn = c().asideView()!.turns[0];
+  check(
+    "Ask aside answers from the session's history",
+    /pineapple/i.test(turn.answer),
+    turn.error ?? turn.answer,
+  );
+  check("The main task keeps running while the side thread answers", api.viewState().busy, "");
+  const leaked = items(api)
+    .slice(mainItems)
+    .some((i) => (i.kind === "user" || i.kind === "assistant") && /Which word did I ask/i.test(i.text));
+  check("Nothing of the side thread reaches the main timeline", !leaked);
+  await api.handle({ type: "refreshSessions" });
+  const listed = new Set(api.viewState().sessions.map((s) => s.id));
+  const forks = (await storedSessions(api)).filter((s) => !existing.includes(s));
+  check(
+    "The side thread is not in History",
+    forks.length === 1 && !listed.has(forks[0]) && listed.has(main),
+    JSON.stringify(forks),
+  );
+  await api.handle({ type: "asideToMain" });
+  await waitFor(
+    "queued",
+    () => api.viewState().pending.some((p) => /side question/i.test(p.text)) || undefined,
+    10_000,
+  ).catch(() => undefined);
+  check(
+    "Send to main queues the answer while the agent works",
+    api.viewState().pending.some((p) => p.delivery === "queue" && /pineapple/i.test(p.text)),
+    JSON.stringify(api.viewState().pending.map((p) => [p.delivery, p.text.slice(0, 40)])),
+  );
+  await api.handle({ type: "closeAside" });
+  const after = await storedSessions(api);
+  check(
+    "Closing deletes the side thread",
+    forks.every((f) => !after.includes(f)),
+    JSON.stringify(forks),
+  );
+  await waitIdle(api, since);
+  check("The main task finished normally", c().current?.id === main && !api.viewState().busy);
+}
+
+/** Root session ids OpenCode lists for the open folder, newest first (straight from OpenCode). */
+async function storedSessions(api: TestApi): Promise<string[]> {
+  const svc = JSON.parse(fs.readFileSync(serviceFilePath(), "utf8"));
+  const headers = { authorization: "Basic " + Buffer.from("opencode:" + svc.password).toString("base64") };
+  const url = new URL("/api/session", svc.url);
+  url.searchParams.set("directory", opencodeDirectory(api.workspace().active!.path));
+  url.searchParams.set("parentID", "null");
+  url.searchParams.set("order", "desc");
+  url.searchParams.set("limit", "100");
+  const page = (await (await fetch(url, { headers })).json()) as { data: Array<{ id: string }> };
+  return page.data.map((s) => s.id);
 }
 
 // ========================================================= controls and budget

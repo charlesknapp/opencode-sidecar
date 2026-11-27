@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import type { Browser, Page } from "puppeteer-core" with { "resolution-mode": "import" };
-import type { SubagentView, TranscriptItem } from "../../src/shared/model";
+import type { AsideTurn, AsideView, SubagentView, TranscriptItem } from "../../src/shared/model";
 import type { HostMessage, ViewState } from "../../src/shared/protocol";
 
 const ROOT = path.resolve(__dirname, "../../..");
@@ -2189,6 +2189,7 @@ describe(
         "/init\ncreate AGENTS.md",
         "/review\nreview changes",
         "/compact\nSummarize the conversation to free context",
+        "/btw\nAsk a side question without adding it to this session",
       ]);
       await page.keyboard.type("rev");
       assert.deepEqual(await rows(), ["/review\nreview changes"]);
@@ -3827,6 +3828,164 @@ describe(
         return { h: r.height, scroll: p.scrollHeight > p.clientHeight };
       });
       assert.ok(view.h <= 245 && view.scroll, JSON.stringify(view));
+    });
+
+    // -------------------------------------------------------------- ask aside
+
+    const asideShown = () => page.$eval('[data-testid="aside"]', (a) => !(a as HTMLElement).hidden);
+    const asideTurn = (over: Partial<AsideTurn> = {}): AsideTurn => ({
+      question: "What does auth.ts export?",
+      answer: "",
+      error: null,
+      done: false,
+      ...over,
+    });
+    const asideView = (turns: AsideTurn[], over: Partial<AsideView> = {}): AsideView => ({
+      status: turns.every((x) => x.done) ? "idle" : "running",
+      turns,
+      error: null,
+      activity: null,
+      ...over,
+    });
+
+    it("/btw asks aside: the card streams the answer while the main box keeps working", async () => {
+      await host({ type: "state", state: baseState({ busy: true }) });
+      await page.type("textarea", "/btw What does auth.ts export?");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("askAside"), { type: "askAside", text: "What does auth.ts export?" });
+      assert.equal(await lastSent("send"), undefined, "nothing went to the main session");
+      assert.equal(await boxValue(), "");
+      assert.equal(await asideShown(), true);
+      await host({ type: "aside", aside: asideView([asideTurn()], { activity: "Using read…" }) });
+      assert.match(await text('[data-testid="aside-body"]'), /What does auth\.ts export\?\s+Using read…/);
+      assert.equal(await text('[data-testid="aside-status"]'), "Answering…");
+      assert.equal(await page.$eval('[data-testid="aside-to-main"]', (b) => (b as HTMLElement).hidden), true);
+      await host({ type: "aside", aside: asideView([asideTurn({ answer: "It exports **login**." })]) });
+      assert.equal(
+        await page.$eval('[data-testid="aside-body"] .aside-a strong', (b) => b.textContent),
+        "login",
+      );
+      // The main box still steers the running task.
+      await page.type("textarea", "keep going");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("send"), { type: "send", text: "keep going", delivery: "steer" });
+      // A follow-up waits until the answer is done.
+      assert.equal(
+        await page.$eval('[data-testid="aside-ask"]', (b) => (b as HTMLButtonElement).disabled),
+        true,
+      );
+      await host({
+        type: "aside",
+        aside: asideView([asideTurn({ answer: "It exports **login**.", done: true })]),
+      });
+      assert.equal(await text('[data-testid="aside-status"]'), "Not added to this session");
+      await clearSent();
+      await page.click('[data-testid="aside-to-main"]');
+      assert.deepEqual(await sent(), [{ type: "asideToMain" }]);
+      await host({
+        type: "aside",
+        aside: asideView([asideTurn({ answer: "It exports **login**.", done: true, sent: true })]),
+      });
+      assert.equal(await text('[data-testid="aside-to-main"]'), "Sent to main");
+      assert.equal(
+        await page.$eval('[data-testid="aside-to-main"]', (b) => (b as HTMLButtonElement).disabled),
+        true,
+      );
+      await page.click('[data-testid="aside-input"]');
+      await page.keyboard.type("And logout?");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("askAside"), { type: "askAside", text: "And logout?" });
+      assert.equal(await page.$eval('[data-testid="aside-input"]', (t) => (t as HTMLInputElement).value), "");
+      await page.click('[data-testid="aside-close"]');
+      assert.ok(await lastSent("closeAside"));
+      assert.equal(await asideShown(), false);
+    });
+
+    it("/btw alone, or Ask aside in the / palette, opens the card with its field focused", async () => {
+      await page.type("textarea", "/bt");
+      assert.ok(
+        (await page.$$eval('[data-testid="mention-option"]', (o) => o.map((x) => x.textContent))).some((x) =>
+          x?.startsWith("/btw"),
+        ),
+      );
+      await page.keyboard.press("Tab");
+      assert.equal(await boxValue(), "/btw ");
+      await page.keyboard.press("Enter");
+      assert.equal(await asideShown(), true);
+      assert.equal(
+        await page.evaluate(() => document.activeElement?.getAttribute("data-testid")),
+        "aside-input",
+      );
+      assert.match(await text('[data-testid="aside-body"]'), /runs in a copy/);
+      assert.equal(await lastSent("askAside"), undefined);
+      await page.keyboard.press("Escape");
+      assert.equal(await page.evaluate(() => document.activeElement?.tagName), "TEXTAREA");
+      await page.click('[data-testid="aside-close"]');
+      assert.equal(await lastSent("closeAside"), undefined, "nothing was asked, so nothing to delete");
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="command-aside"]');
+      assert.equal(await asideShown(), true);
+      await page.keyboard.type("Is there a test for this?");
+      await page.click('[data-testid="aside-ask"]');
+      assert.deepEqual(await lastSent("askAside"), { type: "askAside", text: "Is there a test for this?" });
+    });
+
+    it("shows why a side question failed, and a card the host closed goes away", async () => {
+      await page.type("textarea", "/btw why?");
+      await page.keyboard.press("Enter");
+      await host({
+        type: "aside",
+        aside: asideView([asideTurn({ question: "why?", done: true })], {
+          error: "Could not start the side thread: boom.",
+        }),
+      });
+      assert.equal(
+        await text('[data-testid="aside-body"] [role="alert"]'),
+        "Could not start the side thread: boom.",
+      );
+      await host({
+        type: "aside",
+        aside: asideView([
+          asideTurn({
+            question: "why?",
+            done: true,
+            error: "The model provider reported that a usage quota was reached.",
+          }),
+        ]),
+      });
+      assert.match(await text('[data-testid="aside-body"]'), /usage quota/);
+      await host({ type: "aside", aside: null });
+      assert.equal(await asideShown(), false);
+    });
+
+    it("keeps an OpenCode command named btw, and fits the card in a 300px panel", async () => {
+      await host({
+        type: "state",
+        state: baseState({ commands: [{ name: "btw", description: "my own" }] }),
+      });
+      await page.type("textarea", "/btw hi");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("runCommand"), { type: "runCommand", name: "btw", text: "hi" });
+      assert.equal(await asideShown(), false);
+      await page.setViewport({ width: 300, height: 700 });
+      const long = "A long answer line that keeps going ".repeat(40);
+      await host({
+        type: "aside",
+        aside: asideView([
+          asideTurn({ answer: `${long}\n\n\`\`\`ts\n${"const x = 1;".repeat(20)}\n\`\`\``, done: true }),
+        ]),
+      });
+      assert.equal(await asideShown(), true);
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      assert.ok(overflow <= 0, `horizontal overflow ${overflow}px`);
+      const box = await page.$eval('[data-testid="aside"]', (a) => a.getBoundingClientRect().height);
+      assert.ok(box <= 700 * 0.45 + 2, `card ${box}px tall`);
+      for (const id of ["aside-input", "aside-ask", "aside-to-main", "aside-close"]) {
+        const r = await page.$eval(`[data-testid="${id}"]`, (e) => e.getBoundingClientRect().right);
+        assert.ok(r <= 300, `${id} at ${r}px`);
+      }
     });
   },
 );

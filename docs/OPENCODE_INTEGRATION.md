@@ -33,6 +33,7 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | Delete ✓                     | `DELETE /api/session/{id}`                                                                                            |
 | MCP servers ✓                | `GET /api/mcp` (each server's `status`: connected, pending, disabled, failed or needs_auth, with `error`)             |
 | Fork ✓                       | `POST /api/session/{id}/fork` `{ before? }` (a non-empty session; the copy has `fork`, not `parentID`)                |
+| Side question (`/btw`) ✓     | `POST …/fork` `{}`, `POST …/agent` `{ agent: "plan" }`, `POST …/prompt`, then `DELETE /api/session/{id}` on close     |
 | History ✓                    | `GET /api/session/{id}/message` (newest first, cursor paging)                                                         |
 | Prompt, steer, queue ✓       | `POST /api/session/{id}/prompt` `{ text, files?, agents?, skills?, delivery? }`                                       |
 | Model and agent ✓            | `POST /api/session/{id}/model` (with `variant`), `POST /api/session/{id}/agent`                                       |
@@ -85,6 +86,16 @@ The stream is global, so the controller filters by `sessionID`.
 | `integration.updated`, `provider.updated`, `model.updated`, `models-dev.refreshed` | reload models, agents and account state (debounced)    |
 
 Stored history replays `user`, `assistant` (text, thinking, tool parts), `shell`, `synthetic`, `compaction` and `idle` messages through the same model, with OpenCode's stored times.
+
+## Side questions
+
+`/btw` forks the open session with `{}` (the whole conversation; `before` may also be `null`), switches the copy to the `plan` agent when OpenCode lists it (and to the model picked in Sidecar when the copy kept another), and prompts it. Checked live:
+
+- A fork keeps the original's agent, model and variant, so the agent is switched explicitly.
+- OpenCode answers `400 Cannot fork empty session` for a session with no messages; Sidecar then starts a new session in the folder with the same model and `plan`.
+- A fork sends no `session.created`, only `session.forked` (with the original as `parentID`); it is a root session, so `GET /api/session?parentID=null` lists it. Sidecar keeps the ids in workspace state and leaves them out of History until they are deleted.
+- The stream is global, so the copy's events (and its subagents', found through `session.created`'s `parentID`) go to the aside card only. Its permission requests are rejected with a short instruction and its questions cancelled, so it never waits on an answer nobody sees.
+- Closing interrupts a running copy and deletes it. Archiving was not chosen: it would keep a full copy of the conversation in the Archived list. Ids that could not be deleted (VS Code closed first, OpenCode was away) are deleted at the next start; a `404` counts as deleted.
 
 ## Subagents
 
