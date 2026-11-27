@@ -993,5 +993,26 @@ describe("commit messages: the agent's patches and a stateless generation", () =
       "rate_limit",
     );
     await assert.rejects(() => c.generateText("again"), /Free usage limit/);
+    assert.equal(client.callsTo("generateText").length, 2, "a provider error is not tried again");
+  });
+
+  it("asks once more when OpenCode's just-loaded default location does not list the model yet", async () => {
+    const { c, client } = await running();
+    const notFound = new OpenCodeHttpError(404, "ModelNotFoundError", "Model not found: vast/qwen");
+    let calls = 0;
+    client.generateText = async () => {
+      if (++calls === 1) throw notFound;
+      return "Docs: a line";
+    };
+    assert.equal(await c.generateText("write it"), "Docs: a line");
+    assert.equal(calls, 2);
+    // A model OpenCode really does not have fails as before, after one more try.
+    calls = 0;
+    client.generateText = async () => {
+      calls++;
+      throw notFound;
+    };
+    await assert.rejects(() => c.generateText("again"), /Model not found/);
+    assert.equal(calls, 2);
   });
 });

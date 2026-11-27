@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Write commit message no longer fails with "Model not found" now and then.** OpenCode generates the message in its default folder, which it unloads when idle; loaded again, it does not list your account's models for a moment. Sidecar asks once more when that happens.
 - **No sign-in offer to a signed-in user in a new folder.** A folder OpenCode has not loaded yet lists no connections for a moment, which read as signed out: Sidecar showed the optional sign-in note (or, with no models yet, the sign-in screen). The account is read again once the folder has loaded.
 - **A variant picked right after a model sticks.** OpenCode echoes each switch as an event; the model's echo could arrive while the variant was being saved, before its own switch went out, and put the variant back to the default for the session and the next new one (the same for two agents picked in a row).
 - **Stop right after sending keeps your message.** OpenCode accepts a prompt a moment before it stores it, and an interrupt in between dropped it: the message showed in the chat but was gone from the session (also a `/goal` kickoff or a command). Stop now waits for OpenCode to take the message (up to 3 s) before it interrupts.

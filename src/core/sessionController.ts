@@ -3528,8 +3528,18 @@ export class SessionController {
    * Text from the selected model, generated outside any session (OpenCode's stateless
    * generate call), so nothing is added to the conversation or its costs.
    */
-  generateText(prompt: string): Promise<string> {
-    return this.client.generateText(prompt, this.modelRef());
+  async generateText(prompt: string): Promise<string> {
+    const model = this.modelRef();
+    try {
+      return await this.client.generateText(prompt, model);
+    } catch (e) {
+      // OpenCode generates in its default location, which it unloads when idle; just loaded
+      // again it does not list the models of the signed-in account for a moment (seen live:
+      // "Model not found" once, then the reply). A model it really lacks fails again.
+      if (!(e instanceof OpenCodeHttpError && e.tag === "ModelNotFoundError")) throw e;
+      await delay(this.timing.modelRetryMs);
+      return this.client.generateText(prompt, model);
+    }
   }
 
   /** Back-compat for v0.1 callers: agent-attributed files (empty when unavailable). */
