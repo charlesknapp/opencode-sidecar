@@ -213,8 +213,8 @@ export default function Home() {
                 See and steer everything the agent does.
               </h2>
               <p className="max-w-xl text-lead text-muted-foreground lg:justify-self-end">
-                Every step, subagent and permission request in a panel beside
-                your code, built on OpenCode&apos;s own API.
+                Every step, subagent, change and permission request in a panel
+                beside your code, built on OpenCode&apos;s own API.
               </p>
             </div>
             <ul className="mt-14 grid overflow-hidden rounded-media border border-line md:grid-cols-2 lg:mt-16 lg:grid-cols-3">

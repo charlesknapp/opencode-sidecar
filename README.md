@@ -1,6 +1,6 @@
 # Sidecar for OpenCode
 
-**An OpenCode chat sidebar and GUI for VS Code.** Sidecar for OpenCode is a free, open-source extension that puts the [OpenCode](https://opencode.ai) coding agent in a chat panel beside your code, in VS Code, Cursor, Windsurf and VSCodium: every step on one timeline, live subagents you can open and stop, permission requests and questions answered where you type, `@` mentions, images, fork and rewind, and the agent's edits in VS Code's own diff editor.
+**An OpenCode chat sidebar and GUI for VS Code.** Sidecar for OpenCode is a free, open-source extension that puts the [OpenCode](https://opencode.ai) coding agent in a chat panel beside your code, in VS Code, Cursor, Windsurf and VSCodium: every step on one timeline, live subagents you can open and stop, **Keep** or **Undo** for each change the agent made, approval modes, permission requests and questions answered where you type, several sessions at once, `@` mentions, images, fork and rewind, and panels for providers, agents, MCP servers and project instructions.
 
 ![OpenCode 2.x](https://img.shields.io/badge/OpenCode-2.x-0a0a0a) ![VS Code 1.95+](https://img.shields.io/badge/VS%20Code-1.95%2B-0a0a0a) ![License: MIT](https://img.shields.io/badge/license-MIT-0a0a0a)
 
@@ -14,9 +14,9 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 
 - **Built on OpenCode's own API.** Sidecar talks to the OpenCode 2 service on your machine through its v2 HTTP API. Your sessions, models, providers, agents, commands, skills and permission rules are OpenCode's, so nothing is locked in: open the same session in OpenCode's terminal UI and Sidecar follows along, including rewinds and model changes made there.
 - **Nothing hidden.** Each prompt gets a timeline of what the agent did: thinking time, every tool call with its input and output, diffs with your theme's syntax colors, and each subagent with its exact prompt, live activity and report.
-- **You stay in control.** Nothing is ever approved for you. Permission requests, including those raised deep inside a subagent, wait in place of the message box until you answer, and you can tell the agent what to do instead. Budget Guard stops a runaway task at a cost or step limit you choose.
+- **You stay in control.** Sidecar approves nothing on its own. Permission requests, including those raised deep inside a subagent, wait in place of the message box until you answer, and you can tell the agent what to do instead; an approval mode you choose (Ask, Balanced or Auto) decides what may run without asking. Every change the agent makes can be kept or undone hunk by hunk, and Budget Guard stops a runaway task at a cost or step limit you choose.
 - **Made for VS Code.** Theme colors only (dark, light and high contrast), a layout that works from a 300 px side bar to a wide editor tab, keyboard access throughout, native notifications, and editor tabs for long output.
-- **Private by design.** Sidecar connects only to your local OpenCode service, sends nothing anywhere else and collects no telemetry. It is tested with hundreds of unit tests and a headless-browser suite, and its OpenCode calls are checked against a live OpenCode 2 service.
+- **Private by design.** Sidecar connects only to your local OpenCode service, sends nothing anywhere else and collects no telemetry. It is tested with hundreds of unit tests, a headless-browser suite, live tests of its OpenCode calls against a real OpenCode 2 service, and end-to-end runs in VS Code with a real model.
 
 ## OpenCode coverage
 
@@ -57,7 +57,7 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 - **One timeline per prompt.** A dot per step: text, thinking time, every tool call and every subagent. The prompt you're reading stays pinned while you scroll, and **Rewind ↺** takes the session back to just before it.
 - **Readable tool calls.** Shell commands as IN/OUT boxes, reads as file links, edits as changed lines with your theme's syntax colors, old beside new in a wide panel with a divider you can drag (click for the diff editor). Click IN, OUT or a subagent's prompt to open it in full in an editor tab. Prefer it compact? Set `opencodeSidecar.activity` to `grouped`.
 - **Live subagents.** Each one shows its task, prompt, current activity, tool count and time, with **Stop** and **Open ›** into its own conversation. Its report comes back as one line you can expand.
-- **Answer where you type.** Permission requests and questions replace the message box until answered: _1 Yes_, _2 Yes, always allow_ (when OpenCode offers it), _3 No_, or type what the agent should do instead. Nothing is ever approved for you, and sensitive paths get a warning. **Always allow commands like this…** turns `npm test -- --grep foo` into `npm test *` for you to edit, so near-identical commands stop asking.
+- **Answer where you type.** Permission requests and questions replace the message box until answered: _1 Yes_, _2 Yes, always allow_ (when OpenCode offers it), _3 No_, or type what the agent should do instead. Sidecar approves nothing on its own (only an approval mode or rule you set lets something run without asking), and sensitive paths get a warning. **Always allow commands like this…** turns `npm test -- --grep foo` into `npm test *` for you to edit, so near-identical commands stop asking.
 - **Approval modes.** A badge in the header always shows how much the agent may do without asking, as OpenCode reports it: **Ask**, **Balanced** or **Auto** (in the theme's warning color), or just a shield until you pick one. Click it to switch, for this session or for new sessions in the folder.
 - **A message box with everything at hand.** Type **@** to mention a file, folder, subagent or skill. Paste or drop a screenshot; a long paste of text becomes a chip you can open, edit or remove. Use **+** for a file, the selection, a workspace search or an image. Type **/** at the start of a message for OpenCode's commands and `/models`, `/new`, `/sessions`, `/export`, `/agents`, `/providers`, `/mcp` and `/permissions`, filtered as you type; the **/** button opens the action palette: OpenCode's commands, `/compact`, `!command`, model, session and settings. A ring fills with the context in use (click it for context, cost, steps, the task budget and Compact), and the ◷ clock estimates the prompt cache for models that use one. The model pill has variant and Budget Guard sliders. Shift+Tab switches the agent. While the agent works you can **steer** it or **queue** your next message, or ask a quick side question with **/btw** that never touches its context.
 - **Review hunk by hunk.** Every change the agent made is marked in the editor with **Keep | Undo** above it (and **Keep file | Undo file** at the top). Undo puts back just that change, also after you edited elsewhere in the file, and Ctrl+Z brings it back. **Review all** lists every file with what is left; **Alt+]** / **Alt+[** jump between changes; **Stage kept changes** stages exactly what you kept. Your decisions stay with the session through switches and restarts.
@@ -201,9 +201,9 @@ On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctr
 ## Privacy and security
 
 - Sidecar talks only to **your local OpenCode service** (loopback unless you allow a remote server). It has **no telemetry** and no service of its own.
-- **No credentials are stored or requested.** Sign-in and providers are handled by OpenCode; the local service password stays in memory.
+- **Sidecar stores no credentials.** Sign-in and providers are handled by OpenCode: a key you type in the Providers panel's masked box goes straight to OpenCode and is never kept or logged by Sidecar. The local service password stays in memory.
 - **Workspace content is sent only when you attach or `@`-mention it**, or when the agent reads it through OpenCode's tools under OpenCode's permission rules. Pasted images go to OpenCode with the prompt and nowhere else.
-- Nothing is approved automatically. The view runs under a strict content security policy, and every message from it is validated. Logs leave out prompts and file contents and redact secrets.
+- Sidecar approves nothing by itself: only an approval mode or permission rule you set lets an action run without asking, and Auto still blocks destructive commands. The view runs under a strict content security policy, and every message from it is validated. Logs leave out prompts and file contents and redact secrets.
 - Bookmarks (a short excerpt and its session title) are stored locally in VS Code's workspace storage.
 
 Details are in [SECURITY.md](https://github.com/charlesknapp/opencode-sidecar/blob/main/SECURITY.md).
@@ -232,6 +232,8 @@ The official extension, `sst-dev.opencode`, opens OpenCode's terminal UI in a sp
 | Context from the editor | Shares your selection or tab; inserts file references like `@File#L37-42` | `@` mentions of files, folders, subagents and skills; the selection, files and images from **+**                                            |
 | The agent's work        | In the terminal UI                                                        | A timeline per prompt with every tool call, diffs in VS Code's diff editor, live subagents, permission requests in place of the message box |
 | Editors                 | VS Code and VS Code-based editors                                         | VS Code, and Cursor, Windsurf and VSCodium via Open VSX                                                                                     |
+| Reviewing changes       | In the terminal UI and your Git tools                                     | **Keep** or **Undo** each change in the editor, kept apart from your edits; stage only what you kept                                        |
+| Setup and panels        | OpenCode's terminal UI and config files                                   | Panels for providers, custom agents, MCP servers, project instructions and permission rules, and a setup check                              |
 
 ## FAQ
 
@@ -255,6 +257,12 @@ No. It is an independent community project and is not affiliated with OpenCode. 
 
 **Do I need an API key, and what does it cost?**
 Sidecar is free and needs no key of its own. It uses the models you have in OpenCode: OpenCode's free models, your OpenCode account, or any provider you connect in OpenCode. Model costs are between you and your provider.
+
+**Can I undo what the agent changed?**
+Yes. Every change the agent made shows **Keep | Undo** in the editor. Undo puts back just that change with an ordinary edit (Ctrl+Z brings it back), never touches your own edits, and **Stage kept changes** stages only what you kept. You can also rewind the conversation and its code to before any prompt.
+
+**Can the agent run without asking every time?**
+If you choose. The badge in the header switches between **Ask**, **Balanced** (edits in the folder run, commands ask) and **Auto** (everything runs; destructive commands such as `rm -rf` or force pushes are blocked), for one session or the folder. Modes are OpenCode's own permission rules, and OpenCode's config is never changed.
 
 **Does it work with my existing OpenCode sessions?**
 Yes. Sessions are OpenCode's, so the ones you started in the terminal UI appear in History, and changes made in either place show up in the other.

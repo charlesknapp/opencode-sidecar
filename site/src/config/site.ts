@@ -4,7 +4,7 @@ export const site = {
   url: "https://www.opencodesidecar.com",
   title: "Sidecar for OpenCode: the OpenCode chat sidebar for VS Code",
   summary:
-    "A free, open-source VS Code extension that gives the OpenCode coding agent a chat panel beside your code: every step on one timeline, live subagents you can stop, and permission requests answered where you type.",
+    "A free, open-source VS Code extension that gives the OpenCode coding agent a chat panel beside your code: every step on one timeline, live subagents you can stop, Keep or Undo for each change the agent made, approval modes, and permission requests answered where you type.",
   /** The hero's one line; `summary` stays the fuller description for search and llms.txt. */
   lead: "A free, open-source chat panel for the OpenCode coding agent, right beside your code.",
   extensionId: "cadogy.opencode-sidecar",
@@ -33,7 +33,15 @@ export type Feature = {
 }
 
 export type ArtName =
-  "timeline" | "subagents" | "permission" | "budget" | "composer" | "session"
+  | "timeline"
+  | "subagents"
+  | "permission"
+  | "budget"
+  | "composer"
+  | "session"
+  | "review"
+  | "modes"
+  | "sessions"
 
 export const features: readonly Feature[] = [
   {
@@ -43,27 +51,45 @@ export const features: readonly Feature[] = [
     art: { name: "timeline", anchor: "top" },
   },
   {
+    title: "Keep or undo each change",
+    description:
+      "Every change the agent made gets Keep | Undo right in the editor. Undo puts back just that change, your own edits stay, and you can stage only what you kept.",
+    art: { name: "review", anchor: "top" },
+  },
+  {
     title: "Live subagents you can stop",
     description:
       "Each shows its task, prompt and live activity while it works in the background. Stop it, open its conversation, or expand its report.",
     art: { name: "subagents", anchor: "top" },
   },
   {
-    title: "Nothing is approved for you",
+    title: "Answer where you type",
     description:
-      "Permission requests and questions, even from subagents, wait in place of the message box until you answer or redirect the agent.",
+      "Permission requests and questions, even from subagents, wait in place of the message box. Allow once, always allow a pattern like npm test *, or redirect the agent.",
     art: { name: "permission", anchor: "bottom" },
+  },
+  {
+    title: "Ask, Balanced or Auto",
+    description:
+      "Choose how much the agent may do without asking, per session or folder. Modes are OpenCode's own rules, and Auto still blocks destructive commands.",
+    art: { name: "modes", anchor: "top" },
+  },
+  {
+    title: "Several sessions at once",
+    description:
+      "Open sessions sit as tabs with their status. When one in the background finishes, fails or needs you, a notification takes you there.",
+    art: { name: "sessions", anchor: "top" },
   },
   {
     title: "Budget Guard",
     description:
-      "A cost and step limit per task. When a task runs away, Budget Guard stops it: continue once, raise the budget or start over.",
+      "A cost and step limit per task that never stops mid-edit, and a card when the agent seems stuck in a loop. Continue once, raise the budget or start over.",
     art: { name: "budget", anchor: "top" },
   },
   {
     title: "Everything in the message box",
     description:
-      "Type @ to mention files, subagents or skills and / for OpenCode's commands, /goal included. Steer, queue, rewind or fork.",
+      "Type @ to mention files, subagents or skills and / for commands, /goal included. Ask a side question with /btw, steer, queue, rewind or fork.",
     art: { name: "composer", anchor: "bottom" },
   },
   {
@@ -95,6 +121,18 @@ export const comparison: readonly ComparisonRow[] = [
     official: "In the terminal UI",
     sidecar:
       "A timeline per prompt with every tool call, diffs in VS Code's diff editor, live subagents, and permission requests in place of the message box",
+  },
+  {
+    topic: "Reviewing changes",
+    official: "In the terminal UI and your Git tools",
+    sidecar:
+      "Keep or Undo each change in the editor, kept apart from your edits; stage only what you kept",
+  },
+  {
+    topic: "Setup and panels",
+    official: "OpenCode's terminal UI and config files",
+    sidecar:
+      "Panels for providers, custom agents, MCP servers, project instructions and permission rules, and a setup check",
   },
   {
     topic: "Editors",
@@ -131,7 +169,7 @@ export const faq: readonly FaqEntry[] = [
   {
     question: "Which OpenCode versions does it support?",
     answer:
-      "OpenCode 2.x, with its background service running. Sidecar keeps up with OpenCode 2.4, including goals, todo lists and background subagents. OpenCode 1.x is not supported.",
+      "OpenCode 2.x, with its background service running. Sidecar is tested against OpenCode 2.4.2, including goals, todo lists and background subagents. OpenCode 1.x is not supported.",
   },
   {
     question: "Can I use local models, such as Ollama or LM Studio?",
@@ -146,7 +184,17 @@ export const faq: readonly FaqEntry[] = [
   {
     question: "Do I need an API key, and what does it cost?",
     answer:
-      "Sidecar is free and needs no key of its own. It uses the models you have in OpenCode: OpenCode's free models, your OpenCode account, or any provider you connect in OpenCode. Model costs are between you and your provider.",
+      "Sidecar is free and needs no key of its own. It uses the models you have in OpenCode: OpenCode's free models, your OpenCode account, or any provider you connect in OpenCode. Its Providers panel connects one through OpenCode's own sign-in, and a key you type there goes straight to OpenCode. Model costs are between you and your provider.",
+  },
+  {
+    question: "Can I undo what the agent changed?",
+    answer:
+      "Yes. Every change the agent made shows Keep | Undo in the editor. Undo puts back just that change with an ordinary edit (Ctrl+Z brings it back), never touches your own edits, and Stage kept changes stages only what you kept. You can also rewind the conversation and its code to before any prompt.",
+  },
+  {
+    question: "Can the agent run without asking every time?",
+    answer:
+      "If you choose. The badge in the header switches between Ask, Balanced (edits in the folder run, commands ask) and Auto (everything runs; destructive commands such as rm -rf or force pushes are blocked), for one session or the folder. Modes are OpenCode's own permission rules, and OpenCode's config is never changed.",
   },
   {
     question: "Does it work with my existing OpenCode sessions?",

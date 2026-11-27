@@ -426,6 +426,227 @@ function Session() {
   )
 }
 
+const lens = "flex h-5 items-center gap-1.5 px-2 text-[10px] text-[#9d9d9d]"
+
+function Review() {
+  return (
+    <>
+      <div className="flex h-8 shrink-0 items-center gap-3 border-b border-[#2b2b2b] px-3">
+        <span className={path}>service.ts</span>
+        <span className="ml-auto text-[#9d9d9d]">
+          <span className="text-[#4daafc]">Keep file</span> |{" "}
+          <span className="text-[#4daafc]">Undo file</span>
+        </span>
+      </div>
+      <div className={`py-2 ${code}`}>
+        <div className="px-3 text-[#9d9d9d]">
+          import {"{"} refreshToken {"}"} from &quot;./token&quot;
+        </div>
+        <div className={lens}>
+          <span className="text-[#4daafc]">Keep</span> |{" "}
+          <span className="text-[#4daafc]">Undo</span>
+          <span
+            data-enter=""
+            style={vars({ "--d": "300ms" })}
+            className="ml-1 text-[#73c991]"
+          >
+            ✓ Kept
+          </span>
+        </div>
+        <div className="relative">
+          <span
+            data-leave=""
+            style={vars({ "--d": "300ms" })}
+            className="absolute inset-0 bg-[#373d29]"
+          />
+          <div className="relative px-3 whitespace-pre">
+            let inflight: Promise&lt;boolean&gt; | null
+          </div>
+        </div>
+        <div className="px-3 text-[#9d9d9d]">&nbsp;</div>
+        <div className={lens}>
+          <span className="text-[#4daafc]">Keep</span> |{" "}
+          <span className="text-[#4daafc]">Undo</span>
+          <span
+            data-enter=""
+            style={vars({ "--d": "1000ms" })}
+            className="ml-1 text-[#f85149]"
+          >
+            ↺ Undone
+          </span>
+        </div>
+        <div className="relative h-[3.1em]">
+          <div
+            data-leave=""
+            style={vars({ "--d": "1000ms" })}
+            className="absolute inset-0 bg-[#373d29] px-3 whitespace-pre"
+          >
+            {"export const refresh = () =>\n  (inflight ??= refreshToken())"}
+          </div>
+          <div
+            data-enter=""
+            style={vars({ "--d": "1100ms" })}
+            className="absolute inset-0 px-3 whitespace-pre"
+          >
+            export const refresh = () =&gt; refreshToken()
+          </div>
+        </div>
+      </div>
+      <div className="mx-3 mt-1 mb-3 flex items-center gap-2 text-[#9d9d9d]">
+        <span className="relative h-4 flex-1">
+          <span
+            data-leave=""
+            style={vars({ "--d": "1100ms" })}
+            className="absolute inset-0"
+          >
+            2 changes to review
+          </span>
+          <span
+            data-enter=""
+            style={vars({ "--d": "1200ms" })}
+            className="absolute inset-0"
+          >
+            Reviewed · 1 kept, 1 undone
+          </span>
+        </span>
+        <span className="rounded-[2px] bg-[#313131] px-2 py-0.5 text-[#cccccc]">
+          Stage kept changes
+        </span>
+      </div>
+    </>
+  )
+}
+
+const modes = [
+  ["Ask", "Asks before every edit, command and web request"],
+  ["Balanced", "Edits in the folder run; commands and the web ask"],
+  ["Auto", "Everything runs, except destructive commands"],
+] as const
+
+function Modes() {
+  return (
+    <>
+      <div className="flex h-8 shrink-0 items-center gap-3 border-b border-[#2b2b2b] px-3">
+        <span className="truncate font-medium">Token refresh refactor</span>
+        <span className="relative ml-auto h-5 w-[74px] shrink-0">
+          <span
+            data-leave=""
+            style={vars({ "--d": "900ms" })}
+            className="absolute inset-0 grid place-items-center rounded-[3px] border border-[#2b2b2b]"
+          >
+            Ask
+          </span>
+          <span
+            data-enter=""
+            style={vars({ "--d": "1000ms" })}
+            className="absolute inset-0 grid place-items-center rounded-[3px] border border-[#2b2b2b] text-[#73c991]"
+          >
+            Balanced
+          </span>
+        </span>
+      </div>
+      <div
+        className={`${box} relative mx-3 mt-2 py-1 shadow-[0_8px_24px_rgb(0_0_0/0.45)]`}
+      >
+        <span
+          data-move=""
+          style={vars({
+            "--d": "250ms",
+            "--dur": "420ms",
+            "--to": "translateY(100%)",
+          })}
+          className="absolute inset-x-1 top-1 h-[38px] rounded-[3px] bg-[#04395e]"
+        />
+        {modes.map(([name, text]) => (
+          <div key={name} className="relative h-[38px] px-2.5 py-1">
+            <div className={name === "Auto" ? "text-[#cca700]" : ""}>
+              {name}
+            </div>
+            <div className="truncate text-[#9d9d9d]">{text}</div>
+          </div>
+        ))}
+        <div className="relative mt-1 flex gap-3 border-t border-[#2b2b2b] px-2.5 pt-1.5 text-[#9d9d9d]">
+          <span>Apply to: This session</span>
+          <span className="text-[#4daafc]">Permission rules…</span>
+        </div>
+      </div>
+      <div className="space-y-2 p-3">
+        <Step dot="ok" enter style={vars({ "--d": "1250ms" })}>
+          Edit <span className={path}>src/auth/service.ts</span>
+          <div className="text-[#9d9d9d]">Ran without asking: Balanced</div>
+        </Step>
+      </div>
+    </>
+  )
+}
+
+const tabs = [
+  { name: "Token refresh", dot: "run" },
+  { name: "Docs pass", dot: "idle" },
+  { name: "Flaky CI", dot: "run" },
+] as const
+
+function Sessions() {
+  return (
+    <>
+      <Header title="Token refresh" />
+      <div className="flex h-7 shrink-0 items-stretch border-b border-[#2b2b2b] px-1.5">
+        {tabs.map((tab, i) => (
+          <span
+            key={tab.name}
+            className={`flex min-w-0 items-center gap-1.5 px-2 ${
+              i === 0 ? "border-b border-[#0078d4]" : "text-[#9d9d9d]"
+            }`}
+          >
+            <span className="relative size-[7px] shrink-0">
+              <span
+                className={`absolute inset-0 rounded-full ${tone[tab.dot]}`}
+              />
+              {i === 2 && (
+                <span
+                  data-enter=""
+                  style={vars({ "--d": "700ms" })}
+                  className="absolute inset-0 rounded-full bg-[#cca700]"
+                />
+              )}
+              {i === 1 && (
+                <span
+                  data-enter=""
+                  style={vars({ "--d": "200ms" })}
+                  className={`absolute inset-0 rounded-full ${tone.ok}`}
+                />
+              )}
+            </span>
+            <span className="truncate">{tab.name}</span>
+            <span className="text-[#6e6e6e]">×</span>
+          </span>
+        ))}
+      </div>
+      <div className="space-y-3 p-3">
+        <Step dot="ok">
+          Edit <span className={path}>src/auth/service.ts</span>
+        </Step>
+        <Step dot="run">
+          Shell <span className={code}>npm test -- race</span>
+          <div className="text-[#9d9d9d]">Running · 0:04</div>
+        </Step>
+      </div>
+      <div
+        data-enter=""
+        style={vars({ "--d": "900ms" })}
+        className={`${box} mx-3 mb-3 p-2.5 shadow-[0_8px_24px_rgb(0_0_0/0.45)]`}
+      >
+        <div>ⓘ Flaky CI needs your answer: Allow this shell command?</div>
+        <div className="mt-2 flex justify-end">
+          <span className="rounded-[2px] bg-[#0078d4] px-2 py-0.5 text-white">
+            Open
+          </span>
+        </div>
+      </div>
+    </>
+  )
+}
+
 const arts: Record<ArtName, () => ReactNode> = {
   timeline: Timeline,
   subagents: Subagents,
@@ -433,6 +654,9 @@ const arts: Record<ArtName, () => ReactNode> = {
   budget: Budget,
   composer: ComposerArt,
   session: Session,
+  review: Review,
+  modes: Modes,
+  sessions: Sessions,
 }
 
 export function FeatureArt({ name }: { name: ArtName }) {

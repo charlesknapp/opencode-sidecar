@@ -31,7 +31,7 @@ export const guides: readonly Guide[] = [
       "Run the OpenCode agent on Ollama or LM Studio and chat with it in VS Code through Sidecar. No account or API key for the model.",
     summary:
       "OpenCode finds Ollama and LM Studio on your machine by itself. Start one, pull a model, and pick it in Sidecar's model menu. The model needs no account or API key.",
-    updated: "2026-11-24",
+    updated: "2026-11-27",
     blocks: [
       { type: "h2", text: "What you need" },
       {
@@ -100,6 +100,10 @@ export const guides: readonly Guide[] = [
         type: "note",
         text: "For another OpenAI-compatible runtime, OpenCode's [provider docs](https://opencode.ai/docs/providers) describe a custom provider where you list its models yourself.",
       },
+      {
+        type: "p",
+        text: "After editing `opencode.json`, choose **Reload config** in Sidecar's Providers panel (**/ → Providers…**) so OpenCode reads it again without a restart.",
+      },
       { type: "h2", text: "What's different with a local model" },
       {
         type: "list",
@@ -108,6 +112,7 @@ export const guides: readonly Guide[] = [
           "**No prompt-cache clock.** It shows only when a step reports prompt-cache tokens, which most local models don't.",
           "**Images.** Sidecar tells you when the model you picked doesn't list image input in OpenCode.",
           "**Tool calls matter.** The agent works by calling tools to read, search, edit and run commands, so pick a model that handles tool calls well.",
+          "**Context size matters too.** OpenCode's instructions and tools need about 16k tokens of context, and Ollama's default `num_ctx` is 2048–4096. **Sidecar: Check OpenCode Setup** warns when a local model's context is below 16k and says how to raise it.",
           "**Where requests go.** Sidecar talks only to your local OpenCode service, and OpenCode sends the model's requests to the Ollama or LM Studio server you use.",
         ],
       },
@@ -175,13 +180,14 @@ codium --install-extension cadogy.opencode-sidecar`,
   },
   {
     slug: "opencode-permissions-budget-guard",
-    title: "Keep the OpenCode agent in check: permissions and Budget Guard",
-    short: "Permissions and Budget Guard",
+    title:
+      "Keep the OpenCode agent in check: permissions, approval modes and Budget Guard",
+    short: "Permissions, approval modes and Budget Guard",
     description:
-      "How Sidecar shows OpenCode's permission requests, saves always-allow rules, and stops a runaway task at a cost or step limit with Budget Guard.",
+      "Answer OpenCode's permission requests in Sidecar, pick Ask, Balanced or Auto, edit permission rules, and stop a runaway task at a cost or step limit.",
     summary:
-      "Sidecar never approves anything for you. OpenCode's permission requests wait in place of the message box until you answer, and Budget Guard stops a task that runs past the cost or steps you allow.",
-    updated: "2026-11-24",
+      "Sidecar approves nothing on its own. OpenCode's permission requests wait in place of the message box until you answer, an approval mode you choose decides what may run without asking, and Budget Guard stops a task that runs past the cost or steps you allow.",
+    updated: "2026-11-27",
     blocks: [
       { type: "h2", text: "Answer a permission request" },
       {
@@ -206,10 +212,36 @@ codium --install-extension cadogy.opencode-sidecar`,
         type: "p",
         text: "Sensitive paths get a warning. Requests raised inside a subagent come back to you in the chat, a count on Sidecar's icon shows answers that are waiting even with the panel hidden, and a notification says what the agent is asking.",
       },
-      { type: "h2", text: "Review always-allowed rules" },
+      { type: "h2", text: "Always allow commands like this" },
       {
         type: "p",
-        text: "Type **/** in the message box and choose **Always-allowed actions…**. It lists the rules OpenCode saved for the folder. Remove any rule and OpenCode asks again next time.",
+        text: "For a command you run often with small differences, choose **Always allow commands like this…** in the request. Sidecar suggests a pattern you can edit, such as `npm test *` for `npm test -- --grep foo`, says whether it covers the request, and saves it for this session or, when OpenCode offers _always_, for the folder.",
+      },
+      { type: "h2", text: "Choose an approval mode" },
+      {
+        type: "p",
+        text: "The badge in the header shows how much the agent may do without asking, as OpenCode reports it. It is just a shield until you pick a mode. Click it to switch:",
+      },
+      {
+        type: "list",
+        items: [
+          "**Ask** asks before every edit, command and web request.",
+          "**Balanced** lets reads, searches and edits in the folder run, and asks for commands, web requests and files outside the folder.",
+          "**Auto** lets everything run and blocks destructive commands such as `rm -rf`, `git push --force`, `git reset --hard`, `Remove-Item -Recurse` and `rmdir /s`. Switching to it asks once first.",
+        ],
+      },
+      {
+        type: "p",
+        text: "**Apply to** picks this session or the folder, where new sessions start in the mode. Modes are OpenCode's own permission rules on the session, added after the agent's rules, so Plan still never edits. OpenCode's config files are never changed, and a mode set from OpenCode's terminal UI or another window shows on the badge too.",
+      },
+      {
+        type: "note",
+        text: "A mode reaches subagents started after you set it; one already running keeps its rules.",
+      },
+      { type: "h2", text: "Edit the permission rules" },
+      {
+        type: "p",
+        text: "Choose **Permission rules…** in the badge's menu or the **/** palette. It lists the session's rules: the mode's, read-only, and your own, which you can add, edit or remove as an action, a pattern and Allow, Ask or Deny. Below them are the folder's _always allowed_ rules OpenCode saved, which you can edit or remove. In patterns, `*` matches anything, and `npm test *` also matches `npm test`.",
       },
       { type: "h2", text: "Set a Budget Guard limit" },
       {
@@ -234,13 +266,18 @@ codium --install-extension cadogy.opencode-sidecar`,
         type: "steps",
         items: [
           "At 80% of a limit, Sidecar warns you on the timeline.",
-          "At the limit, Budget Guard stops the agent through OpenCode's own cancellation.",
+          "At the limit, Budget Guard stops the agent through OpenCode's own cancellation. It stops before the step that would go over the cost limit, judged by the task's average step, and never in the middle of an edit: a file being written is finished first.",
           "You choose: **Continue once**, **Increase budget** or **Start new session**.",
         ],
       },
       {
         type: "note",
         text: "If OpenCode reports no cost for a model, only steps count. Click the context ring in the message box to see the session's context, cost, steps and task budget.",
+      },
+      { type: "h2", text: "When the agent seems stuck" },
+      {
+        type: "p",
+        text: "If the agent repeats the same tool call with the same result three times, goes back and forth between two calls, or sends nothing for 3 minutes while it runs, a card on the timeline names the call and offers **Stop**, **Steer…** (a suggested message in steer mode) and **Dismiss**. It never stops anything by itself. Set the minutes with `opencodeSidecar.stuckMinutes`, or turn it off with `opencodeSidecar.stuckDetection`.",
       },
       { type: "h2", text: "Stop the agent yourself" },
       {

@@ -50,10 +50,17 @@ OpenCode emits one global event stream. `EventNormalizer` (`src/opencode/events.
 - **Budget Guard:** `BudgetTracker` (`src/core/budget.ts`) counts cost and steps per task from live figures only and stops the run through the same path as Stop.
 - **Current task:** `src/core/currentTask.ts` derives a short task summary and decides the native notifications (completed, needs input, failed, budget stopped). Replayed history never notifies.
 - **Agent changes:** OpenCode's session diff gives full-file patches; `src/core/patch.ts` rebuilds both sides, which `AgentDocumentProvider` serves to VS Code's diff editor. Partial or binary patches are reported as unavailable.
+- **Review:** `src/core/review.ts` splits each file's agent change into hunks between the pre-agent baseline and the snapshot, places them on the document as the user has it now, and builds the patch of the kept hunks for `git apply --cached`. Decisions are saved per session and change in workspace storage.
+- **Approval modes:** `src/shared/approval.ts` turns Ask, Balanced and Auto into OpenCode permission rules for the agents OpenCode reports, reads a session's rules back into a mode, matches patterns as OpenCode does, and suggests "commands like this" patterns. The rules go on the session (`PATCH /api/session/{id}`); OpenCode's config is never written.
+- **Sessions beside the open one:** `src/core/sessionWatch.ts` keeps the session strip (sessions opened lately and any that are working or waiting) and decides the notices for a session you are not looking at, from the same event stream.
+- **Stuck detection:** `src/core/stuck.ts` watches the open task's tool calls for repeats with the same result, two calls taking turns, and a task that sends nothing; it only suggests.
+- **Usage:** `src/core/usage.ts` adds up a session's cost, steps and tokens by model and by agent (subagents nested) and estimates what fills the context, from figures OpenCode reports.
+- **Panels:** providers (`src/core/providers.ts`, `providerConnect.ts`: OpenCode's integrations and its own sign-in flows), agents (`agents.ts`, `agentFile.ts` for the Markdown files, `roomodes.ts` for imports, `yaml.ts`), project instructions (`instructions.ts`, the files OpenCode 2.4.2 reads), MCP servers (`src/shared/mcp.ts`) and the setup check (`healthCheck.ts`). Each is VS Code-free and unit-tested; `src/host/` adds the dialogs, files and terminals.
+- **Editor helpers:** `src/core/problems.ts` (Fix with OpenCode), `autoContext.ts` (Follow the editor) and `commitMessage.ts` (the prompt for OpenCode's one-off generation).
 
 ## Webview
 
-- **Layout:** a one-line header (title, Bookmarks, History, New session), the conversation as turns (a prompt, then a timeline with a dot per step), and a message box that floats over the bottom of the conversation. Permission requests and questions replace the message box with a dock until answered.
+- **Layout:** a one-line header (title, approval badge, Bookmarks, History, New session), the session strip and goal header when they apply, the conversation as turns (a prompt, then a timeline with a dot per step), and a message box that floats over the bottom of the conversation. Permission requests and questions replace the message box with a dock until answered.
 - **Communication:** the host sends `state` (a `ViewState` snapshot), `transcript` (a full reset) and batched `events`; the webview sends a closed set of intents. `parseWebviewMessage` validates every intent strictly (known type, field types, sizes, no extra keys); invalid messages are dropped.
 - **Safety:** a strict CSP (`default-src 'none'`, nonce-only scripts), no `eval`, and no `innerHTML`: the DOM is built with `createElement`/`textContent`, and Markdown is parsed into a tree and rendered the same way. Link clicks are routed to the host.
 - **Styling:** VS Code theme variables only, so dark, light and high-contrast themes work. Layout follows the panel's own width through container queries.
@@ -64,6 +71,9 @@ OpenCode emits one global event stream. `EventNormalizer` (`src/opencode/events.
 - `src/host/workspace.ts`: the active folder, branch and repository type (local repository or Git worktree) from the built-in Git extension, with a `.git/HEAD` fallback. Nothing scans the repository on activation; files are searched only when the user asks (the + menu, or `@` through OpenCode's own search).
 - `src/host/diff.ts`: agent-only and workspace diffs in VS Code's diff editor.
 - `src/host/toolText.ts`: read-only editor tabs for a tool call's full command, output or subagent prompt.
+- `src/host/review.ts`: the Keep / Undo review in the real editor (CodeLens, decorations, Review all, staging the kept changes).
+- `src/host/providers.ts`, `src/host/agents.ts`, `src/host/instructions.ts`: the VS Code side of the Providers, Agents and Project instructions panels (questions, the masked key box, the browser, agent and instruction files).
+- `src/host/problems.ts`: the **Fix with OpenCode** quick fix and the problems of a file or the folder.
 
 ## Lifecycle
 
