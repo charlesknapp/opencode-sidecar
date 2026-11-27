@@ -148,11 +148,25 @@ export const comparison: readonly ComparisonRow[] = [
   },
 ]
 
-export const steps: readonly string[] = [
-  "Install Sidecar for OpenCode: search “OpenCode Sidecar” in the Extensions view, or use the Marketplace or Open VSX link above.",
-  "Click the Sidecar icon in the Activity Bar.",
-  "If OpenCode isn't ready yet, the setup card helps you install it, start it and sign in. If you already use OpenCode, you won't see it.",
-  "Pick a model and start chatting.",
+export type Step = { title: string; text: string }
+
+export const steps: readonly Step[] = [
+  {
+    title: "Install Sidecar for OpenCode",
+    text: "Search “OpenCode Sidecar” in the Extensions view, or run the command for your editor.",
+  },
+  {
+    title: "Open the panel",
+    text: "Click the Sidecar icon in the Activity Bar. Drag it to the Secondary Side Bar to keep the chat beside your code.",
+  },
+  {
+    title: "Let the setup card help",
+    text: "If OpenCode isn't ready yet, it helps you install it, start it and sign in. If you already use OpenCode, you won't see it.",
+  },
+  {
+    title: "Pick a model and start chatting",
+    text: "Any model you have in OpenCode works here, local ones included.",
+  },
 ]
 
 export type FaqEntry = { question: string; answer: string }

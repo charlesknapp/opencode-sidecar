@@ -10,7 +10,9 @@ import { buildStructuredData } from "@/lib/structured-data"
 import { ButtonLink } from "@/components/button-link"
 import { CountUp } from "@/components/count-up"
 import { DemoVideo } from "@/components/demo-video"
+import { FeatureArt } from "@/components/feature-art"
 import { FeatureCard } from "@/components/feature-card"
+import { FeatureCell } from "@/components/feature-cell"
 import { HeroLines } from "@/components/hero-lines"
 import { InstallCommand } from "@/components/install-command"
 import { LazyFrame } from "@/components/lazy-frame"
@@ -341,52 +343,123 @@ export default function Home() {
         </Section>
 
         <Section id="start" index="04" label="Get started">
-          <div className="grid gap-12 lg:grid-cols-2 lg:gap-20">
-            <div>
+          <div className="grid gap-14 lg:grid-cols-[1.15fr_1fr] lg:gap-20">
+            <div className="min-w-0">
               <h2 id="start" className="text-h2">
                 Get started in a minute
               </h2>
-              <p className="mt-6 max-w-md text-lead text-muted-foreground">
-                You need VS Code 1.95 or newer and{" "}
-                <a href={site.links.opencodeInstall} className={inlineLink}>
-                  OpenCode 2
-                </a>
-                . Sidecar works with the models you already use in OpenCode,
-                local ones included.
-              </p>
-              <p className="mt-10 eyebrow">Guides</p>
-              <ul className="mt-3 max-w-md">
-                {guides.map(({ slug, short }) => (
-                  <li key={slug}>
-                    <Link
-                      href={`/guides/${slug}`}
-                      className="group inline-flex min-h-10 items-center gap-2 text-muted-foreground transition-[color] duration-150 hover:text-foreground"
-                    >
-                      {short}
-                      <span
-                        aria-hidden="true"
-                        className="transition-transform duration-150 group-hover:translate-x-0.5"
+              <ul className="mt-6 flex flex-wrap gap-2">
+                {[
+                  ["VS Code 1.95+", null],
+                  ["OpenCode 2.x", site.links.opencodeInstall],
+                  ["Windows · macOS · Linux", null],
+                ].map(([label, href]) => (
+                  <li
+                    key={label}
+                    className="border border-line-strong px-3 py-1.5 font-mono text-xs tracking-[0.04em] text-muted-foreground"
+                  >
+                    {href ? (
+                      <a
+                        href={href}
+                        className="transition-[color] duration-150 hover:text-foreground"
                       >
-                        →
-                      </span>
-                    </Link>
+                        {label} ↗
+                      </a>
+                    ) : (
+                      label
+                    )}
                   </li>
                 ))}
               </ul>
+              <ol className="mt-12">
+                {steps.map((step, index) => (
+                  <li
+                    key={step.title}
+                    className="relative flex gap-6 pb-10 last:pb-0"
+                  >
+                    {index < steps.length - 1 && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute top-9 bottom-1 left-[13px] w-px bg-line-strong"
+                      />
+                    )}
+                    <span className="relative grid size-7 shrink-0 place-items-center border border-line-strong bg-background font-mono text-xs text-muted-foreground tabular-nums">
+                      {String(index + 1).padStart(2, "0")}
+                    </span>
+                    <div className="min-w-0 flex-1 pt-0.5">
+                      <h3 className="text-[17px] font-medium">{step.title}</h3>
+                      <p className="mt-1.5 max-w-[34rem] leading-relaxed text-muted-foreground">
+                        {step.text}
+                      </p>
+                      {index === 0 && (
+                        <div className="mt-5 max-w-[34rem]">
+                          <InstallCommand />
+                          <div className="mt-4 flex flex-wrap gap-x-4 gap-y-3">
+                            <ButtonLink
+                              href={site.links.marketplace}
+                              variant="primary"
+                            >
+                              Install for VS Code
+                            </ButtonLink>
+                            <ButtonLink href={site.links.openVsx}>
+                              Open VSX
+                            </ButtonLink>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ol>
             </div>
-            <ol className="space-y-9 lg:pt-1">
-              {steps.map((step, index) => (
-                <li key={step} className="flex gap-6">
-                  <span className="w-6 shrink-0 pt-[0.2em] font-mono text-[13px] text-subtle-foreground tabular-nums">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <span className="max-w-[30rem] text-[17px] leading-relaxed">
-                    {step}
-                  </span>
-                </li>
-              ))}
-            </ol>
+            <FeatureCell
+              as="figure"
+              play="view"
+              className="lg:sticky lg:top-24 lg:self-start"
+            >
+              <div className="relative aspect-[5/4] w-full overflow-hidden rounded-media border border-line-strong">
+                <FeatureArt name="setup" />
+              </div>
+              <figcaption className="mt-3 text-sm text-subtle-foreground">
+                The setup card starts OpenCode, checks your sign-in and models,
+                and opens the chat.
+              </figcaption>
+            </FeatureCell>
           </div>
+
+          <div className="mt-20 flex flex-wrap items-end justify-between gap-4">
+            <h3 className="eyebrow">Guides</h3>
+            <Link
+              href="/guides"
+              className="font-mono text-xs tracking-[0.08em] text-muted-foreground uppercase transition-[color] duration-150 hover:text-foreground"
+            >
+              All guides →
+            </Link>
+          </div>
+          <ul className="mt-5 grid overflow-hidden rounded-media border border-line sm:grid-cols-2 lg:grid-cols-4">
+            {guides.map((guide) => (
+              <li
+                key={guide.slug}
+                className="group relative -mr-px -mb-px border-r border-b border-line p-5 transition-[background-color] duration-200 hover:bg-raised"
+              >
+                <Link
+                  href={`/guides/${guide.slug}`}
+                  className="flex items-center justify-between gap-3 font-medium after:absolute after:inset-0"
+                >
+                  {guide.nav}
+                  <span
+                    aria-hidden="true"
+                    className="text-subtle-foreground transition-[color,transform] duration-150 group-hover:translate-x-0.5 group-hover:text-foreground"
+                  >
+                    →
+                  </span>
+                </Link>
+                <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+                  {guide.blurb}
+                </p>
+              </li>
+            ))}
+          </ul>
         </Section>
 
         <Section id="updates" index="05" label="Latest updates">

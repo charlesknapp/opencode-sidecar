@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState, type KeyboardEvent } from "react"
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react"
 
 import { site } from "@/config/site"
 
@@ -12,6 +12,7 @@ const editors = [
 ] as const
 
 export function InstallCommand() {
+  const id = useId()
   const [active, setActive] = useState(0)
   const [copied, setCopied] = useState(false)
   const tabs = useRef<(HTMLButtonElement | null)[]>([])
@@ -68,9 +69,9 @@ export function InstallCommand() {
               }}
               type="button"
               role="tab"
-              id={`install-tab-${index}`}
+              id={`${id}-tab-${index}`}
               aria-selected={selected}
-              aria-controls="install-panel"
+              aria-controls={`${id}-panel`}
               tabIndex={selected ? 0 : -1}
               onClick={() => select(index)}
               onKeyDown={onKeyDown}
@@ -87,8 +88,8 @@ export function InstallCommand() {
       </div>
       <div
         role="tabpanel"
-        id="install-panel"
-        aria-labelledby={`install-tab-${active}`}
+        id={`${id}-panel`}
+        aria-labelledby={`${id}-tab-${active}`}
         className="flex items-center gap-3 py-2 pr-2 pl-5"
       >
         <code className="min-w-0 flex-1 [scrollbar-width:none] overflow-x-auto font-mono text-[13px] whitespace-nowrap text-muted-foreground">

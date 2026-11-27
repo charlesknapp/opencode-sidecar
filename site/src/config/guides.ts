@@ -18,6 +18,8 @@ export type Guide = {
   short: string
   /** A few words for the footer. */
   nav: string
+  /** One short line for the home page's guide tiles. */
+  blurb: string
   description: string
   summary: string
   updated: string
@@ -30,6 +32,7 @@ export const guides: readonly Guide[] = [
     title: "Use OpenCode with local models in VS Code",
     short: "Local models: Ollama and LM Studio",
     nav: "Local models",
+    blurb: "Ollama and LM Studio, with no API key",
     description:
       "Run the OpenCode agent on Ollama or LM Studio and chat with it in VS Code through Sidecar. No account or API key for the model.",
     summary:
@@ -131,6 +134,7 @@ export const guides: readonly Guide[] = [
     title: "OpenCode in Cursor, Windsurf and VSCodium",
     short: "Cursor, Windsurf and VSCodium",
     nav: "Cursor and Windsurf",
+    blurb: "Install from Open VSX, VSCodium too",
     description:
       "Install Sidecar for OpenCode from Open VSX in Cursor, Windsurf or VSCodium, and use the OpenCode agent in a chat panel there.",
     summary:
@@ -199,6 +203,7 @@ codium --install-extension cadogy.opencode-sidecar`,
       "Keep the OpenCode agent in check: permissions, approval modes and Budget Guard",
     short: "Permissions, approval modes and Budget Guard",
     nav: "Permissions",
+    blurb: "Approval modes, rules and Budget Guard",
     description:
       "Answer OpenCode's permission requests in Sidecar, pick Ask, Balanced or Auto, edit permission rules, and stop a runaway task at a cost or step limit.",
     summary:
@@ -313,6 +318,7 @@ codium --install-extension cadogy.opencode-sidecar`,
     title: "Review the OpenCode agent's changes hunk by hunk in VS Code",
     short: "Review changes hunk by hunk",
     nav: "Reviewing changes",
+    blurb: "Keep or undo each change, then stage it",
     description:
       "Keep or undo each change the OpenCode agent made, right in the editor, without touching your own edits. Then stage only what you kept.",
     summary:
@@ -392,6 +398,7 @@ codium --install-extension cadogy.opencode-sidecar`,
     title: "Move from Roo Code or Kilo Code: modes as OpenCode agents",
     short: "Roo Code and Kilo Code modes as agents",
     nav: "Roo and Kilo modes",
+    blurb: "Import custom modes as OpenCode agents",
     description:
       "Import your Roo Code or Kilo Code custom modes as OpenCode agents with Sidecar, and create or edit OpenCode agents in a form.",
     summary:
@@ -536,6 +543,7 @@ You review code changes. Point out bugs, risky edits and missing tests. Do not e
     title: "Connect OpenCode providers and fix setup problems in VS Code",
     short: "Providers and fixing setup problems",
     nav: "Providers and setup",
+    blurb: "Connect providers and check your setup",
     description:
       "Connect model providers through OpenCode's own sign-in in Sidecar, read each provider's state, and find setup problems with one report.",
     summary:
@@ -624,6 +632,7 @@ You review code changes. Point out bugs, risky edits and missing tests. Do not e
     title: "Run several OpenCode sessions, side questions and goals in VS Code",
     short: "Several sessions, side questions and goals",
     nav: "Sessions and goals",
+    blurb: "Session tabs, /btw and /goal",
     description:
       "Watch several OpenCode sessions at once with Sidecar's session strip, ask side questions with /btw, and follow a /goal from a header.",
     summary:
@@ -724,6 +733,7 @@ You review code changes. Point out bugs, risky edits and missing tests. Do not e
     title: "Manage OpenCode MCP servers in VS Code",
     short: "MCP servers",
     nav: "MCP servers",
+    blurb: "Server state, sign-in and one-run servers",
     description:
       "See each OpenCode MCP server's state in Sidecar, connect, retry or sign in with OAuth, and add a server for one OpenCode run.",
     summary:

@@ -16,6 +16,9 @@ describe("guides", () => {
     guides.forEach((guide) => {
       expect(guide.slug).toMatch(/^[a-z0-9-]+$/)
       expect(guide.description.length).toBeLessThanOrEqual(160)
+      // The footer and the home page's tiles show these on one or two short lines.
+      expect(guide.nav.length).toBeLessThanOrEqual(20)
+      expect(guide.blurb.length).toBeLessThanOrEqual(45)
     })
   })
 
