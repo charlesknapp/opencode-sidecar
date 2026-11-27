@@ -1895,6 +1895,11 @@ th {
   border-radius: var(--radius);
   padding: 6px 8px;
 }
+/* The models a turn ran on, its tokens, speed and cost: one quiet line. */
+.turn-meta {
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
 
 /* ----------------------------------------------------------- permission */
 
@@ -2477,6 +2482,62 @@ kbd {
   font-size: 0.9em;
   line-height: 1.35;
 }
+/* Cost tables in the usage menu: names take the room left, figures line up on the right. */
+.menu-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  table-layout: auto;
+}
+.menu-table th,
+.menu-table td {
+  border: 0;
+  padding: 1px 8px;
+  text-align: end;
+  white-space: nowrap;
+}
+.menu-table th {
+  background: none;
+  color: var(--muted);
+  font-weight: normal;
+  font-size: 0.9em;
+}
+.menu-table th:first-child,
+.menu-table td:first-child {
+  width: 100%;
+  max-width: 0;
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.menu-table td.ind1 {
+  padding-inline-start: 16px;
+}
+.menu-table td.ind2 {
+  padding-inline-start: 26px;
+}
+.menu-table td.ind3 {
+  padding-inline-start: 36px;
+}
+/* A share of the context, or of a limit: a thin bar under its figures. */
+.menu-meter .bar {
+  height: 3px;
+  margin: 1px 8px 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+  overflow: hidden;
+}
+.menu-meter .bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.menu-meter.warn .bar span {
+  background: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, #cca700));
+}
+.menu-meter .menu-note {
+  padding-top: 0;
+}
 .menu hr {
   width: 100%;
   margin: 4px 0;
@@ -2510,6 +2571,16 @@ kbd {
   background: none;
 }
 .pill.clean .i {
+  width: 12px;
+  height: 12px;
+}
+/* A provider limit nearly used up: a small chip in the warning colour. */
+.pill.quota {
+  padding: 0 6px;
+  color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, #cca700));
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+.pill.quota .i {
   width: 12px;
   height: 12px;
 }

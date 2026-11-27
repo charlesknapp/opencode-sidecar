@@ -292,6 +292,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       workspaceChanges:
         this.workspace.current.uncommitted === null ? null : { count: this.workspace.current.uncommitted },
       usage: cfg.showUsage ? (c?.usage() ?? null) : null,
+      costs: cfg.showUsage ? (c?.costs() ?? null) : null,
+      quota: cfg.showUsage ? (c?.quota ?? null) : null,
       steps: c?.steps ?? 0,
       selectedVariant: c?.selectedVariant ?? null,
       budget: c?.budgetView() ?? {
@@ -903,6 +905,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return this.openCode(msg.text, msg.lang);
       case "loadMcpServers":
         return this.postMcpServers();
+      case "loadUsageDetails":
+        return this.postUsageDetails();
       case "exportSession":
         return this.exportSession();
       case "deleteSession":
@@ -1139,6 +1143,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.log.warn(`Listing MCP servers failed: ${e instanceof Error ? e.message : String(e)}`);
       this.post({ type: "mcpServers", items: null, error: "OpenCode could not list them." });
     }
+  }
+
+  /** Sends the usage menu what fills the context and today's usage; a part that fails is left out. */
+  private async postUsageDetails(): Promise<void> {
+    const c = this.controller;
+    if (!c || !readConfig().showUsage) return this.post({ type: "usageDetails", context: null, today: null });
+    const warn = (what: string) => (e: unknown) => {
+      this.log.warn(`Reading ${what} failed: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    };
+    const [context, today] = await Promise.all([
+      c.contextBreakdown().catch(warn("the session's context")),
+      c.usageToday().catch(warn("today's usage")),
+    ]);
+    this.post({ type: "usageDetails", context, today });
   }
 
   /** Sends the open folder's "always allow" rules to the webview (or why they could not be listed). */

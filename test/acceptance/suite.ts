@@ -417,6 +417,50 @@ async function pastedText(api: TestApi): Promise<void> {
   await askAside(api);
   await backgroundSessions(api);
   await approvalModes(api);
+  await usageAndCosts(api);
+}
+
+// ============================================================ usage and costs
+
+/**
+ * A reply's turn footer names the model it ran on, the cost tables count its step, and
+ * the context breakdown splits OpenCode's reported total into the parts the messages show
+ * and an honest rest.
+ */
+async function usageAndCosts(api: TestApi): Promise<void> {
+  await api.handle({ type: "newSession" });
+  const mark = items(api).length;
+  const r = await sendAndWait(api, "Reply with the single word OK. Do not use any tools.");
+  check("Usage: reply finished", r.outcome === "succeeded", r.outcome);
+  const meta = items(api)
+    .slice(mark)
+    .find((i): i is Extract<TranscriptItem, { kind: "turn-meta" }> => i.kind === "turn-meta");
+  check(
+    "Turn footer names the model and counts the step",
+    !!meta && meta.models.includes(MODEL) && meta.steps >= 1 && meta.tokens > 0,
+    JSON.stringify(meta),
+  );
+  check(
+    "Turn footer speed is measured (OpenCode timed the stream)",
+    meta?.rate != null && meta.rate > 0,
+    String(meta?.rate),
+  );
+  const costs = api.viewState().costs;
+  const row = costs?.byModel.find((m) => m.key === MODEL);
+  check(
+    "Cost by model has the model's steps",
+    !!row && (row.steps ?? 0) >= 1 && (row.cost === null || row.cost >= 0),
+    JSON.stringify(costs),
+  );
+  const ctx = await api.controller()?.contextBreakdown();
+  check(
+    "Context breakdown: the messages' parts and the rest add up to OpenCode's total",
+    !!ctx &&
+      ctx.total !== null &&
+      ctx.parts.some((p) => p.key === "prompts") &&
+      ctx.parts.reduce((n, p) => n + p.tokens, 0) === ctx.total,
+    JSON.stringify(ctx),
+  );
 }
 
 // ============================================================ approval modes

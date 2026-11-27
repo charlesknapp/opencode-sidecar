@@ -6,6 +6,7 @@
 
 import type { SessionSummary, SubagentActivity, SubagentView, UiEvent } from "../shared/model";
 import { describeTool } from "../shared/tools";
+import { CostLedger, rollupCosts } from "./usage";
 
 /** Upper bound on subagent sessions followed for one open session (including nested ones). */
 export const MAX_SUBAGENTS = 200;
@@ -18,6 +19,10 @@ interface Entry {
   waiting: Set<string>;
   /** Tool calls that are running, so the activity can fall back to the previous one. */
   toolNames: Map<string, string>;
+  /** Its steps by model and agent, seen live. */
+  ledger: CostLedger;
+  /** The model its session record names (for one restored without its steps). */
+  modelKey: string | null;
 }
 
 export class SubagentTracker {
@@ -110,6 +115,8 @@ export class SubagentTracker {
           error: null,
         }),
       );
+      // Its steps are not known: its cost counts under the model its record names.
+      this.entries.get(summary.id)!.modelKey = summary.modelKey;
     }
   }
 
@@ -177,6 +184,10 @@ export class SubagentTracker {
       case "usage.session":
         v.cost = ev.cost;
         break;
+      case "usage.step":
+        e.ledger.add(ev);
+        if (ev.modelKey) e.modelKey = ev.modelKey;
+        break;
       case "permission.requested":
         e.waiting.add(`perm:${ev.request.id}`);
         break;
@@ -196,10 +207,19 @@ export class SubagentTracker {
 
   /** Subagents in the order they were started (parents before their own subagents). */
   views(): SubagentView[] {
-    return [...this.entries.values()].map((e) => ({
-      ...e.view,
-      activity: e.view.activity && { ...e.view.activity },
+    const views = [...this.entries.values()].map((e) => e.view);
+    // A subagent that started its own shows their cost added to its own.
+    const totals = rollupCosts(views);
+    return views.map((v) => ({
+      ...v,
+      activity: v.activity && { ...v.activity },
+      ...(totals.has(v.sessionID) ? { totalCost: totals.get(v.sessionID) ?? null } : {}),
     }));
+  }
+
+  /** Each subagent with its steps, for the usage menu's cost tables. */
+  costs(): Array<{ view: SubagentView; ledger: CostLedger; modelKey: string | null }> {
+    return [...this.entries.values()].map((e) => ({ view: e.view, ledger: e.ledger, modelKey: e.modelKey }));
   }
 
   view(sessionID: string): SubagentView | null {
@@ -209,7 +229,15 @@ export class SubagentTracker {
 }
 
 function newEntry(view: SubagentView): Entry {
-  return { view, tools: new Set(), files: new Set(), waiting: new Set(), toolNames: new Map() };
+  return {
+    view,
+    tools: new Set(),
+    files: new Set(),
+    waiting: new Set(),
+    toolNames: new Map(),
+    ledger: new CostLedger(),
+    modelKey: null,
+  };
 }
 
 function toolActivity(name: string, input: Record<string, unknown> | null): SubagentActivity {

@@ -15,9 +15,12 @@ import type {
   PermissionDecision,
   McpServerInfo,
   PermissionRequest,
+  QuotaMeter,
+  QuotaView,
   SavedPermission,
   SessionSummary,
   SkillOption,
+  UsageStats,
 } from "../shared/model";
 import type { PromptPayload } from "../core/context";
 import { parseRules, type PermissionRule } from "../shared/approval";
@@ -123,6 +126,12 @@ export interface OpenCodeClient {
     permissions?: PermissionRule[];
   }): Promise<SessionSummary>;
   listMessages(id: string, max: number): Promise<unknown[]>;
+  /** The messages that make up the session's context now (after its last compaction), raw. */
+  sessionContext(id: string): Promise<unknown[]>;
+  /** OpenCode Go and Console limits of the signed-in OpenCode workspace; null when none. */
+  usageLimits(directory: string): Promise<QuotaView | null>;
+  /** Usage since `from` (epoch ms), for one project when `projectID` is given. */
+  usageStats(range: { from: number; projectID?: string | null }): Promise<UsageStats>;
   prompt(id: string, input: PromptInput): Promise<{ id: string }>;
   switchModel(id: string, model: ModelRef): Promise<void>;
   switchAgent(id: string, agent: string): Promise<void>;
@@ -157,6 +166,82 @@ export interface OpenCodeClient {
   /** Text of the first user message, used for local title fallbacks. */
   firstUserText(id: string): Promise<string | null>;
   subscribe(handlers: EventHandlers): EventSubscription;
+}
+
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const money = (v: number) => `$${v.toFixed(2)}`;
+
+/**
+ * OpenCode's `UsageLimits.Info`: the OpenCode Go allowance (rolling, weekly and monthly
+ * windows, each a share used and a reset time) and the Console budgets (dollars spent of
+ * a limit). Null when OpenCode is not signed in to an OpenCode workspace, which is the
+ * case for every other provider: they report no quotas.
+ */
+export function parseUsageLimits(raw: unknown): QuotaView | null {
+  if (!raw || typeof raw !== "object") return null;
+  const d = rec(raw);
+  const meters: QuotaMeter[] = [];
+  const go = rec(d.go);
+  for (const [key, label] of [
+    ["rolling", "Go · rolling"],
+    ["weekly", "Go · weekly"],
+    ["monthly", "Go · monthly"],
+  ] as const) {
+    const m = rec(go[key]);
+    const percent = num(m.percent);
+    if (percent === null) continue;
+    meters.push({
+      id: `go:${key}`,
+      label,
+      percent: Math.min(100, Math.max(0, percent)),
+      used: null,
+      limited: m.limited === true,
+      resetsAt: num(m.resetsAt),
+    });
+  }
+  for (const b of Array.isArray(d.budgets) ? d.budgets : []) {
+    const x = rec(b);
+    const limit = num(x.limit);
+    const spent = num(x.spent);
+    if (limit === null || spent === null || limit <= 0) continue;
+    const models = (Array.isArray(x.models) ? x.models : []).map((m) => str(rec(m).name)).filter(Boolean);
+    const what = x.coverage === "models" && models.length ? models.join(", ") : "all models";
+    meters.push({
+      id: `budget:${str(x.id) ?? meters.length}`,
+      label: `Budget · ${what}${x.scope === "each" ? " (you)" : ""}`,
+      percent: Math.min(100, Math.max(0, (spent / limit) * 100)),
+      used: `${money(spent)} / ${money(limit)}`,
+      limited: spent >= limit,
+      resetsAt: num(x.resetsAt),
+    });
+  }
+  const workspace = rec(d.workspace);
+  return { workspace: str(workspace.name) ?? null, meters };
+}
+
+/** OpenCode's `SessionStats.Info`, reduced to what the usage menu shows. */
+export function parseUsageStats(raw: unknown): UsageStats {
+  const d = rec(raw);
+  const generated = (t: unknown) => (num(rec(t).output) ?? 0) + (num(rec(t).reasoning) ?? 0);
+  const models: UsageStats["models"] = [];
+  for (const m of Array.isArray(d.models) ? d.models : []) {
+    const x = rec(m);
+    const key = modelKey(x.model);
+    if (!key) continue;
+    // OpenCode lists each variant of a model on its own row.
+    const row = models.find((r) => r.modelKey === key);
+    if (row) {
+      row.steps += num(x.steps) ?? 0;
+      row.cost += num(x.cost) ?? 0;
+    } else models.push({ modelKey: key, steps: num(x.steps) ?? 0, cost: num(x.cost) ?? 0 });
+  }
+  return {
+    sessions: num(d.sessions) ?? 0,
+    steps: num(d.steps) ?? 0,
+    cost: num(d.cost) ?? 0,
+    tokens: generated(d.tokens),
+    models,
+  };
 }
 
 function modelBody(model: ModelRef): Rec {
@@ -565,6 +650,25 @@ export class HttpOpenCodeClient implements OpenCodeClient {
       cursor = next;
     }
     return out.reverse();
+  }
+
+  async sessionContext(id: string): Promise<unknown[]> {
+    const d = rec(await this.request("GET", `/api/session/${encodeURIComponent(id)}/context`));
+    return Array.isArray(d.data) ? d.data : [];
+  }
+
+  async usageLimits(directory: string): Promise<QuotaView | null> {
+    const d = rec(
+      await this.request("GET", "/api/experimental/usage/limits", { query: this.loc(directory) }),
+    );
+    return parseUsageLimits(d.data);
+  }
+
+  async usageStats(range: { from: number; projectID?: string | null }): Promise<UsageStats> {
+    const query: Record<string, string | undefined> = { from: String(Math.floor(range.from)), tools: "none" };
+    if (range.projectID) query.project = range.projectID;
+    const d = rec(await this.request("GET", "/api/experimental/session/stats", { query }));
+    return parseUsageStats(d.data);
   }
 
   async prompt(id: string, input: PromptInput): Promise<{ id: string }> {

@@ -96,6 +96,8 @@ export function baseState(over: Partial<ViewState> = {}): ViewState {
     agentChanges: { status: "none" },
     workspaceChanges: { count: 2 },
     usage: { contextTokens: 42000, contextLimit: 262144, cost: 0.08 },
+    costs: null,
+    quota: null,
     steps: 14,
     budget: {
       level: "medium",
@@ -826,6 +828,294 @@ describe(
         "Steps: 14",
         "Task: $0.03 / $0.30 · 5 / 50 steps",
       ]);
+    });
+
+    const COSTS: ViewState["costs"] = {
+      byModel: [
+        { key: "opencode-go/kimi-k2.7-code", label: "", steps: 12, tokens: 4200, cost: 0.05 },
+        { key: "opencode/big-pickle", label: "", steps: 3, tokens: 800, cost: 0 },
+        { key: "local/llama", label: "", steps: 2, tokens: 90, cost: null },
+      ],
+      byAgent: [
+        { key: "build", label: "build", steps: 15, tokens: 5000, cost: 0.05 },
+        { key: "ses_sub", label: "explore", steps: 2, tokens: 90, cost: 0.01, depth: 1, total: 0.03 },
+        { key: "ses_sub2", label: "general", steps: null, tokens: 0, cost: 0.02, depth: 2 },
+      ],
+      session: 0.06,
+      total: 0.09,
+      other: 0.01,
+    };
+    const tableRows = (testid: string) =>
+      page.$$eval(`[data-testid="${testid}"] tbody tr`, (rows) =>
+        rows.map((r) => Array.from(r.children).map((c) => (c as HTMLElement).innerText)),
+      );
+
+    it("breaks the session's cost down by model and by agent, subagents nested with their totals", async () => {
+      await host({ type: "state", state: baseState({ costs: COSTS }) });
+      await clearSent();
+      await page.click('[data-testid="context-ring"]');
+      assert.ok(await lastSent("loadUsageDetails"), "the menu asks for what fills the context");
+      assert.deepEqual(await tableRows("cost-by-model"), [
+        ["Kimi K2.7 Code", "12", "4.2k", "$0.05"],
+        ["big-pickle", "3", "800", "$0.00"],
+        ["llama", "2", "90", "—"],
+      ]);
+      assert.deepEqual(await tableRows("cost-by-agent"), [
+        ["Build", "15", "$0.05"],
+        ["↳ explore", "2", "$0.01 ($0.03)"],
+        ["↳ general", "—", "$0.02"],
+      ]);
+      const menu = await text('[data-testid="menu"]');
+      assert.match(menu, /Session \$0\.06: \$0\.01 for titles and compaction, with subagents \$0\.09\./);
+      assert.match(menu, /— : OpenCode reported no cost for these steps\./);
+      assert.match(menu, /Loading…/);
+      // Nothing known yet: no tables, no empty headings.
+      await page.keyboard.press("Escape");
+      await host({ type: "state", state: baseState({ costs: null }) });
+      await page.click('[data-testid="context-ring"]');
+      assert.equal(await page.$('[data-testid="cost-by-model"]'), null);
+      assert.doesNotMatch(await text('[data-testid="menu"]'), /Cost by/);
+    });
+
+    it("shows what fills the context once the host sends it, with the rest named honestly", async () => {
+      await page.click('[data-testid="context-ring"]');
+      await host({
+        type: "usageDetails",
+        context: {
+          total: 42000,
+          limit: 262144,
+          parts: [
+            { key: "prompts", tokens: 1200 },
+            { key: "tools", tokens: 9800 },
+            { key: "rest", tokens: 31000 },
+          ],
+          images: 1,
+          messages: 12,
+        },
+        today: { sessions: 4, steps: 30, cost: 0.4, tokens: 9000, models: [] },
+      });
+      assert.ok(await page.$('[data-testid="menu"]'), "the menu stays open with the new figures");
+      const parts = await page.$$eval('[data-testid^="context-part-"]', (els) =>
+        els.map((e) => [
+          (e as HTMLElement).dataset.testid,
+          e.querySelector(".menu-stat")?.textContent,
+          e.querySelector('[role="meter"]')?.getAttribute("aria-valuenow"),
+        ]),
+      );
+      assert.deepEqual(parts, [
+        ["context-part-prompts", "Your messages~1.2k", "3"],
+        ["context-part-tools", "Tool calls and results~9.8k", "23"],
+        ["context-part-rest", "System prompt, tools and instructions31k", "74"],
+      ]);
+      const menu = await text('[data-testid="menu"]');
+      assert.match(menu, /what is left of OpenCode's total/);
+      assert.match(menu, /1 image not counted/);
+      assert.doesNotMatch(menu, /Loading…/);
+      // Today's usage shows with the cost tables.
+      await page.keyboard.press("Escape");
+      await host({ type: "state", state: baseState({ costs: COSTS }) });
+      await page.click('[data-testid="context-ring"]');
+      await host({
+        type: "usageDetails",
+        context: null,
+        today: { sessions: 4, steps: 30, cost: 0.4, tokens: 1, models: [] },
+      });
+      assert.match(await text('[data-testid="menu"]'), /Today in this project\s*\$0\.40 · 4 sessions/);
+      assert.equal(await page.$('[data-testid^="context-part-"]'), null, "no context figures: no section");
+    });
+
+    it("shows provider limits as meters with their reset, and a warning chip from 80%", async () => {
+      const chip = '[data-testid="quota-chip"]';
+      const hidden = () => page.$eval(chip, (b) => (b as HTMLElement).hidden);
+      assert.equal(await hidden(), true, "no limits reported: no chip");
+      await page.click('[data-testid="context-ring"]');
+      assert.doesNotMatch(await text('[data-testid="menu"]'), /Limits/, "and no empty section");
+      await page.keyboard.press("Escape");
+      const quota: ViewState["quota"] = {
+        workspace: "Acme",
+        meters: [
+          {
+            id: "go:rolling",
+            label: "Go · rolling",
+            percent: 86,
+            used: null,
+            limited: false,
+            resetsAt: Date.now() + 3 * 3600_000 - 1000,
+          },
+          {
+            id: "go:weekly",
+            label: "Go · weekly",
+            percent: 20,
+            used: null,
+            limited: false,
+            resetsAt: Date.now() + 25 * 60_000,
+          },
+          {
+            id: "budget:b",
+            label: "Budget · all models",
+            percent: 32,
+            used: "$3.20 / $10.00",
+            limited: false,
+            resetsAt: null,
+          },
+        ],
+      };
+      await host({ type: "state", state: baseState({ quota }) });
+      assert.equal(await hidden(), false);
+      assert.equal(await text(chip), "86%");
+      assert.equal(
+        await page.$eval(chip, (b) => (b as HTMLElement).dataset.tip),
+        "Go · rolling: 86% used, resets in 3 h",
+      );
+      await page.click(chip);
+      const meters = await page.$$eval('[data-testid="quota-meter"]', (els) =>
+        els.map((e) => [
+          (e as HTMLElement).innerText.replace(/\s+/g, " ").trim(),
+          e.classList.contains("warn"),
+        ]),
+      );
+      assert.deepEqual(meters, [
+        ["Go · rolling 86% resets in 3 h", true],
+        ["Go · weekly 20% resets in 25 min", false],
+        ["Budget · all models $3.20 / $10.00 · 32%", false],
+      ]);
+      assert.match(await text('[data-testid="menu"]'), /Limits · Acme/);
+      await page.keyboard.press("Escape");
+      // Under 80% everywhere: the chip goes; a reached limit brings it back.
+      await host({ type: "state", state: baseState({ quota: { ...quota, meters: quota.meters.slice(1) } }) });
+      assert.equal(await hidden(), true);
+      await host({
+        type: "state",
+        state: baseState({
+          quota: { workspace: null, meters: [{ ...quota.meters[2], percent: 40, limited: true }] },
+        }),
+      });
+      assert.equal(await hidden(), false);
+      assert.match((await page.$eval(chip, (b) => (b as HTMLElement).dataset.tip)) ?? "", /limit reached/);
+    });
+
+    it("fits the cost tables and meters in a 300px panel", async () => {
+      await page.setViewport({ width: 300, height: 800 });
+      const quota: ViewState["quota"] = {
+        workspace: "A workspace with a long name",
+        meters: [
+          {
+            id: "b",
+            label: "Budget · Kimi K2.7 Code, GLM 5, Qwen 3 (you)",
+            percent: 91,
+            used: "$9.10 / $10.00",
+            limited: false,
+            resetsAt: Date.now() + 5 * 86400_000,
+          },
+        ],
+      };
+      await host({ type: "state", state: baseState({ costs: COSTS, quota }) });
+      await page.click('[data-testid="quota-chip"]');
+      const fit = await page.$eval('[data-testid="menu"]', (m) => {
+        const r = m.getBoundingClientRect();
+        const tables = Array.from(m.querySelectorAll("table")).map((t) => t.getBoundingClientRect().right);
+        return {
+          right: r.right,
+          left: r.left,
+          tables,
+          vw: window.innerWidth,
+          scroll: document.documentElement.scrollWidth,
+        };
+      });
+      assert.ok(fit.left >= 0 && fit.right <= fit.vw, JSON.stringify(fit));
+      assert.ok(
+        fit.tables.every((x) => x <= fit.right + 0.5),
+        "tables stay inside the menu",
+      );
+      assert.ok(fit.scroll <= fit.vw, "no sideways scroll");
+      assert.match(await text('[data-testid="menu"]'), /resets on/);
+    });
+
+    it("puts the turn's model, steps, tokens, speed and cost under it", async () => {
+      await host({
+        type: "transcript",
+        items: [
+          { kind: "user", id: "user:u1", text: "go", attachments: [] },
+          { kind: "assistant", id: "text:a", text: "Done.", streaming: false },
+          {
+            kind: "turn-meta",
+            id: "meta:1",
+            models: ["opencode-go/kimi-k2.7-code", "opencode/big-pickle"],
+            steps: 3,
+            tokens: 1234,
+            rate: 41.6,
+            cost: 0.012,
+          },
+          { kind: "user", id: "user:u2", text: "free", attachments: [] },
+          {
+            kind: "turn-meta",
+            id: "meta:2",
+            models: ["opencode/big-pickle"],
+            steps: 1,
+            tokens: 9,
+            rate: null,
+            cost: 0,
+          },
+        ],
+      });
+      const metas = await page.$$eval('[data-testid="turn-meta"]', (els) =>
+        els.map((e) => (e as HTMLElement).innerText),
+      );
+      assert.deepEqual(metas, [
+        "Kimi K2.7 Code, big-pickle · 3 steps · 1.2k tokens · 42 tok/s · $0.01",
+        "big-pickle · 1 step · 9 tokens",
+      ]);
+    });
+
+    it("shows a live tokens-a-second estimate while a reply streams, and hides it between replies", async () => {
+      await host({ type: "state", state: baseState({ busy: true }) });
+      const rate = () => text('[data-testid="tok-rate"]');
+      assert.equal(await rate(), "");
+      await host({ type: "events", events: [{ type: "step.started", modelKey: null, agent: "build" }] });
+      await host({ type: "events", events: [{ type: "assistant.delta", partId: "p:0", delta: "Hello " }] });
+      await new Promise((r) => setTimeout(r, 700));
+      await host({
+        type: "events",
+        events: [{ type: "assistant.delta", partId: "p:0", delta: "x".repeat(400) }],
+      });
+      assert.match(await rate(), /^ · ~\d+ tok\/s$/);
+      assert.match(
+        (await page.$eval('[data-testid="tok-rate"]', (e) => e.getAttribute("title"))) ?? "",
+        /Estimated from the streamed text/,
+      );
+      // The step ends (a tool runs next): the readout goes until text streams again.
+      await host({
+        type: "events",
+        events: [
+          {
+            type: "usage.step",
+            tokens: { input: 1, output: 100, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+            modelKey: null,
+          },
+        ],
+      });
+      assert.equal(await rate(), "");
+      await host({ type: "state", state: baseState({ busy: false }) });
+      assert.equal(await page.$eval('[data-testid="working"]', (e) => (e as HTMLElement).hidden), true);
+    });
+
+    it("keeps a subagent's own cost on its row and adds its subagents' to the tooltip", async () => {
+      await host({ type: "transcript", items: [SUBAGENT_TOOL] });
+      await host({ type: "state", state: baseState({ subagents: [SUB({ cost: 0.02, totalCost: 0.05 })] }) });
+      assert.equal(
+        await page.$eval('[data-testid="subagent-meta"]', (e) => e.getAttribute("title")),
+        "Its own cost $0.02; with its subagents $0.05",
+      );
+      // Its conversation's header shows both.
+      await host({ type: "subagentTranscript", sessionID: "ses_sub", items: [] });
+      await host({
+        type: "state",
+        state: baseState({
+          subagents: [SUB({ cost: 0.02, totalCost: 0.05 })],
+          viewingSubagent: { id: "ses_sub", loading: false },
+        }),
+      });
+      assert.match(await text('[data-testid="subagent-cost"]'), /^\$0\.02 · \$0\.05 with subagents$/);
     });
 
     it("keeps the header to the title, approval, Bookmarks, History and New session; renames in place", async () => {

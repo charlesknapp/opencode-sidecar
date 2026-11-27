@@ -28,6 +28,7 @@ import {
 } from "./sessionWatch";
 import { MAX_SUBAGENTS, SubagentTracker } from "./subagents";
 import { displayTitle, isUsableTitle } from "./titles";
+import { contextBreakdown, CostLedger, costBreakdown } from "./usage";
 import { OpenCodeHttpError, sameDirectory, type FoundFile, type OpenCodeClient } from "../opencode/client";
 import {
   describeSensitive,
@@ -44,6 +45,8 @@ import type {
   BudgetLevel,
   BudgetView,
   ContextAttachment,
+  ContextBreakdown,
+  CostBreakdown,
   FileChange,
   FormAnswer,
   InboxDelivery,
@@ -51,6 +54,7 @@ import type {
   PendingInboxItem,
   PermissionDecision,
   McpServerInfo,
+  QuotaView,
   SavedPermission,
   SessionSummary,
   SkillOption,
@@ -61,6 +65,7 @@ import type {
   TranscriptItem,
   UiEvent,
   UsageInfo,
+  UsageStats,
 } from "../shared/model";
 import { stampTime, Transcript } from "../shared/transcript";
 import {
@@ -126,12 +131,17 @@ export interface ControllerDefaults {
 export interface ControllerStrings {
   budgetWarning: string;
   budgetStopped: string;
+  /** The limit is reached while a file is being written: the agent stops once it is. */
+  budgetStopping: (file: string) => string;
+  budgetStoppedAfter: (file: string) => string;
   contextWarning: (percent: number) => string;
 }
 
 const EN_STRINGS: ControllerStrings = {
   budgetWarning: "Task budget is nearly exhausted.",
   budgetStopped: "Task budget reached. The agent was stopped.",
+  budgetStopping: (f) => `Task budget reached. Stopping once ${f} is written.`,
+  budgetStoppedAfter: (f) => `Task budget reached. Stopped after finishing ${f}.`,
   contextWarning: (p) => `The context window is ${p}% full. Consider starting a new session.`,
 };
 
@@ -204,6 +214,21 @@ export class SessionController {
   /** Archived sessions, loaded when the history's Archived view opens; null until then. */
   archivedSessions: SessionSummary[] | null = null;
   private sessionCost: number | null = null;
+  /** The open session's steps by model and agent. */
+  private ledger = new CostLedger();
+  /** OpenCode Go and Console limits; null when OpenCode reports none. */
+  quota: QuotaView | null = null;
+  private quotaAt = 0;
+  /**
+   * A Budget Guard stop held back while the agent writes files: the card it updates, the
+   * edit calls it waits for and the files they write. The run is interrupted once they finish.
+   */
+  private budgetDrain: {
+    id: string;
+    tools: Set<string>;
+    file: string;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
   private contextWarned = false;
   private lastPayload: PromptPayload | null = null;
   private deliveredEarly = new Set<string>();
@@ -289,6 +314,8 @@ export class SessionController {
       stopCheckMs: number;
       modelRetryMs: number;
       catalogDebounceMs?: number;
+      /** How long a Budget Guard stop waits for running edits to finish. */
+      budgetDrainMs?: number;
       /** Clock for subagent timing (tests). */
       now?: () => number;
     } = { debounceMs: 400, stopCheckMs: 15_000, modelRetryMs: 1500 },
@@ -364,6 +391,45 @@ export class SessionController {
 
   budgetView(): BudgetView {
     return this.budget.view();
+  }
+
+  /** The open session's costs by model and by agent, subagents included. */
+  costs(): CostBreakdown | null {
+    return costBreakdown(this.ledger, this.sessionCost, this.subagents.costs());
+  }
+
+  /** What fills the open session's context, from the messages OpenCode builds it from. */
+  async contextBreakdown(): Promise<ContextBreakdown | null> {
+    if (!this.current) return null;
+    const messages = await this.client.sessionContext(this.current.id);
+    const u = this.usage();
+    return contextBreakdown(messages, u?.contextTokens ?? null, u?.contextLimit ?? null);
+  }
+
+  /** Usage in the open folder's project since local midnight. */
+  async usageToday(now = new Date()): Promise<UsageStats | null> {
+    if (!this.directory) return null;
+    const project = await this.client.projectId(this.directory).catch(() => null);
+    if (!project) return null;
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    return this.client.usageStats({ from: midnight, projectID: project });
+  }
+
+  /** Reads the usage limits again after a task, at most once a minute. */
+  private async refreshQuota(): Promise<void> {
+    const dir = this.directory;
+    if (!dir || Date.now() - this.quotaAt < 60_000) return;
+    this.quotaAt = Date.now();
+    try {
+      const quota = await this.client.usageLimits(dir);
+      if (dir !== this.directory) return;
+      if (JSON.stringify(quota) !== JSON.stringify(this.quota)) {
+        this.quota = quota;
+        this.sink.onStateChanged();
+      }
+    } catch (e) {
+      this.log.warn(`Reading usage limits failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /** Title shown for the current session (OpenCode's when usable, else a local fallback). */
@@ -498,6 +564,10 @@ export class SessionController {
         }),
       ]);
       const account = await accountP;
+      const quota = await this.client.usageLimits(dir).catch((e: unknown) => {
+        this.log.warn(`Reading usage limits failed: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      });
       const picked = await this.pickDefaults(dir, models ?? [], agents ?? []);
       if (dir !== this.directory || generation !== this.catalogGeneration || this.disposed) return;
       // Publish the catalog and the defaults together, so a selection made by the user can
@@ -515,6 +585,8 @@ export class SessionController {
       if (agentRules && Object.keys(agentRules).length) this.agentRules = agentRules;
       if (!commands.length) this.commandsTimer = setTimeout(() => void this.refreshCommands(1), 2000);
       this.account = account;
+      this.quota = quota;
+      this.quotaAt = Date.now();
       this.catalogLoaded = true;
       this.selectedModel = prevModel ?? picked.model;
       const variants = models?.find((m) => m.key === this.selectedModel)?.variants ?? [];
@@ -724,6 +796,8 @@ export class SessionController {
     this.steps = 0;
     this.lastStep = null;
     this.sessionCost = null;
+    this.ledger.reset();
+    this.clearDrain();
     this.contextWarned = false;
     this.lastPayload = null;
     this.firstUserText = null;
@@ -2181,19 +2255,73 @@ export class SessionController {
       });
     } else if (signal.kind === "exceeded") {
       const v = this.budget.view();
-      this.log.warn(
-        `Budget ${v.level} reached (${signal.metric}): cost=${v.taskCost ?? "n/a"} steps=${v.taskSteps}; interrupting`,
-      );
-      this.deferred.push({
-        type: "budget",
-        id: `budget:${++this.budgetSeq}`,
-        state: "stopped",
-        text: this.strings().budgetStopped,
-      });
+      const id = `budget:${++this.budgetSeq}`;
       this.taskStopReason = "budget";
       this.notify("budget-stopped", `budget:${this.current?.id}:${this.budgetSeq}`);
+      // Interrupting an edit could leave a file half written: let the edits running now
+      // finish, then stop before the agent's next step.
+      const edits = this.busy && !this.stopping ? this.runningEdits() : [];
+      const why = signal.projected ? ", the next step would cross it" : "";
+      const then = edits.length ? `stopping after ${edits.length} edit(s)` : "interrupting";
+      this.log.warn(
+        `Budget ${v.level} reached (${signal.metric}${why}): cost=${v.taskCost ?? "n/a"} steps=${v.taskSteps}; ${then}`,
+      );
+      if (edits.length) {
+        const file = edits.length === 1 ? edits[0].file : `${edits.length} files`;
+        this.clearDrain();
+        this.budgetDrain = {
+          id,
+          tools: new Set(edits.map((e) => e.id)),
+          file,
+          // An edit that never reports back must not keep the agent going.
+          timer: setTimeout(() => this.finishDrain(), this.timing.budgetDrainMs ?? 30_000),
+        };
+        this.deferred.push({
+          type: "budget",
+          id,
+          state: "warning",
+          text: this.strings().budgetStopping(file),
+        });
+        return;
+      }
+      this.deferred.push({ type: "budget", id, state: "stopped", text: this.strings().budgetStopped });
       if (this.busy && !this.stopping) void this.stop();
     }
+  }
+
+  /** Edit calls of the open session that are writing now, with the file each one writes. */
+  private runningEdits(): Array<{ id: string; file: string }> {
+    const out: Array<{ id: string; file: string }> = [];
+    for (const i of this.transcript.items) {
+      if (i.kind !== "tool" || i.category !== "edit" || i.status !== "running") continue;
+      out.push({ id: i.id.slice("tool:".length), file: this.displayPath(i.detail.path) ?? i.title });
+    }
+    return out;
+  }
+
+  /** A path as the user knows it: relative to the open folder when it is inside it. */
+  private displayPath(path: string | undefined): string | null {
+    if (!path) return null;
+    const dir = this.directory?.replace(/[\\/]+$/, "");
+    if (dir && sameDirectory(path.slice(0, dir.length), dir) && /^[\\/]/.test(path.slice(dir.length)))
+      return path.slice(dir.length + 1).replace(/\\/g, "/");
+    return path.replace(/\\/g, "/");
+  }
+
+  /** The held-back budget stop: the edits are done (or took too long), stop the agent now. */
+  private finishDrain(): void {
+    const d = this.budgetDrain;
+    if (!d) return;
+    this.clearDrain();
+    this.emit([
+      { type: "budget", id: d.id, state: "stopped", text: this.strings().budgetStoppedAfter(d.file) },
+    ]);
+    if (this.busy && !this.stopping) void this.stop();
+  }
+
+  private clearDrain(): void {
+    if (this.budgetDrain) clearTimeout(this.budgetDrain.timer);
+    this.budgetDrain = null;
   }
 
   // ----------------------------------------------------------------- events
@@ -2379,7 +2507,27 @@ export class SessionController {
         this.execActive = false;
         this.budget.endTask();
         clearTimeout(this.stopTimer);
-        if (!replay) this.finishTask(ev.outcome);
+        if (this.budgetDrain) {
+          // The agent ended by itself while its last edits finished: the card says it stopped.
+          const d = this.budgetDrain;
+          this.clearDrain();
+          this.deferred.push({
+            type: "budget",
+            id: d.id,
+            state: "stopped",
+            text: this.strings().budgetStoppedAfter(d.file),
+          });
+        }
+        if (!replay) {
+          this.finishTask(ev.outcome);
+          void this.refreshQuota();
+        }
+        break;
+      case "tool.completed":
+      case "tool.failed":
+        // The last edit a held-back budget stop waits for is done: stop before the next step.
+        if (this.budgetDrain?.tools.delete(ev.toolId) && this.budgetDrain.tools.size === 0)
+          queueMicrotask(() => this.finishDrain());
         break;
       case "permission.requested":
         if (!replay)
@@ -2437,6 +2585,7 @@ export class SessionController {
           at: ev.time ?? (replay ? null : Date.now()),
         };
         this.steps++;
+        this.ledger.add(ev);
         if (!replay) {
           this.checkBudget(this.budget.recordStep());
           this.checkContext();

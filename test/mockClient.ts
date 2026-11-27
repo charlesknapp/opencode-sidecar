@@ -19,9 +19,11 @@ import type {
   PermissionDecision,
   McpServerInfo,
   PermissionRequest,
+  QuotaView,
   SavedPermission,
   SessionSummary,
   SkillOption,
+  UsageStats,
 } from "../src/shared/model";
 
 export interface Call {
@@ -163,6 +165,24 @@ export class MockClient implements OpenCodeClient {
     this.record("deleteSession", id);
     if (this.deleteError) throw this.deleteError;
     this.sessions = this.sessions.filter((x) => x.id !== id);
+  }
+  /** `GET /api/session/{id}/context` messages by session. */
+  contexts = new Map<string, unknown[]>();
+  async sessionContext(id: string) {
+    this.record("sessionContext", id);
+    return this.contexts.get(id) ?? [];
+  }
+  quota: QuotaView | null = null;
+  quotaError: Error | null = null;
+  async usageLimits(directory: string) {
+    this.record("usageLimits", directory);
+    if (this.quotaError) throw this.quotaError;
+    return this.quota;
+  }
+  stats: UsageStats = { sessions: 0, steps: 0, cost: 0, tokens: 0, models: [] };
+  async usageStats(range: { from: number; projectID?: string | null }) {
+    this.record("usageStats", range);
+    return this.stats;
   }
   mcp: McpServerInfo[] = [];
   async listMcpServers(directory: string) {

@@ -75,6 +75,153 @@ describe("budget guard in the controller", () => {
     assert.equal(client.callsTo("interrupt").length, 1);
   });
 
+  it("never stops mid-edit: finishes the file being written, then stops", async () => {
+    const { c, client, emitted } = await running("small");
+    step(c, 2);
+    // The agent starts writing a file; the budget is reached while it does.
+    c.handleRawEvent(raw("session.tool.input.started", { sessionID: "ses_1", id: "e1", name: "edit" }));
+    c.handleRawEvent(
+      raw("session.tool.called", {
+        sessionID: "ses_1",
+        id: "e1",
+        input: { path: `${DIR}/src/a.ts`, oldString: "a", newString: "b" },
+      }),
+    );
+    c.handleRawEvent(raw("session.usage.updated", { sessionID: "ses_1", cost: 0.2, tokens }));
+    await tick();
+    assert.equal(client.callsTo("interrupt").length, 0, "no interrupt while the edit runs");
+    const waiting = emitted.filter((e) => e.type === "budget");
+    assert.deepEqual(
+      waiting.map((e) => e.type === "budget" && [e.state, e.text]),
+      [["warning", "Task budget reached. Stopping once src/a.ts is written."]],
+    );
+    c.handleRawEvent(
+      raw("session.tool.success", { sessionID: "ses_1", id: "e1", content: [{ type: "text", text: "ok" }] }),
+    );
+    await tick();
+    assert.equal(client.callsTo("interrupt").length, 1, "stopped right after the edit finished");
+    const card = c.transcript.items.filter((i) => i.kind === "budget");
+    assert.equal(card.length, 1, "the same card turns into the stopped card");
+    assert.ok(card[0].kind === "budget" && card[0].state === "stopped");
+    assert.equal(
+      card[0].kind === "budget" && card[0].text,
+      "Task budget reached. Stopped after finishing src/a.ts.",
+    );
+    c.handleRawEvent(raw("session.execution.interrupted", { sessionID: "ses_1", reason: "user" }));
+    assert.equal(c.taskView()?.status, "budget-stopped");
+  });
+
+  it("an edit that never reports back does not keep the agent going", async () => {
+    const env = setup("small");
+    const { c, client } = env;
+    (c as unknown as { timing: { budgetDrainMs: number } }).timing.budgetDrainMs = 20;
+    await c.setDirectory(DIR);
+    await c.send("do the task", []);
+    c.handleRawEvent(raw("session.execution.started", { sessionID: "ses_1" }));
+    c.handleRawEvent(raw("session.tool.input.started", { sessionID: "ses_1", id: "e1", name: "write" }));
+    c.handleRawEvent(
+      raw("session.tool.called", { sessionID: "ses_1", id: "e1", input: { path: "/elsewhere/b.ts" } }),
+    );
+    step(c, 20);
+    await tick();
+    assert.equal(client.callsTo("interrupt").length, 0);
+    await tick(40);
+    assert.equal(client.callsTo("interrupt").length, 1, "stops after the wait");
+    const card = c.transcript.items.filter((i) => i.kind === "budget").pop();
+    assert.ok(card?.kind === "budget" && card.state === "stopped" && card.text.includes("/elsewhere/b.ts"));
+  });
+
+  it("a run that ends by itself while its edit finishes gets the stopped card, no interrupt", async () => {
+    const { c, client } = await running("small");
+    c.handleRawEvent(raw("session.tool.input.started", { sessionID: "ses_1", id: "e1", name: "edit" }));
+    c.handleRawEvent(
+      raw("session.tool.called", { sessionID: "ses_1", id: "e1", input: { path: `${DIR}/x.ts` } }),
+    );
+    step(c, 20);
+    c.handleRawEvent(raw("session.execution.succeeded", { sessionID: "ses_1" }));
+    await tick(30);
+    assert.equal(client.callsTo("interrupt").length, 0);
+    const card = c.transcript.items.filter((i) => i.kind === "budget").pop();
+    assert.ok(card?.kind === "budget" && card.state === "stopped");
+  });
+
+  it("stops before the step that would cross the cost limit", async () => {
+    const { c, client, emitted } = await running("small");
+    // Two steps at $0.035: a third like them would end at $0.105, over the $0.10 limit.
+    step(c, 1);
+    c.handleRawEvent(raw("session.usage.updated", { sessionID: "ses_1", cost: 0.035, tokens }));
+    await tick();
+    assert.equal(client.callsTo("interrupt").length, 0);
+    step(c, 1);
+    c.handleRawEvent(raw("session.usage.updated", { sessionID: "ses_1", cost: 0.07, tokens }));
+    await tick();
+    assert.equal(client.callsTo("interrupt").length, 1);
+    assert.ok(emitted.some((e) => e.type === "budget" && e.state === "stopped"));
+  });
+
+  it("adds the session's costs up by model and agent, with its subagents", async () => {
+    const { c } = await running("off");
+    c.handleRawEvent(
+      raw("session.step.started", {
+        sessionID: "ses_1",
+        assistantMessageID: "m1",
+        agent: "build",
+        model: { providerID: "vast", id: "qwen" },
+      }),
+    );
+    c.handleRawEvent(
+      raw("session.step.ended", { sessionID: "ses_1", assistantMessageID: "m1", cost: 0.03, tokens }),
+    );
+    c.handleRawEvent(raw("session.usage.updated", { sessionID: "ses_1", cost: 0.04, tokens }));
+    c.handleRawEvent(raw("session.created", { sessionID: "ses_sub", parentID: "ses_1", agent: "explore" }));
+    c.handleRawEvent(
+      raw("session.step.started", {
+        sessionID: "ses_sub",
+        assistantMessageID: "m2",
+        agent: "explore",
+        model: { providerID: "vast", id: "mini" },
+      }),
+    );
+    c.handleRawEvent(
+      raw("session.step.ended", { sessionID: "ses_sub", assistantMessageID: "m2", cost: 0.01, tokens }),
+    );
+    c.handleRawEvent(raw("session.usage.updated", { sessionID: "ses_sub", cost: 0.01, tokens }));
+    const costs = c.costs();
+    assert.ok(costs);
+    assert.deepEqual(
+      costs.byModel.map((r) => [r.key, r.cost]),
+      [
+        ["vast/qwen", 0.03],
+        ["vast/mini", 0.01],
+      ],
+    );
+    assert.deepEqual(
+      costs.byAgent.map((r) => [r.key, r.depth ?? 0, r.cost]),
+      [
+        ["build", 0, 0.03],
+        ["ses_sub", 1, 0.01],
+      ],
+    );
+    assert.ok(Math.abs((costs.other ?? 0) - 0.01) < 1e-9);
+    assert.ok(Math.abs((costs.total ?? 0) - 0.05) < 1e-9);
+  });
+
+  it("reads usage limits with the catalog, again after a task, and the context on request", async () => {
+    const env = setup("off");
+    env.client.quota = { workspace: null, meters: [] };
+    await env.c.setDirectory(DIR);
+    assert.deepEqual(env.c.quota, { workspace: null, meters: [] });
+    assert.equal(env.client.callsTo("usageLimits").length, 1);
+    await env.c.send("hi", []);
+    env.client.contexts.set("ses_1", [{ type: "user", text: "x".repeat(40) }]);
+    const ctx = await env.c.contextBreakdown();
+    assert.deepEqual(ctx?.parts, [{ key: "prompts", tokens: 10 }]);
+    // A failing limits call keeps the view working (and nothing shown).
+    env.client.quotaError = new Error("boom");
+    await env.c.loadCatalog();
+    assert.equal(env.c.quota, null);
+  });
+
   it("never interrupts when the budget is off", async () => {
     const { c, client } = await running("off");
     step(c, 300);

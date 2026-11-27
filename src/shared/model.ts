@@ -183,6 +183,93 @@ export interface UsageInfo {
   cached?: boolean;
 }
 
+/**
+ * One row of the usage menu's cost tables: a model, an agent or a subagent, with what
+ * OpenCode reported for its steps. `cost` is null when no step reported one (a free
+ * model reports 0).
+ */
+export interface CostRow {
+  /** Model key (`opencode/big-pickle`), agent id, or a subagent's session id. */
+  key: string;
+  /** Agent name or subagent title; the webview names models from its model list. */
+  label: string;
+  /** Steps seen; null for a subagent known only from its session record. */
+  steps: number | null;
+  /** Tokens generated (output and reasoning). */
+  tokens: number;
+  cost: number | null;
+  /** Subagent rows: 1 for one the session started, 2 for its subagents, … */
+  depth?: number;
+  /** Subagent rows with subagents of their own: the cost with theirs included. */
+  total?: number | null;
+}
+
+/** The session's costs by model and by agent, its own and with its subagents. */
+export interface CostBreakdown {
+  byModel: CostRow[];
+  byAgent: CostRow[];
+  /** Session cost reported by OpenCode (its own steps, titles and compaction), USD. */
+  session: number | null;
+  /** With every subagent's cost included. */
+  total: number | null;
+  /** Session cost no step accounts for (title generation, compaction), when there is any. */
+  other: number | null;
+}
+
+/**
+ * What takes up the context window. OpenCode reports the total; the parts Sidecar can
+ * see (the messages `GET /api/session/{id}/context` returns) are estimated from their
+ * text, and `rest` is what is left: the system prompt, tool definitions (MCP included)
+ * and instructions, which OpenCode does not list.
+ */
+export interface ContextBreakdown {
+  /** Tokens in the context after the last step, as OpenCode reported them. */
+  total: number | null;
+  limit: number | null;
+  parts: Array<{
+    key: "prompts" | "instructions" | "replies" | "tools" | "files" | "summary" | "rest";
+    tokens: number;
+  }>;
+  /** Images attached in the context (not estimated). */
+  images: number;
+  /** Messages in the context (after the last compaction). */
+  messages: number;
+}
+
+/**
+ * A provider quota OpenCode reports (`GET /api/experimental/usage/limits`): an OpenCode
+ * Go allowance window or an OpenCode Console budget.
+ */
+export interface QuotaMeter {
+  id: string;
+  label: string;
+  /** 0–100. */
+  percent: number;
+  /** "$3.20 / $10.00" for a budget; null for a Go window, which reports only a share. */
+  used: string | null;
+  /** OpenCode reports the limit as reached (requests are refused until it resets). */
+  limited: boolean;
+  /** Epoch ms; null when not reported. */
+  resetsAt: number | null;
+}
+
+export interface QuotaView {
+  /** The OpenCode Console workspace the meters belong to, when named. */
+  workspace: string | null;
+  meters: QuotaMeter[];
+}
+
+/** Usage over a time range across sessions (`GET /api/experimental/session/stats`). */
+export interface UsageStats {
+  sessions: number;
+  steps: number;
+  /** USD. */
+  cost: number;
+  /** Tokens generated (output and reasoning). */
+  tokens: number;
+  models: Array<{ modelKey: string; steps: number; cost: number }>;
+}
+
 /** An OpenCode slash command (`GET /api/command`). */
 export interface CommandInfo {
   name: string;
@@ -403,6 +490,20 @@ export type TranscriptItem =
   | { kind: "notice"; id: string; level: "error" | "info"; text: string }
   | { kind: "form"; id: string; form: FormRequest; status: FormStatus; answer: FormAnswer | null }
   | { kind: "error"; id: string; title: string; detail: string; actions: ErrorAction[] }
+  /**
+   * The models a turn ran on, under its last entry: its steps, the tokens they generated,
+   * the generation speed (tokens a second while the model streamed) and the cost.
+   */
+  | {
+      kind: "turn-meta";
+      id: string;
+      models: string[];
+      steps: number;
+      tokens: number;
+      /** Tokens a second; null when OpenCode reported no stream timing. */
+      rate: number | null;
+      cost: number | null;
+    }
   | {
       kind: "budget";
       id: string;
@@ -461,6 +562,8 @@ export interface SubagentView {
   started: number | null;
   ended: number | null;
   cost: number | null;
+  /** With the cost of its own subagents; set only when it has some. */
+  totalCost?: number | null;
   error: string | null;
 }
 
@@ -680,7 +783,21 @@ export type UiEvent =
   | { type: "session.selection"; agent?: string; modelKey?: string; variant?: string | null }
   /** The session's permission rules were replaced (by any client). */
   | { type: "session.permissions"; rules: PermissionRule[] }
-  /** `time`: when the step finished (epoch ms); stored for history, arrival time live. */
-  | { type: "usage.step"; tokens: TokenUsage; modelKey: string | null; time?: number }
+  /** A model step started (live only): the throughput readout starts counting again. */
+  | { type: "step.started"; modelKey: string | null; agent: string | null }
+  /**
+   * `time`: when the step finished (epoch ms); stored for history, arrival time live.
+   * `cost`: the step's cost in USD, null when not reported. `streamMs`: from the first
+   * token to the end of the model's stream, when OpenCode timed both.
+   */
+  | {
+      type: "usage.step";
+      tokens: TokenUsage;
+      modelKey: string | null;
+      time?: number;
+      cost?: number | null;
+      agent?: string | null;
+      streamMs?: number;
+    }
   | { type: "usage.session"; cost: number; tokens: TokenUsage }
   | { type: "notice"; level: "error" | "info"; text: string };

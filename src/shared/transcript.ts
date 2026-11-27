@@ -1,4 +1,5 @@
 import type { FileChange, ToolDetail, TranscriptItem, UiEvent } from "./model";
+import { stepRate } from "./throughput";
 import {
   describeTool,
   fileChangesFromMetadata,
@@ -20,12 +21,15 @@ export class Transcript {
   private turnFiles = new Map<string, FileChange>();
   private toolInputs = new Map<string, Record<string, unknown>>();
   private turn = 0;
+  /** The open turn's steps, for its footer line. */
+  private turnSteps = newTurnSteps();
 
   reset(items: TranscriptItem[] = []): void {
     this.items = [];
     this.index.clear();
     this.turnFiles.clear();
     this.toolInputs.clear();
+    this.turnSteps = newTurnSteps();
     for (const item of items) this.upsert(item);
   }
 
@@ -63,6 +67,7 @@ export class Transcript {
         if (this.has(id)) return [];
         this.turn++;
         this.turnFiles.clear();
+        this.turnSteps = newTurnSteps();
         return [
           this.upsert({
             kind: "user",
@@ -278,6 +283,21 @@ export class Transcript {
           changed.push(this.upsert({ kind: "turn-summary", id: `summary:${this.turn}`, files }));
           this.turnFiles.clear();
         }
+        // The footer covers the whole turn: a subagent report that wakes the session adds its steps.
+        const steps = this.turnSteps;
+        if (steps.steps) {
+          changed.push(
+            this.upsert({
+              kind: "turn-meta",
+              id: `meta:${this.turn}`,
+              models: [...steps.models],
+              steps: steps.steps,
+              tokens: steps.tokens,
+              rate: steps.streamMs > 0 ? steps.timedTokens / (steps.streamMs / 1000) : null,
+              cost: steps.cost,
+            }),
+          );
+        }
         if (ev.outcome === "interrupted") {
           changed.push(
             this.upsert({ kind: "notice", id: `stopped:${this.turn}`, level: "info", text: "Stopped." }),
@@ -322,6 +342,19 @@ export class Transcript {
         if (prev.status === "answered" && ev.status !== "answered") return [];
         return [this.upsert({ ...prev, status: ev.status, answer: ev.answer ?? prev.answer })];
       }
+      case "usage.step": {
+        const t = this.turnSteps;
+        t.steps++;
+        t.tokens += ev.tokens.output + ev.tokens.reasoning;
+        if (ev.modelKey && !t.models.includes(ev.modelKey)) t.models.push(ev.modelKey);
+        if (ev.cost != null) t.cost = (t.cost ?? 0) + ev.cost;
+        // Only steps OpenCode timed count toward the speed.
+        if (stepRate(ev.tokens, ev.streamMs) !== null) {
+          t.timedTokens += ev.tokens.output + ev.tokens.reasoning;
+          t.streamMs += ev.streamMs!;
+        }
+        return [];
+      }
       case "budget":
         return [this.upsert({ kind: "budget", id: ev.id, state: ev.state, text: ev.text, resolved: null })];
       case "budget.resolved": {
@@ -337,6 +370,17 @@ export class Transcript {
         return [];
     }
   }
+}
+
+function newTurnSteps() {
+  return {
+    steps: 0,
+    tokens: 0,
+    timedTokens: 0,
+    streamMs: 0,
+    cost: null as number | null,
+    models: [] as string[],
+  };
 }
 
 /** Event types whose items show a time in the timeline. */

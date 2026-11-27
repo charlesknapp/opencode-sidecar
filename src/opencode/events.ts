@@ -40,6 +40,16 @@ export function toTokenUsage(v: unknown): TokenUsage | null {
   };
 }
 
+/** A cost in USD, or null when OpenCode did not report one (0 is a real cost: a free model's). */
+function cost(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+/** How long the model streamed (first token to end of stream), when both were timed. */
+function streamTime(first: number | undefined, end: number | undefined): { streamMs?: number } {
+  return first !== undefined && end !== undefined && end > first ? { streamMs: end - first } : {};
+}
+
 export function modelKey(v: unknown): string | null {
   const m = rec(v);
   const provider = s(m?.providerID);
@@ -220,7 +230,11 @@ function userMessageEvent(id: string, text: string, files: unknown): UiEvent {
 export class EventNormalizer {
   private shells = new Map<string, { cwd: string | null; command: string | null }>();
   private shellTool = new Map<string, { sessionID: string; toolId: string }>();
-  private stepModel = new Map<string, string>();
+  /** Per step: its model and agent, and when its first token and the end of its stream arrived. */
+  private steps = new Map<
+    string,
+    { model: string | null; agent: string | null; firstToken?: number; streamed?: number }
+  >();
   /** Last model used per session, so execution failures can name the model. */
   private sessionModel = new Map<string, string>();
 
@@ -407,8 +421,18 @@ export class EventNormalizer {
       case "session.step.started": {
         const id = s(data.assistantMessageID);
         const key = modelKey(data.model);
-        if (id && key) this.stepModel.set(id, key);
+        const agent = s(data.agent);
+        if (id) this.steps.set(id, { model: key, agent });
         if (sessionID && key) this.sessionModel.set(sessionID, key);
+        return out([{ type: "step.started", modelKey: key, agent }]);
+      }
+      case "session.step.first-token":
+      case "session.step.streamed": {
+        // OpenCode stores these times as the message's `time.firstToken` and `time.streamed`.
+        const step = this.steps.get(s(data.assistantMessageID) ?? "");
+        const at = typeof env.created === "number" ? env.created : Date.now();
+        if (step && type === "session.step.first-token") step.firstToken = at;
+        else if (step) step.streamed = at;
         return out([]);
       }
       case "session.step.ended":
@@ -420,13 +444,17 @@ export class EventNormalizer {
         if (files.length) events.push({ type: "files.changed", files });
         const tokens = toTokenUsage(data.tokens);
         const msgId = s(data.assistantMessageID);
+        const step = msgId ? this.steps.get(msgId) : undefined;
         if (tokens)
           events.push({
             type: "usage.step",
             tokens,
-            modelKey: msgId ? (this.stepModel.get(msgId) ?? null) : null,
+            modelKey: step?.model ?? null,
+            cost: cost(data.cost),
+            agent: step?.agent ?? null,
+            ...streamTime(step?.firstToken, step?.streamed),
           });
-        if (msgId) this.stepModel.delete(msgId);
+        if (msgId) this.steps.delete(msgId);
         return out(events);
       }
       case "session.usage.updated": {
@@ -525,7 +553,7 @@ export function describeSensitive(resources: readonly string[]): string[] {
 }
 
 /** A positive epoch-ms timestamp from an OpenCode `time` record, if present. */
-function time(raw: unknown, key: "created" | "completed"): number | undefined {
+function time(raw: unknown, key: "created" | "completed" | "firstToken" | "streamed"): number | undefined {
   const v = rec(raw)?.[key];
   return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
 }
@@ -603,6 +631,9 @@ export function historyToEvents(messages: readonly unknown[]): UiEvent[] {
             type: "usage.step",
             tokens,
             modelKey: modelKey(m.model),
+            cost: cost(m.cost),
+            agent: s(m.agent),
+            ...streamTime(time(m.time, "firstToken"), time(m.time, "streamed")),
             ...(finished !== undefined ? { time: finished } : {}),
           });
         if (rec(m.error) && m.finish === "error") {

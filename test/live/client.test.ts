@@ -23,6 +23,8 @@ import { discoverServer } from "../../src/opencode/service";
 import { buildPrompt } from "../../src/core/context";
 import type { TaskNotice } from "../../src/core/currentTask";
 import { ASIDES_KEY, SessionController } from "../../src/core/sessionController";
+import { contextBreakdown } from "../../src/core/usage";
+import { Transcript } from "../../src/shared/transcript";
 import type { SessionSummary, UiEvent } from "../../src/shared/model";
 import { MemoryStore } from "../mockClient";
 
@@ -463,6 +465,114 @@ describe("live OpenCode service", () => {
       sub.dispose();
       ctl.dispose();
     }
+  });
+
+  it("reads usage limits, today's usage and a session's context as the usage menu shows them", async (t) => {
+    const c = live(t);
+    if (!c) return;
+    // Limits: OpenCode Go and Console budgets of a signed-in OpenCode workspace, else null.
+    const rawLimits = await raw(
+      "GET",
+      `/api/experimental/usage/limits?location[directory]=${encodeURIComponent(opencodeDirectory(dir))}`,
+    );
+    assert.ok("data" in rawLimits, JSON.stringify(rawLimits).slice(0, 200));
+    const quota = await c.usageLimits(dir);
+    if (rawLimits.data === null) assert.equal(quota, null, "not signed in: nothing to show");
+    else {
+      assert.ok(quota && Array.isArray(quota.meters));
+      for (const m of quota.meters) {
+        assert.ok(m.percent >= 0 && m.percent <= 100, JSON.stringify(m));
+        assert.ok(m.resetsAt === null || m.resetsAt > 0);
+      }
+    }
+
+    // Today's usage in the folder's project, and over all time (OpenCode's own totals).
+    const all = await c.usageStats({ from: 0 });
+    const rawAll = (await raw("GET", "/api/experimental/session/stats?from=0&tools=none")).data as {
+      steps: number;
+      cost: number;
+      sessions: number;
+    };
+    assert.equal(all.steps, rawAll.steps);
+    assert.equal(all.sessions, rawAll.sessions);
+    assert.ok(Math.abs(all.cost - rawAll.cost) < 1e-9);
+    assert.ok(all.models.every((m) => /^[^/]+\/.+/.test(m.modelKey) && m.steps >= 0 && m.cost >= 0));
+    assert.equal(new Set(all.models.map((m) => m.modelKey)).size, all.models.length, "variants merged");
+    const project = await c.projectId(dir);
+    const today = await c.usageStats({ from: new Date().setHours(0, 0, 0, 0), projectID: project });
+    assert.ok(today.steps <= all.steps && today.sessions >= 0);
+
+    // The context: the messages a model call is built from, here one shell command.
+    const s = await newSession(c);
+    assert.deepEqual(await c.sessionContext(s.id), [], "a new session's context is empty");
+    await c.runShell(s.id, "echo sidecar-context");
+    let context: unknown[] = [];
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      context = await c.sessionContext(s.id);
+      const m = context[0] as { status?: string } | undefined;
+      if (m && m.status !== "running") break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    assert.equal((context[0] as { type?: string }).type, "shell", JSON.stringify(context).slice(0, 300));
+    const parts = contextBreakdown(context, 5000, 100_000);
+    assert.ok(
+      parts.parts.some((p) => p.key === "tools" && p.tokens > 0),
+      JSON.stringify(parts),
+    );
+    const rest = parts.parts.find((p) => p.key === "rest");
+    assert.ok(rest && rest.tokens < 5000, "the rest is what the messages do not explain");
+    await assert.rejects(c.sessionContext("ses_doesnotexist0000000000000"), OpenCodeHttpError);
+  });
+
+  it("reports a step's model, agent, cost and stream time for the turn footer (one model call)", async (t) => {
+    const c = live(t);
+    if (!c) return;
+    const models = await c.listModels(dir);
+    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
+      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
+    const s = await c.createSession({ directory: dir, agent: "plan", model: FREE_MODEL });
+    created.add(s.id);
+    const { opened, finished, sub } = collect(
+      c,
+      (env) => env.sessionID === s.id && env.events.some((e) => e.type === "session.idle"),
+      120_000,
+    );
+    let seen: NormalizedEnvelope[];
+    try {
+      await opened;
+      await c.prompt(s.id, { text: "Reply with the single word OK. Do not use any tools.", files: [] });
+      seen = await finished;
+    } finally {
+      sub.dispose();
+    }
+    const events = seen.filter((e) => e.sessionID === s.id).flatMap((e) => e.events);
+    const idle = events.find((e) => e.type === "session.idle");
+    if (idle?.type === "session.idle" && idle.outcome === "failed") {
+      const stored = (await c.listMessages(s.id, 10)) as Array<{ error?: { type?: string } }>;
+      if (stored.some((m) => m.error?.type === "provider.free-limit"))
+        return t.skip("the free model usage limit is reached for today");
+    }
+    assert.ok(events.some((e) => e.type === "step.started" && e.modelKey === "opencode/big-pickle"));
+    const step = events.find((e) => e.type === "usage.step");
+    assert.ok(step?.type === "usage.step", JSON.stringify(events).slice(0, 400));
+    assert.equal(step.modelKey, "opencode/big-pickle");
+    assert.equal(step.agent, "plan");
+    assert.equal(step.cost, 0, "a free model reports a cost of 0");
+    assert.ok(step.tokens.output > 0);
+    // Stored history carries the same, so a reopened session shows the same footer.
+    const replayed = historyToEvents(await c.listMessages(s.id, 50)).find((e) => e.type === "usage.step");
+    assert.ok(replayed?.type === "usage.step");
+    assert.deepEqual(
+      [replayed.modelKey, replayed.agent, replayed.cost, replayed.streamMs],
+      [step.modelKey, step.agent, step.cost, step.streamMs],
+    );
+    const tr = new Transcript();
+    for (const e of historyToEvents(await c.listMessages(s.id, 50))) tr.apply(e);
+    const meta = tr.items.find((i) => i.kind === "turn-meta");
+    assert.ok(meta?.kind === "turn-meta" && meta.models[0] === "opencode/big-pickle");
+    const ctx = await c.sessionContext(s.id);
+    assert.ok(ctx.some((m) => (m as { type?: string }).type === "assistant"));
   });
 
   it("prompts a free model and replays the reply (one model call)", async (t) => {

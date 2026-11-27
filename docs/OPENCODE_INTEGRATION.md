@@ -41,6 +41,9 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | Rewind ✓                     | `POST /api/session/{id}/revert/stage` `{ messageID, files }`, then `POST /api/session/{id}/revert/commit`             |
 | Staged rewind ✓              | `DELETE /api/session/{id}/revert` (Restore) or `POST …/revert/commit` (Apply)                                         |
 | Compact                      | `POST /api/session/{id}/compact` `{}`                                                                                 |
+| Context messages ✓           | `GET /api/session/{id}/context` (the messages after the last compaction; for what fills the context)                  |
+| Usage limits ✓               | `GET /api/experimental/usage/limits?location[directory]=` (`data: null` unless signed in to an OpenCode workspace)    |
+| Usage stats ✓                | `GET /api/experimental/session/stats?from=&project=&tools=none` (today's cost in the project)                         |
 | Shell (`!command`) ✓         | `POST /api/session/{id}/shell` `{ command }`                                                                          |
 | Permissions ✓                | `GET …/permission`, `POST …/permission/{requestID}/reply` `{ decision, message? }`                                    |
 | Folder's project ✓           | `GET /api/location?location[directory]=` (its `project.id`; `C:\` and `c:\` are different projects)                   |
@@ -81,6 +84,7 @@ The stream is global, so the controller filters by `sessionID`.
 | `permission.asked/replied`, `form.created/replied/cancelled`                       | the permission and question docks                      |
 | `session.permissions` ✓                                                            | the approval badge and the session's rules             |
 | `session.step.started/ended/failed`, `session.usage.updated`                       | context, cost, steps, Budget Guard, cache estimate     |
+| `session.step.first-token/streamed` ✓                                              | a step's stream time, for its tokens a second          |
 | `session.revert.staged/committed/cleared` ✓                                        | reload the open session; a staged rewind shows its bar |
 | `session.agent.selected`, `session.model.selected`                                 | follow an agent or model chosen in another client      |
 | `session.compaction.started/ended/failed`                                          | notices                                                |
@@ -146,10 +150,21 @@ OpenCode runs a subagent (the `subagent` tool) in a child session: `session.crea
 - On reopen, subagents come from `GET /api/session?parentID=` (breadth-first, at most 200); pending requests are fetched only for subagents listed as running.
 - A tool call is linked to its subagent through the result's `metadata.sessionID`, or the `sessionID` input when a subagent is continued.
 
+## Usage and costs
+
+Checked against the live service (2.4.2) and its build:
+
+- A step's `session.step.started` names its `agent` and `model`; `session.step.ended` carries its `cost` (USD; `0` for a free model) and `tokens` (`input`, `output`, `reasoning`, `cache.read/write`). OpenCode stores the `created` time of `session.step.first-token` and `session.step.streamed` as the assistant message's `time.firstToken` and `time.streamed`, so live and stored steps give the same stream time: the turn footer's tokens a second is `(output + reasoning) / (streamed − firstToken)`. While text streams no token counts arrive, so the live figure is estimated from the text (about 4 characters a token) and marked as an estimate.
+- `session.usage.updated` carries the session's whole cost, which also covers title generation and compaction (`session.usage.recorded` with `source`); the usage menu shows the difference from the steps' sum as "titles and compaction". A subagent's session has its own cost; Sidecar adds a subagent's subagents to it, and all of them to the session's total.
+- `GET /api/session/{id}/context` lists the messages a model call is built from (after the last compaction). It does not include the system prompt, tool definitions (MCP included) or instructions, and OpenCode reports no split of the context's tokens, so Sidecar estimates the parts it can see from their text and shows the rest of the reported total as one figure. `GET /api/experimental/session/{id}/instructions/entries` lists only instruction entries added through the API (empty for ordinary sessions), so it is not used.
+- `GET /api/experimental/usage/limits` returns `UsageLimits.Info` only when OpenCode is signed in to an OpenCode Console workspace: `go` (OpenCode Go's `rolling`, `weekly` and `monthly` windows, each `{ percent, limited, resetsAt }`) and `budgets` (`{ limit, spent, scope, coverage, models, resetsAt, … }` in USD). Other providers' quotas are not exposed (`data: null`), and nothing is shown for them. Sidecar reads it with the catalog and after each task (at most once a minute).
+- `GET /api/experimental/session/stats` sums steps, tokens and cost over a time range (all sessions, or one `project`), with one row per model variant.
+- Auto-compaction (`compaction.auto`, `compaction.buffer`) is set in OpenCode's config documents; `PATCH /api/experimental/config` accepts only `shell`, so it cannot be changed through the API and Sidecar offers no control for it.
+
 ## Compatibility notes
 
 - A folder OpenCode has not loaded yet briefly answers with empty model and command lists. Sidecar retries the models once and the commands twice, and refreshes the commands when the / menu opens.
 - A session created or switched without a model variant records it as `default`.
 - A fork copies the history under new message ids, so a rewind in the fork names the fork's own message.
 - An agent's default model can differ from `GET /api/model/default`, so new sessions are created with an explicit model.
-- Rolling, weekly or monthly provider quotas are not exposed by OpenCode and are not shown. The prompt-cache clock is an estimate from the last step's time and the `cacheWarmMinutes` setting, shown only when that step reported cache tokens (`tokens.cache.read` or `tokens.cache.write` above zero).
+- The prompt-cache clock is an estimate from the last step's time and the `cacheWarmMinutes` setting, shown only when that step reported cache tokens (`tokens.cache.read` or `tokens.cache.write` above zero).

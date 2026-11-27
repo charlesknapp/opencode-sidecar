@@ -223,8 +223,65 @@ describe("event normalization", () => {
         type: "usage.step",
         tokens: { input: 10, output: 2, reasoning: 1, cacheRead: 100, cacheWrite: 0 },
         modelKey: "p/m",
+        cost: 0.01,
+        agent: "build",
       },
     ]);
+  });
+
+  it("times a live step from its first token to the end of its stream", () => {
+    const n = new EventNormalizer();
+    const at = (type: string, created: number, data: Record<string, unknown>) => ({
+      ...ev(type, { sessionID: S, assistantMessageID: M, ...data }),
+      created,
+    });
+    const started = n.normalize(
+      at("session.step.started", 1000, { agent: "plan", model: { providerID: "p", id: "m" }, started: 1000 }),
+    );
+    assert.deepEqual(started?.events, [{ type: "step.started", modelKey: "p/m", agent: "plan" }]);
+    assert.deepEqual(n.normalize(at("session.step.first-token", 3000, {}))?.events, []);
+    n.normalize(at("session.step.streamed", 5000, {}));
+    const ended = n.normalize(
+      at("session.step.ended", 5100, {
+        finish: "stop",
+        cost: 0,
+        tokens: { input: 10, output: 80, reasoning: 20, cache: { read: 0, write: 0 } },
+      }),
+    );
+    const step = ended?.events.find((e) => e.type === "usage.step");
+    assert.ok(step?.type === "usage.step");
+    assert.equal(step.streamMs, 2000);
+    assert.equal(step.cost, 0, "a free model's 0 is kept, not dropped");
+    assert.equal(step.agent, "plan");
+    // A step OpenCode did not time, or one without a cost, says so.
+    n.normalize(at("session.step.started", 6000, { agent: "build", model: { providerID: "p", id: "m" } }));
+    const untimed = n
+      .normalize(at("session.step.ended", 7000, { finish: "stop", tokens: { input: 1, output: 1 } }))
+      ?.events.find((e) => e.type === "usage.step");
+    assert.ok(untimed?.type === "usage.step");
+    assert.equal(untimed.streamMs, undefined);
+    assert.equal(untimed.cost, null);
+  });
+
+  it("replays a stored step's cost, agent and stream time", () => {
+    const events = historyToEvents([
+      {
+        id: "msg_a",
+        type: "assistant",
+        agent: "build",
+        model: { providerID: "opencode", id: "big-pickle" },
+        time: { created: 10, firstToken: 1000, streamed: 1500, completed: 1600 },
+        content: [],
+        cost: 0.002,
+        tokens: { input: 5, output: 30, reasoning: 20, cache: { read: 0, write: 0 } },
+      },
+    ]);
+    const step = events.find((e) => e.type === "usage.step");
+    assert.ok(step?.type === "usage.step");
+    assert.deepEqual(
+      { cost: step.cost, agent: step.agent, streamMs: step.streamMs, modelKey: step.modelKey },
+      { cost: 0.002, agent: "build", streamMs: 500, modelKey: "opencode/big-pickle" },
+    );
   });
 
   it("flags session list changes with their directory", () => {

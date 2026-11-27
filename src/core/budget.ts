@@ -1,7 +1,8 @@
 // Local task budget guard. It only measures what OpenCode actually reports
 // (session cost from usage events, completed agent steps) and never invents
 // provider quotas. A "task" is one OpenCode execution: from the prompt that
-// starts the agent until it goes idle.
+// starts the agent until it goes idle. It stops before the step that would cross the
+// cost limit (judged by the task's average step cost), not after it.
 
 import type { BudgetLevel, BudgetLimits, BudgetView } from "../shared/model";
 
@@ -20,8 +21,11 @@ export const DEFAULT_BUDGETS: BudgetSettings["presets"] = {
 
 export const BUDGET_LEVELS: BudgetLevel[] = ["off", "small", "medium", "large", "custom"];
 
+/** `projected`: the limit is not reached yet, but one more step like the average would cross it. */
 export type BudgetSignal =
-  { kind: "none" } | { kind: "warning" } | { kind: "exceeded"; metric: "cost" | "steps" };
+  | { kind: "none" }
+  | { kind: "warning" }
+  | { kind: "exceeded"; metric: "cost" | "steps"; projected?: boolean };
 
 export function nextLevel(level: BudgetLevel): BudgetLevel {
   if (level === "small") return "medium";
@@ -134,6 +138,17 @@ export class BudgetTracker {
     return best;
   }
 
+  /**
+   * The task's cost after one more step at its average step cost, as a share of the cost
+   * limit; null without a cost limit, a reported cost or a finished step.
+   */
+  private projectedCost(): number | null {
+    const l = this.limits();
+    const cost = this.taskCost();
+    if (l.maxCost === null || l.maxCost <= 0 || cost === null || cost <= 0 || this.steps === 0) return null;
+    return (cost + cost / this.steps) / (l.maxCost * this.allowance);
+  }
+
   evaluate(): BudgetSignal {
     if (this.level === "off" || this.exceeded) return { kind: "none" };
     const f = this.fraction();
@@ -141,6 +156,12 @@ export class BudgetTracker {
     if (f.value >= 1) {
       this.exceeded = true;
       return { kind: "exceeded", metric: f.metric };
+    }
+    // Stop at the step boundary rather than let the next step go over the limit.
+    const projected = this.projectedCost();
+    if (projected !== null && projected > 1) {
+      this.exceeded = true;
+      return { kind: "exceeded", metric: "cost", projected: true };
     }
     if (f.value >= this.settings().warnAt && !this.warned) {
       this.warned = true;

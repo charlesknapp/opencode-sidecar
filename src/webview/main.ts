@@ -7,6 +7,8 @@ import type {
   BudgetLevel,
   CheckState,
   CommandInfo,
+  ContextBreakdown,
+  CostRow,
   OnboardingStage,
   FileChange,
   FileDiff,
@@ -17,10 +19,12 @@ import type {
   MentionCandidate,
   SavedPermission,
   PromptMention,
+  QuotaMeter,
   StripStatus,
   SubagentView,
   TodoEntry,
   TranscriptItem,
+  UsageStats,
 } from "../shared/model";
 import {
   APPROVAL_MODES,
@@ -32,6 +36,7 @@ import {
   type RuleEffect,
 } from "../shared/approval";
 import type { HostMessage, OfficialLink, ViewState, WebviewMessage } from "../shared/protocol";
+import { formatRate, ThroughputMeter } from "../shared/throughput";
 import { Transcript } from "../shared/transcript";
 import { translate, type StringKey } from "./i18n";
 import { grammarFor, highlightBlock, highlightLine } from "./highlight";
@@ -192,6 +197,8 @@ const ICON_PATHS: Record<string, string[]> = {
   export: ["M8 2.5v7.5", "M5 5.5l3-3 3 3", "M3 9.5v3.5h10V9.5"],
   trash: ["M2.5 4.5h11", "M6 4.5V3h4v1.5", "M4 4.5l.7 8.5h6.6l.7-8.5", "M6.7 7v4M9.3 7v4"],
   stop: ["F:M5 4h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"],
+  // A limit nearly used up: a warning triangle.
+  warn: ["M8 2.5l6 11H2z", "M8 6.5v3", "F:M8.6 11.5a.6.6 0 1 1-1.2 0a.6.6 0 1 1 1.2 0z"],
   // Agents: Build is a hammer, Plan a clipboard with a checklist.
   build: ["M9.3 2.2l4.5 4.5-2.1 2.1-4.5-4.5z", "M9.4 6.6L3 13"],
   plan: [
@@ -410,6 +417,7 @@ const plusBtn = toolBtn("ico", "Add context", "add-context", icon("plus"));
 const slashBtn = toolBtn("ico", "Commands", "commands-button", icon("slash"));
 const ctxBtn = toolBtn("ico ctx", "Context", "context-ring");
 const clockBtn = toolBtn("pill clean", "Prompt cache and usage", "cache-pill");
+const quotaBtn = toolBtn("pill quota", "Usage limits", "quota-chip");
 const agentsBtn = toolBtn("pill", "Subagents", "agents-pill");
 const modelBtn = toolBtn("pill model", "Model", "model-pill");
 const modeBtn = toolBtn("mode", "Agent", "mode-button");
@@ -488,6 +496,7 @@ const boxTools = h(
   slashBtn,
   ctxBtn,
   clockBtn,
+  quotaBtn,
   agentsBtn,
   modelBtn,
   h("span", { className: "grow" }),
@@ -542,8 +551,7 @@ slashBtn.addEventListener("click", () => {
   if (openMenuState?.anchor !== slashBtn) send({ type: "refreshCommands" });
   openMenu(slashBtn, commandsMenu(), commandsMenuOptions());
 });
-for (const b of [ctxBtn, clockBtn])
-  b.addEventListener("click", () => openMenu(b, usageMenu(), { width: "box", title: "Context and usage" }));
+for (const b of [ctxBtn, clockBtn, quotaBtn]) b.addEventListener("click", () => openUsageMenu(b));
 modelBtn.addEventListener("click", () => openMenu(modelBtn, modelMenu(), modelMenuOptions()));
 modeBtn.addEventListener("click", () =>
   openMenu(modeBtn, modeMenu(), {
@@ -1151,7 +1159,8 @@ function copy(key: string, itemId: string, msg: { kind: "message" } | { kind: "c
 
 interface MenuEntry {
   /** toggle: a switch that stays in the menu; slider: a row of dots to pick one of a few values. */
-  kind: "item" | "heading" | "note" | "stat" | "sep" | "toggle" | "slider";
+  /** table: rows of cells under a header row; meter: a stat with a bar under it (`share` 0–1). */
+  kind: "item" | "heading" | "note" | "stat" | "sep" | "toggle" | "slider" | "table" | "meter";
   label?: string;
   /** Muted text on the right (a shortcut, a figure). */
   detail?: string;
@@ -1168,6 +1177,12 @@ interface MenuEntry {
   options?: Array<{ value: string; label: string }>;
   selected?: string;
   onSelect?: (value: string) => void;
+  /** table: the header row, then the rows; a row's `indent` nests it under the one above. */
+  columns?: string[];
+  rows?: Array<{ cells: string[]; indent?: number; title?: string }>;
+  share?: number;
+  /** meter: shown in the warning colour. */
+  warn?: boolean;
 }
 
 interface MenuOptions {
@@ -1265,6 +1280,33 @@ function openMenu(anchor: HTMLElement, entries: MenuEntry[], opts: MenuOptions =
     else if (e.kind === "stat")
       into.append(
         h("div", { className: "menu-stat" }, h("span", {}, e.label ?? ""), h("span", {}, e.value ?? "")),
+      );
+    else if (e.kind === "table") into.append(menuTable(e));
+    else if (e.kind === "meter")
+      into.append(
+        h(
+          "div",
+          { className: "menu-meter" + (e.warn ? " warn" : ""), "data-testid": e.testid },
+          h(
+            "div",
+            { className: "menu-stat" },
+            h("span", { dir: "auto" }, e.label ?? ""),
+            h("span", {}, e.value ?? ""),
+          ),
+          h(
+            "div",
+            {
+              className: "bar",
+              role: "meter",
+              "aria-label": e.label,
+              "aria-valuemin": "0",
+              "aria-valuemax": "100",
+              "aria-valuenow": String(Math.round((e.share ?? 0) * 100)),
+            },
+            meterFill(e.share ?? 0),
+          ),
+          e.sub ? h("div", { className: "menu-note" }, e.sub) : null,
+        ),
       );
     else if (e.kind === "toggle") {
       let on = !!e.checked;
@@ -2868,13 +2910,51 @@ function contextRing(share: number): SVGSVGElement {
   return svg;
 }
 
-/** The session's usage (context first), the prompt-cache estimate for models that cache, and Compact. */
+/** Opens the usage menu and asks the host for what fills the context and today's usage. */
+function openUsageMenu(anchor: HTMLElement): void {
+  const wasOpen = openMenuState?.anchor === anchor;
+  openMenu(anchor, usageMenu(), { width: "box", title: "Context and usage" });
+  if (wasOpen || !openMenuState) return;
+  openMenuState.el.dataset.view = "usage";
+  usageDetails = undefined;
+  send({ type: "loadUsageDetails" });
+}
+
+/** Repaints the open usage menu (new figures arrived) without moving focus to another button. */
+function refreshUsageMenu(): void {
+  const m = openMenuState;
+  if (m?.el.dataset.view !== "usage") return;
+  const anchor = m.anchor;
+  const list = m.el.querySelector(".menu-list");
+  const top = list?.scrollTop ?? 0;
+  closeMenu();
+  openMenu(anchor, usageMenu(), { width: "box", title: "Context and usage" });
+  if (!openMenuState) return;
+  openMenuState.el.dataset.view = "usage";
+  const next = openMenuState.el.querySelector(".menu-list");
+  if (next) next.scrollTop = top;
+}
+
+/** What the host sent for the open usage menu; undefined while it loads. */
+let usageDetails: { context: ContextBreakdown | null; today: UsageStats | null } | undefined;
+
+/**
+ * The session's usage (context first, then what fills it), its costs by model and agent,
+ * the provider's limits when OpenCode reports them, the prompt-cache estimate for models
+ * that cache, and Compact.
+ */
 function usageMenu(): MenuEntry[] {
   const s = state;
   if (!s) return [];
   const out: MenuEntry[] = [];
   const stats = usageStats(s);
   if (stats.length) out.push(heading("Session"), ...stats);
+  const ctx = contextEntries();
+  if (ctx.length) out.push(sep(), heading("What fills the context"), ...ctx);
+  const costs = costEntries(s);
+  if (costs.length) out.push(sep(), ...costs);
+  const quota = quotaEntries(s);
+  if (quota.length) out.push(sep(), ...quota);
   if (clockShown(s)) {
     const left = cacheUntil(s) - Date.now();
     if (out.length) out.push(sep());
@@ -2900,6 +2980,186 @@ function usageMenu(): MenuEntry[] {
     }),
   );
   return out;
+}
+
+const CONTEXT_PARTS: Record<ContextBreakdown["parts"][number]["key"], string> = {
+  prompts: "Your messages",
+  instructions: "Instructions in the conversation",
+  replies: "Replies and thinking",
+  tools: "Tool calls and results",
+  files: "Attached files",
+  summary: "Summary of earlier messages",
+  rest: "System prompt, tools and instructions",
+};
+
+/** What fills the context: the parts OpenCode's context messages show, and the rest as one figure. */
+function contextEntries(): MenuEntry[] {
+  if (!state?.currentSession) return [];
+  if (usageDetails === undefined) return [note("Loading…")];
+  const c = usageDetails.context;
+  if (!c || !c.parts.length) return [];
+  const sum = c.total ?? c.parts.reduce((n, p) => n + p.tokens, 0);
+  const out: MenuEntry[] = c.parts.map((p) => ({
+    kind: "meter",
+    label: CONTEXT_PARTS[p.key],
+    value: `${p.key === "rest" ? "" : "~"}${formatTokens(p.tokens)}`,
+    share: sum ? p.tokens / sum : 0,
+    testid: `context-part-${p.key}`,
+  }));
+  const notes = [
+    "Estimated from the text, about 4 characters a token.",
+    c.total !== null
+      ? "The system prompt, tool definitions (MCP included) and instructions are what is left of OpenCode's total: it does not list them."
+      : "OpenCode has not reported the total yet, so what it adds (system prompt, tools, instructions) is not shown.",
+  ];
+  if (c.images) notes.push(`${c.images} image${c.images === 1 ? "" : "s"} not counted.`);
+  out.push(note(notes.join(" ")));
+  return out;
+}
+
+/** "$0.12", "$0.00", or "—" when OpenCode reported no cost. */
+function costCell(c: number | null | undefined): string {
+  return c === null || c === undefined ? "—" : formatCost(c);
+}
+
+function modelName(key: string): string {
+  if (!key) return "Unknown model";
+  return state?.models?.find((m) => m.key === key)?.name ?? key.slice(key.indexOf("/") + 1);
+}
+
+/** Cost by model and by agent (subagents nested under the session, with their own subagents' costs). */
+function costEntries(s: ViewState): MenuEntry[] {
+  const c = s.costs;
+  if (!c || (!c.byModel.length && !c.byAgent.length)) return [];
+  const out: MenuEntry[] = [];
+  const row = (r: CostRow, label: string) => ({
+    cells: [label, r.steps === null ? "—" : String(r.steps), formatTokens(r.tokens), costCell(r.cost)],
+  });
+  if (c.byModel.length) {
+    out.push(heading("Cost by model"), {
+      kind: "table",
+      testid: "cost-by-model",
+      columns: ["Model", "Steps", "Out", "Cost"],
+      rows: c.byModel.map((r) => row(r, modelName(r.key))),
+    });
+  }
+  if (c.byAgent.length) {
+    out.push(heading("Cost by agent"), {
+      kind: "table",
+      testid: "cost-by-agent",
+      // No token column here: the names need the room, nested subagents most.
+      columns: ["Agent", "Steps", "Cost"],
+      rows: c.byAgent.map((r) => {
+        const sub = r.depth !== undefined;
+        const r2 = row(r, sub ? r.label : agentName(r.key));
+        r2.cells.splice(2, 1);
+        // A subagent with subagents of its own shows its cost, then the total with theirs.
+        if (r.total !== undefined && r.total !== r.cost)
+          r2.cells[2] = `${costCell(r.cost)} (${costCell(r.total)})`;
+        return {
+          ...r2,
+          indent: r.depth,
+          title: sub
+            ? `Subagent${r.total !== undefined ? `; with its subagents ${costCell(r.total)}` : ""}`
+            : undefined,
+        };
+      }),
+    });
+  }
+  const totals: string[] = [];
+  if (c.other !== null) totals.push(`${formatCost(c.other)} for titles and compaction`);
+  if (c.total !== null && c.session !== null && c.total !== c.session)
+    totals.push(`with subagents ${formatCost(c.total)}`);
+  if (totals.length) out.push(note(`Session ${costCell(c.session)}: ${totals.join(", ")}.`));
+  if (c.byAgent.some((r) => r.total !== undefined && r.total !== r.cost))
+    out.push(note("(…): with the subagents it started."));
+  if ([...c.byModel, ...c.byAgent].some((r) => r.cost === null))
+    out.push(note("— : OpenCode reported no cost for these steps."));
+  const today = usageDetails?.today;
+  if (today && today.steps > 0)
+    out.push(
+      stat(
+        "Today in this project",
+        `${formatCost(today.cost)} · ${today.sessions} session${today.sessions === 1 ? "" : "s"}`,
+      ),
+    );
+  return out;
+}
+
+function agentName(id: string): string {
+  if (!id) return "Unknown agent";
+  return state?.agents?.find((a) => a.id === id)?.name ?? id;
+}
+
+/** "resets in 3 h", "resets in 12 min", "resets on 4 Dec". */
+function resetsIn(at: number | null): string {
+  if (at === null) return "";
+  const left = at - Date.now();
+  if (left <= 0) return "resets now";
+  const min = Math.ceil(left / 60_000);
+  if (min < 60) return `resets in ${min} min`;
+  const hr = Math.round(min / 60);
+  if (hr < 48) return `resets in ${hr} h`;
+  return `resets on ${new Date(at).toLocaleDateString(state?.locale ?? "en", { day: "numeric", month: "short" })}`;
+}
+
+/** A limit counts as nearly used up from 80%. */
+const QUOTA_WARN = 80;
+
+function quotaHigh(m: QuotaMeter): boolean {
+  return m.limited || m.percent >= QUOTA_WARN;
+}
+
+/** OpenCode Go windows and Console budgets, as OpenCode reports them; nothing when it reports none. */
+function quotaEntries(s: ViewState): MenuEntry[] {
+  const q = s.quota;
+  if (!q || !q.meters.length) return [];
+  const out: MenuEntry[] = [heading(q.workspace ? `Limits · ${q.workspace}` : "Limits")];
+  for (const m of q.meters)
+    out.push({
+      kind: "meter",
+      label: m.label,
+      value: `${m.used ? `${m.used} · ` : ""}${Math.round(m.percent)}%`,
+      share: m.percent / 100,
+      warn: quotaHigh(m),
+      sub: [m.limited ? "Limit reached" : "", resetsIn(m.resetsAt)].filter(Boolean).join(" · ") || undefined,
+      testid: "quota-meter",
+    });
+  return out;
+}
+
+/** A meter bar's fill, sized through the DOM (the page's CSP allows no inline style attributes). */
+function meterFill(share: number): HTMLElement {
+  const fill = h("span");
+  fill.style.width = `${Math.round(Math.min(1, Math.max(0, share)) * 100)}%`;
+  return fill;
+}
+
+/** Rows of cells; the first column takes the room left, figures line up on the right. */
+function menuTable(e: MenuEntry): HTMLElement {
+  const cols = e.columns ?? [];
+  return h(
+    "table",
+    { className: "menu-table", "data-testid": e.testid },
+    h("thead", {}, h("tr", {}, ...cols.map((c) => h("th", { scope: "col" }, c)))),
+    h(
+      "tbody",
+      {},
+      ...(e.rows ?? []).map((r) =>
+        h(
+          "tr",
+          { title: r.title },
+          ...r.cells.map((c, i) =>
+            h(
+              "td",
+              i === 0 ? { className: r.indent ? `ind${Math.min(3, r.indent)}` : undefined, dir: "auto" } : {},
+              i === 0 && r.indent ? `↳ ${c}` : c,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 function usageStats(s: ViewState): MenuEntry[] {
@@ -3967,6 +4227,18 @@ function paintWord(): void {
   if (b) b.replaceChildren(...wordNodes(statusWord));
 }
 
+/** Live generation speed of the open session's streaming reply (an estimate from its text). */
+const meter = new ThroughputMeter();
+const rateEl = h("span", { "data-testid": "tok-rate" });
+
+/** " · ~38 tok/s" while a reply streams; nothing between replies, while tools run. */
+function paintRate(): void {
+  const rate = meter.rate(Date.now());
+  const text = rate === null ? "" : ` · ~${formatRate(rate)}`;
+  if (rateEl.textContent !== text) rateEl.textContent = text;
+  rateEl.title = rate === null ? "" : "Estimated from the streamed text (about 4 characters a token)";
+}
+
 /** "Riding along… 2:14 · Esc to stop" under the timeline while the agent runs. */
 function renderWorking(s: ViewState) {
   const show = s.busy && !subView;
@@ -4010,9 +4282,11 @@ function renderWorking(s: ViewState) {
       "span",
       { className: "muted" },
       h("span", { "data-elapsed-from": String(busySince) }, formatDuration(Date.now() - busySince)),
+      rateEl,
       s.stopping ? "" : " · Esc to stop",
     ),
   );
+  paintRate();
   if (word !== statusWord) stopSweep();
 }
 
@@ -5914,6 +6188,8 @@ function renderItem(item: TranscriptItem): HTMLElement {
       return renderHandback(item);
     case "background":
       return renderBackground(item);
+    case "turn-meta":
+      return renderTurnMeta(item);
     case "turn-summary": {
       const c = changeCounts(item.files);
       return h(
@@ -6316,6 +6592,27 @@ function dateDivider(ms: number): HTMLElement {
   );
 }
 
+/** "Big Pickle · 3 steps · 1.2k tokens · 42 tok/s · $0.01" under a turn; costs of 0 are left out. */
+function renderTurnMeta(item: Extract<TranscriptItem, { kind: "turn-meta" }>): HTMLElement {
+  const parts = [
+    item.models.map(modelName).join(", ") || "Unknown model",
+    `${item.steps} step${item.steps === 1 ? "" : "s"}`,
+    `${formatTokens(item.tokens)} tokens`,
+  ];
+  if (item.rate !== null) parts.push(formatRate(item.rate));
+  if (item.cost) parts.push(formatCost(item.cost));
+  return h(
+    "div",
+    {
+      className: "turn-meta muted small",
+      "data-testid": "turn-meta",
+      title:
+        "Tokens generated (output and thinking) and the speed while the model streamed, as OpenCode reported them",
+    },
+    parts.join(" · "),
+  );
+}
+
 /** "9s", "1m 05s": how long the model thought. */
 function formatThought(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));
@@ -6360,6 +6657,7 @@ function dotOf(item: TranscriptItem): Dot {
       return "err";
     case "budget":
     case "turn-summary":
+    case "turn-meta":
     case "handback":
       return "none";
     case "background":
@@ -6646,8 +6944,24 @@ function subagentMeta(v: SubagentView): HTMLElement {
       ),
     );
   }
-  if (v.cost) add(formatCost(v.cost));
+  const cost = subagentCost(v);
+  if (cost) add(h("span", { title: cost.title, "data-testid": "subagent-cost" }, cost.text));
   return h("div", { className: "subagent-meta muted small", "data-testid": "subagent-meta" }, ...parts);
+}
+
+/**
+ * "$0.02", or "$0.02 · $0.05 with subagents" for one that started its own: each row shows
+ * its own cost, and a parent the total with its subagents rolled in. Free (0) or
+ * unreported costs show nothing.
+ */
+function subagentCost(v: SubagentView): { text: string; title: string } | null {
+  const total = v.totalCost ?? null;
+  if (total !== null && total !== v.cost && total > 0)
+    return {
+      text: `${v.cost ? formatCost(v.cost) : "$0.00"} · ${formatCost(total)} with subagents`,
+      title: `Its own cost ${costCell(v.cost)}; with its subagents ${formatCost(total)}`,
+    };
+  return v.cost ? { text: formatCost(v.cost), title: `Cost ${formatCost(v.cost)}` } : null;
 }
 
 /** What a waiting subagent waits for: a permission or a question raised from its session. */
@@ -6724,11 +7038,13 @@ function renderSubagentCard(item: ToolItem): HTMLElement {
   const meta: string[] = [];
   if (v?.tools != null) meta.push(`${v.tools} tool${v.tools === 1 ? "" : "s"}`);
   if (v?.files) meta.push(`${v.files} file${v.files === 1 ? "" : "s"}`);
+  // The row keeps its cost in the tooltip; one with subagents adds theirs there too.
+  const cost = v ? subagentCost(v) : null;
   const metaEl =
     v && (meta.length || v.started !== null)
       ? h(
           "span",
-          { "data-testid": "subagent-meta", title: v.cost ? `Cost ${formatCost(v.cost)}` : undefined },
+          { "data-testid": "subagent-meta", title: cost?.title },
           meta.length ? ` · ${meta.join(" · ")}` : "",
           v.started !== null ? " · " : "",
           v.started !== null
@@ -7228,6 +7544,16 @@ function renderComposer(s: ViewState) {
     clockBtn.dataset.tip = cacheTip(until);
     clockBtn.setAttribute("aria-label", `${cacheTip(until)} Usage and Compact.`);
   }
+  // The limits chip shows only when a limit OpenCode reports is nearly used up.
+  const high = (s.quota?.meters ?? []).filter(quotaHigh).sort((a, b) => b.percent - a.percent);
+  quotaBtn.hidden = !high.length;
+  if (high.length) {
+    const top = high[0];
+    quotaBtn.replaceChildren(icon("warn"), h("span", {}, `${Math.round(top.percent)}%`));
+    const tip = `${top.label}: ${top.limited ? "limit reached" : `${Math.round(top.percent)}% used`}${top.resetsAt ? `, ${resetsIn(top.resetsAt)}` : ""}`;
+    quotaBtn.dataset.tip = tip;
+    quotaBtn.setAttribute("aria-label", `${tip}. Usage and limits.`);
+  }
   modelBtn.disabled = !connected || !(s.models ?? []).length;
 
   const active = s.subagents.filter((v) => v.status === "running" || v.status === "waiting").length;
@@ -7391,6 +7717,13 @@ window.addEventListener("message", (e: MessageEvent) => {
       maybeScroll();
       break;
     case "events": {
+      const now = Date.now();
+      for (const ev of msg.events) {
+        if (ev.type === "step.started") meter.reset();
+        else if (ev.type === "assistant.delta" || ev.type === "reasoning.delta") meter.add(ev.delta, now);
+        else if (ev.type === "session.idle" || ev.type === "usage.step") meter.reset();
+      }
+      paintRate();
       const changed = new Set<string>();
       for (const ev of msg.events) for (const id of transcript.apply(ev)) changed.add(id);
       for (const ev of msg.events)
@@ -7426,6 +7759,10 @@ window.addEventListener("message", (e: MessageEvent) => {
       }
       stickToBottom = true;
       maybeScroll();
+      break;
+    case "usageDetails":
+      usageDetails = { context: msg.context, today: msg.today };
+      refreshUsageMenu();
       break;
     case "mcpServers":
       mcpList = msg.items;
@@ -7523,6 +7860,7 @@ window.addEventListener("message", (e: MessageEvent) => {
 // Elapsed time of running subagents ticks without a state push.
 setInterval(() => {
   rotateStatusWord();
+  paintRate();
   for (const el of document.querySelectorAll<HTMLElement>("[data-elapsed-from]")) {
     const from = Number(el.dataset.elapsedFrom);
     if (Number.isFinite(from)) el.textContent = formatDuration(Date.now() - from);

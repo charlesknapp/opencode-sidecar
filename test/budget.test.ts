@@ -111,4 +111,27 @@ describe("budget guard", () => {
     const b = tracker("small");
     for (let i = 0; i < 50; i++) assert.equal(b.recordStep().kind, "none");
   });
+
+  it("stops before the step that would cross the cost limit (judged by the average step)", () => {
+    const b = tracker("small"); // $0.10
+    b.startTask(0);
+    b.recordStep();
+    assert.equal(b.recordCost(0.03).kind, "none", "one more $0.03 step ends at $0.06");
+    b.recordStep();
+    assert.equal(b.recordCost(0.06).kind, "none", "$0.09 after the next one: still under");
+    b.recordStep();
+    // $0.09 so far at $0.03 a step: the next one would end at $0.12.
+    assert.deepEqual(b.recordCost(0.09), { kind: "exceeded", metric: "cost", projected: true });
+    assert.equal(b.isExceeded(), true);
+  });
+
+  it("does not project without steps or a reported cost", () => {
+    const b = tracker("small");
+    b.startTask(0);
+    assert.equal(b.recordCost(0.07).kind, "none", "no finished step to average");
+    const free = tracker("small");
+    free.startTask(0);
+    for (let i = 0; i < 10; i++) free.recordStep();
+    assert.equal(free.recordCost(0).kind, "none", "a free model never projects over a cost limit");
+  });
 });
