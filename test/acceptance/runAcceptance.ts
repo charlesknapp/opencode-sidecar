@@ -8,6 +8,8 @@
 //   ACCEPT_ONLY_REAL=1                    # skip the fixture/worktree scenarios
 //   ACCEPT_ONBOARDING=1                   # also the onboarding / easy-open scenarios
 //   ACCEPT_ONBOARDING_ONLY=1              # only those
+//   ACCEPT_REVIEW_ONLY=1                  # only the Keep / Undo review, edits made between two
+//                                         # tiny prompts (no model edit needed)
 //
 // Onboarding scenarios never touch the user's OpenCode account: states that need a
 // missing CLI, a stopped service, no account or no models use temporary, isolated
@@ -371,10 +373,17 @@ async function main(): Promise<void> {
       if (!r.ok || (before !== after && concurrent.length === 0)) failed = true;
     }
   }
+  if (process.env.ACCEPT_REVIEW_ONLY) {
+    const r = await runScenario("review", repo, base);
+    summary.review = r;
+    if (!r.ok) failed = true;
+  }
   if (process.env.ACCEPT_ONBOARDING || process.env.ACCEPT_ONBOARDING_ONLY) {
     if (await onboardingScenarios(base, repo, summary)) failed = true;
   }
-  for (const [name, ws] of (process.env.ACCEPT_ONLY_REAL || process.env.ACCEPT_ONBOARDING_ONLY
+  for (const [name, ws] of (process.env.ACCEPT_ONLY_REAL ||
+  process.env.ACCEPT_ONBOARDING_ONLY ||
+  process.env.ACCEPT_REVIEW_ONLY
     ? []
     : [
         ["fixture", repo],

@@ -30,6 +30,7 @@ interface TestApi {
   focusPending(): boolean;
   setupReport(): Promise<{ markdown: string; level: string }>;
   importItems(): import("../../src/shared/model").ImportItem[];
+  review(): import("../../src/host/review").AgentReview["testApi"];
 }
 
 /**
@@ -423,6 +424,7 @@ async function pastedText(api: TestApi): Promise<void> {
   await providerSetup(api);
   await customAgents(api);
   await problemsAndCommit(api);
+  await agentReview(api);
 }
 
 // ===================================================== problems and commit messages
@@ -492,6 +494,128 @@ async function problemsAndCommit(api: TestApi): Promise<void> {
       (sid ? (await storedMessages(sid)).length : 0) === before,
   );
   execFileSync("git", ["reset", "-q", "broken.ts"], { cwd: root });
+}
+
+// ============================================================ Keep / Undo review
+
+/**
+ * The agent edits two hunks of a fixture file; Undo one through the command, Keep the
+ * other: the file holds only the kept hunk, the decisions survive a reload of the review
+ * state and a session switch, and "Stage kept changes" stages exactly the kept hunk.
+ */
+async function agentReview(api: TestApi, edits: "agent" | "between-turns" = "agent"): Promise<void> {
+  const root = api.workspace().active!.path;
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: root, stdio: "pipe" }).toString();
+  const rel = "review.txt";
+  const file = path.join(root, rel);
+  const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+  fs.writeFileSync(file, lines.join("\n") + "\n");
+  git("add", rel);
+  git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "review fixture");
+  await api.handle({ type: "newSession" });
+  if (edits === "agent") {
+    await api.handle({ type: "selectAgent", id: "build" });
+    const since = events.length;
+    await api.handle({
+      type: "send",
+      text: "In review.txt, replace the line `line 3` with `agent 3` and the line `line 16` with `agent 16`, using your edit tool. Do not touch any other file.",
+    });
+    await waitIdle(api, since);
+  } else {
+    // Without the model editing: OpenCode snapshots each step, so edits made between two
+    // tiny prompts show as the session's changes (also at the free daily limit).
+    await api.handle({ type: "selectAgent", id: "plan" });
+    const turn = async () => {
+      const since = events.length;
+      await api.handle({ type: "send", text: "Reply with the single word OK. Do not use any tools." });
+      await waitIdle(api, since);
+    };
+    await turn();
+    const edited = [...lines];
+    edited[2] = "agent 3";
+    edited[15] = "agent 16";
+    fs.writeFileSync(file, edited.join("\n") + "\n");
+    await turn();
+    await api.controller()?.refreshChanges();
+  }
+  await waitFor(
+    "review entries",
+    () => {
+      api.review().sync();
+      return api
+        .review()
+        .entries()
+        .find((e) => e.file === rel && e.hunks.length === 2);
+    },
+    20_000,
+  ).catch(() => undefined);
+  await api.review().refresh();
+  const entry = api
+    .review()
+    .entries()
+    .find((e) => e.file === rel);
+  check("The agent's two hunks are listed for review", entry?.hunks.length === 2, JSON.stringify(entry));
+  if (!entry || entry.hunks.length !== 2) return;
+  const doc = await vscode.workspace.openTextDocument(entry.uri);
+  await vscode.window.showTextDocument(doc);
+  const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>(
+    "vscode.executeCodeLensProvider",
+    doc.uri,
+  );
+  check(
+    "CodeLens offers Keep and Undo on each hunk, and the file",
+    ["Keep file", "Undo file", "Keep", "Undo"].every((t) => lenses?.some((l) => l.command?.title === t)),
+    (lenses ?? []).map((l) => l.command?.title).join(" | "),
+  );
+  const [first, second] = entry.hunks;
+  await vscode.commands.executeCommand("opencodeSidecar.undoAgentChange", entry.uri, second);
+  await vscode.commands.executeCommand("opencodeSidecar.keepAgentChange", entry.uri, first);
+  const want = [...lines];
+  want[2] = "agent 3";
+  check(
+    "Undo puts back exactly that hunk",
+    doc.getText() === want.join("\n") + "\n",
+    JSON.stringify(doc.getText()),
+  );
+  await doc.save();
+  const counts = () =>
+    api
+      .review()
+      .entries()
+      .find((e) => e.file === rel)?.counts;
+  check("One kept, one undone", counts()?.kept === 1 && counts()?.undone === 1, JSON.stringify(counts()));
+  api.review().reload();
+  await api.review().refresh();
+  check(
+    "Review state survives a reload",
+    counts()?.kept === 1 && counts()?.undone === 1 && counts()?.undecided === 0,
+    JSON.stringify(counts()),
+  );
+  const sid = api.controller()?.current?.id;
+  await api.handle({ type: "newSession" });
+  await api.handle({ type: "selectSession", id: sid! });
+  await waitFor(
+    "changes after reopen",
+    () => api.viewState().agentChanges.status === "ok" || undefined,
+    15_000,
+  );
+  await waitFor("review after reopen", () => api.viewState().review?.files[rel] ?? undefined, 15_000).catch(
+    () => undefined,
+  );
+  const view = api.viewState().review?.files[rel];
+  check(
+    "Review state survives a session switch",
+    view?.kept === 1 && view.undone === 1,
+    JSON.stringify(view),
+  );
+  await vscode.commands.executeCommand("opencodeSidecar.stageKeptChanges");
+  const cached = git("diff", "--cached", "--", rel);
+  check(
+    "Stage kept changes stages exactly the kept hunk",
+    /^\+agent 3$/m.test(cached) && !/agent 16/.test(cached) && /^-line 3$/m.test(cached),
+    cached,
+  );
+  git("reset", "-q", rel);
 }
 
 // ============================================================ providers and setup check
@@ -1998,6 +2122,7 @@ export async function run(): Promise<void> {
     else if (scenario === "real-repo-task") await realRepoTask(api);
     else if (scenario === "fixture") await fixture(api);
     else if (scenario === "worktree") await worktree(api);
+    else if (scenario === "review") await common(api).then(() => agentReview(api, "between-turns"));
     else if (scenario === "onb-a-missing") await onbMissing(api);
     else if (scenario === "onb-b-stopped") await onbStopped(api);
     else if (scenario === "onb-c-signin") await onbSignIn(api);

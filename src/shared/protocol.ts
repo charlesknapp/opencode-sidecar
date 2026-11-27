@@ -18,6 +18,8 @@ import type {
   ContextBreakdown,
   CostBreakdown,
   FileChange,
+  ReviewView,
+  RewindPreview,
   FormAnswer,
   ImportPreview,
   InboxDelivery,
@@ -70,6 +72,8 @@ export interface ViewState {
   /** Changes attributed to the agent by OpenCode's session snapshots. */
   agentChanges:
     { status: "none" } | { status: "ok"; files: FileChange[] } | { status: "unavailable"; reason: string };
+  /** Keep / Undo review of the agent's changes (counts per file); null when there is nothing to review. */
+  review?: ReviewView | null;
   /** Uncommitted workspace changes (Git, HEAD ↔ working tree); null when Git is unavailable. */
   workspaceChanges: { count: number } | null;
   /** null when usage display is disabled or no figures are available. */
@@ -136,6 +140,8 @@ export type HostMessage =
   | { type: "showHistory" }
   | { type: "copyResult"; requestId: string; ok: boolean }
   | { type: "restoreInput"; text: string }
+  /** What a rewind with code would revert (null: OpenCode could not tell), for the open dialog. */
+  | { type: "rewindPreview"; messageID: string; preview: RewindPreview | null }
   /** Text for an empty message box (such as "Fix these problems."); typed text is kept. */
   | { type: "suggestInput"; text: string }
   | { type: "formError"; formId: string; error: string }
@@ -287,6 +293,10 @@ export type WebviewMessage =
   | { type: "setDelivery"; id: string; delivery: InboxDelivery }
   | { type: "openAgentDiff"; path: string }
   | { type: "openAgentDiffAll" }
+  /** The Review changes picker (Keep / Undo per hunk in the editor). */
+  | { type: "reviewChanges" }
+  /** Asks what a rewind with code to before this prompt would revert. */
+  | { type: "rewindPreview"; messageID: string }
   | { type: "openWorkspaceDiffAll" }
   | { type: "retryLast" }
   | { type: "focusModelPicker" }
@@ -548,6 +558,8 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   setDelivery: (m) => isStr(m.id) && (m.delivery === "steer" || m.delivery === "queue"),
   openAgentDiff: (m) => isStr(m.path, 4096),
   openAgentDiffAll: () => true,
+  reviewChanges: () => true,
+  rewindPreview: (m) => isStr(m.messageID),
   openWorkspaceDiffAll: () => true,
   retryLast: () => true,
   focusModelPicker: () => true,
@@ -632,6 +644,7 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   openSubagent: ["sessionID"],
   stopSubagent: ["sessionID"],
   rewind: ["messageID", "files"],
+  rewindPreview: ["messageID"],
   openToolText: ["itemId", "part"],
   setPref: ["key", "value"],
   renameSession: ["title"],

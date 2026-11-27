@@ -332,6 +332,8 @@ type FetchLike = typeof fetch;
 type Rec = Record<string, unknown>;
 
 const REQUEST_TIMEOUT_MS = 15_000;
+/** Context lines for a session diff that covers whole files (more lines than any file has). */
+export const FULL_FILE_CONTEXT = "10000000";
 
 const rec = (v: unknown): Rec => (v && typeof v === "object" && !Array.isArray(v) ? (v as Rec) : {});
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -1058,8 +1060,10 @@ export class HttpOpenCodeClient implements OpenCodeClient {
     range: { from?: string; to?: string; full?: boolean } = {},
   ): Promise<FileDiffInfo[]> {
     const query: Record<string, string | undefined> = { from: range.from, to: range.to };
-    // Omitting `context` yields full-file patches; a small context keeps payloads light otherwise.
-    if (!range.full) query.context = "3";
+    // Full-file patches need a context longer than any file: without `context` OpenCode 2.4.2
+    // sends one whole-file hunk per change (overlapping), which is not a valid patch once a
+    // file has two changes. A small context keeps payloads light otherwise.
+    query.context = range.full ? FULL_FILE_CONTEXT : "3";
     const d = rec(
       await this.request("GET", `/api/session/${encodeURIComponent(id)}/diff`, { query, timeoutMs: 30_000 }),
     );

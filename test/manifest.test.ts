@@ -56,10 +56,35 @@ describe("extension manifest", () => {
     assert.equal(new Set(commands).size, commands.length, "no duplicate commands");
   });
 
-  it("binds only Focus Chat by default, on macOS only (Cmd+Alt+O is unbound in VS Code)", () => {
+  it("binds Focus Chat on macOS only (Cmd+Alt+O is unbound in VS Code), and the review's next / previous", () => {
+    // Alt+] / Alt+[ are VS Code's next / previous inline suggestion while one shows, so the
+    // review takes them only while it is active and no inline suggestion is visible.
+    const review = "opencodeSidecar.reviewActive && editorTextFocus && !inlineSuggestionVisible";
     assert.deepEqual(pkg.contributes.keybindings, [
       { command: "opencodeSidecar.focusChat", key: "cmd+alt+o", when: "isMac" },
+      { command: "opencodeSidecar.nextAgentChange", key: "alt+]", when: review },
+      { command: "opencodeSidecar.previousAgentChange", key: "alt+[", when: review },
     ]);
+  });
+
+  it("contributes the review commands, the per-hunk ones only while a review is active", () => {
+    for (const c of [
+      "opencodeSidecar.reviewChanges",
+      "opencodeSidecar.nextAgentChange",
+      "opencodeSidecar.previousAgentChange",
+      "opencodeSidecar.keepAgentChange",
+      "opencodeSidecar.undoAgentChange",
+      "opencodeSidecar.keepAgentFile",
+      "opencodeSidecar.undoAgentFile",
+      "opencodeSidecar.keepAllAgentChanges",
+      "opencodeSidecar.undoAllAgentChanges",
+      "opencodeSidecar.stageKeptChanges",
+    ])
+      assert.ok(commands.includes(c), c);
+    const palette = pkg.contributes.menus.commandPalette as Array<{ command: string; when: string }>;
+    const when = (c: string) => palette.find((m) => m.command === c)?.when;
+    assert.equal(when("opencodeSidecar.undoAgentChange"), "opencodeSidecar.reviewActive");
+    assert.equal(when("opencodeSidecar.openAgentChangeDiff"), "false");
   });
 
   it("every keybinding has a when clause and takes no core VS Code shortcut", () => {

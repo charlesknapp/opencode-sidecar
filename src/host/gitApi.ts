@@ -33,6 +33,8 @@ export interface GitRepository {
 }
 
 export interface GitAPI {
+  /** The Git executable VS Code uses. The API cannot stage part of a file, so Sidecar runs it for that. */
+  git?: { path: string };
   repositories: GitRepository[];
   getRepository(uri: vscode.Uri): GitRepository | null;
   toGitUri(uri: vscode.Uri, ref: string): vscode.Uri;

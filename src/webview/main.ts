@@ -17,6 +17,8 @@ import type {
   OnboardingStage,
   FileChange,
   FileDiff,
+  ReviewCounts,
+  RewindPreview,
   FormAnswer,
   FormField,
   ImportPreview,
@@ -1610,7 +1612,13 @@ interface DialogChoice {
 
 let dialogOpen = false;
 
-function confirmDialog(o: { title: string; body: string; choices: DialogChoice[] }): Promise<string | null> {
+function confirmDialog(o: {
+  title: string;
+  body: string;
+  choices: DialogChoice[];
+  /** More below the body that may fill in while the dialog is open. */
+  detail?: HTMLElement;
+}): Promise<string | null> {
   if (dialogOpen) return Promise.resolve(null);
   dialogOpen = true;
   closeMenu();
@@ -1653,6 +1661,7 @@ function confirmDialog(o: { title: string; body: string; choices: DialogChoice[]
       },
       h("h2", { id: "modal-title" }, o.title),
       h("p", { id: "modal-body" }, o.body),
+      o.detail ?? null,
       h("div", { className: "modal-choices" }, ...buttons),
       h("div", { className: "modal-foot" }, cancel),
     );
@@ -1701,9 +1710,20 @@ async function confirmDelete(id: string, title: string): Promise<void> {
   if (pick === "delete") send({ type: "deleteSession", id });
 }
 
+/** The open rewind dialog's file list, filled in when the host answers `rewindPreview`. */
+let rewindPreviewFor: { messageID: string; el: HTMLElement } | null = null;
+
 async function confirmRewind(messageID: string): Promise<void> {
+  const detail = h(
+    "div",
+    { className: "modal-detail", "data-testid": "rewind-preview", "aria-live": "polite" },
+    h("p", {}, "Checking which files would revert…"),
+  );
+  rewindPreviewFor = { messageID, el: detail };
+  send({ type: "rewindPreview", messageID });
   const pick = await confirmDialog({
     title: "Rewind to before this prompt?",
+    detail,
     body: "OpenCode removes this prompt and everything after it from the session. This can't be undone. The prompt goes back into the message box.",
     choices: [
       {
@@ -1721,7 +1741,72 @@ async function confirmRewind(messageID: string): Promise<void> {
       },
     ],
   });
+  rewindPreviewFor = null;
   if (pick) send({ type: "rewind", messageID, files: pick === "code" });
+}
+
+/** At most this many files are named in the rewind dialog; the rest are counted. */
+const REWIND_FILES_SHOWN = 6;
+
+/**
+ * Which files "Rewind conversation and code" reverts, and a warning when shell commands
+ * ran since: OpenCode's snapshots only cover what they recorded in this folder.
+ */
+function paintRewindPreview(el: HTMLElement, p: RewindPreview | null): void {
+  const parts: Node[] = [];
+  if (!p || !p.files) parts.push(h("p", {}, "Sidecar could not tell which files would revert."));
+  else if (!p.files.length) parts.push(h("p", {}, "OpenCode recorded no file changes from this prompt on."));
+  else {
+    const n = p.files.length;
+    parts.push(
+      h("p", {}, `With code, ${n} file${n === 1 ? "" : "s"} revert${n === 1 ? "s" : ""}:`),
+      h(
+        "ul",
+        { className: "modal-files", "data-testid": "rewind-files" },
+        ...p.files
+          .slice(0, REWIND_FILES_SHOWN)
+          .map((f) =>
+            h(
+              "li",
+              {},
+              h("span", { className: "fname" }, f.path),
+              FILE_TAG[f.status]
+                ? h("span", { className: `ftag ftag-${f.status}` }, FILE_TAG[f.status])
+                : null,
+            ),
+          ),
+        n > REWIND_FILES_SHOWN ? h("li", { className: "muted" }, `and ${n - REWIND_FILES_SHOWN} more`) : null,
+      ),
+    );
+  }
+  const warn: string[] = [];
+  if (p?.agentShell) {
+    const n = p.agentShell;
+    warn.push(
+      `The agent ran ${n} shell command${n === 1 ? "" : "s"} since. Rewind restores only what OpenCode's snapshots of this folder recorded: changes outside the folder or in ignored files stay.`,
+    );
+  }
+  if (p?.shellFiles.length) {
+    const named = p.shellFiles.slice(0, 3).join(", ");
+    const more = p.shellFiles.length > 3 ? ` and ${p.shellFiles.length - 3} more` : "";
+    warn.push(`Changed by a command, not an edit: ${named}${more}.`);
+  }
+  if (p?.kept.length) {
+    const named = p.kept.slice(0, 3).join(", ");
+    const more = p.kept.length > 3 ? ` and ${p.kept.length - 3} more` : "";
+    warn.push(
+      `Changed since, but not by the agent's steps, so ${p.kept.length === 1 ? "it stays" : "they stay"}: ${named}${more}.`,
+    );
+  }
+  if (p?.userShell) {
+    const n = p.userShell;
+    warn.push(
+      `${n} command${n === 1 ? "" : "s"} you ran with ! ${n === 1 ? "is" : "are"} not in OpenCode's snapshots: ${n === 1 ? "its" : "their"} changes stay.`,
+    );
+  }
+  if (warn.length)
+    parts.push(h("p", { className: "modal-warn", "data-testid": "rewind-shell-warning" }, warn.join(" ")));
+  el.replaceChildren(...parts);
 }
 
 // ---------------------------------------------------------------- tooltips
@@ -5741,7 +5826,11 @@ const FILE_TAG: Record<string, string> = { added: "new", deleted: "deleted" };
  * and a "new"/"deleted" tag. The row opens the file's diff; the icon at the end opens
  * the file itself.
  */
-function fileList(files: FileChange[], diffAction: "openAgentDiff" | null): HTMLElement {
+function fileList(
+  files: FileChange[],
+  diffAction: "openAgentDiff" | null,
+  review?: Record<string, ReviewCounts>,
+): HTMLElement {
   return h(
     "ul",
     { className: "file-list" },
@@ -5750,6 +5839,7 @@ function fileList(files: FileChange[], diffAction: "openAgentDiff" | null): HTML
       const name = f.path.slice(slash + 1);
       const dir = slash > 0 ? f.path.slice(0, slash) : null;
       const tag = FILE_TAG[f.status];
+      const r = review?.[f.path];
       const body = [
         h("span", { className: "fname" }, name),
         dir ? h("span", { className: "fdir" }, dir) : null,
@@ -5760,6 +5850,7 @@ function fileList(files: FileChange[], diffAction: "openAgentDiff" | null): HTML
           f.deletions ? h("span", { className: "dels" }, `−${f.deletions}`) : null,
         ),
         tag ? h("span", { className: `ftag ftag-${f.status}` }, tag) : null,
+        r ? reviewTag(r) : null,
       ];
       const open = () => send({ type: "openFile", path: f.path });
       return h(
@@ -8300,6 +8391,30 @@ function renderSubHeader() {
 
 // ---------------------------------------------------------- changes panel
 
+/** A file's review state on its row: what is left to review, or that it is reviewed. */
+function reviewTag(r: ReviewCounts): HTMLElement {
+  const done = r.undecided === 0;
+  const tip = [
+    r.undecided ? `${r.undecided} to review` : "Reviewed",
+    r.kept ? `${r.kept} kept` : "",
+    r.undone ? `${r.undone} undone` : "",
+    r.changed ? `${r.changed} edited since` : "",
+    r.fileOnly ? "reviewed as a whole file" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return h(
+    "span",
+    {
+      className: "freview" + (done ? " done" : ""),
+      "data-testid": "file-review",
+      "data-tip": tip,
+      "aria-label": tip,
+    },
+    done ? "✓" : String(r.undecided),
+  );
+}
+
 function renderChanges(s: ViewState) {
   const ac = s.agentChanges;
   const ws = s.workspaceChanges;
@@ -8341,10 +8456,15 @@ function renderChanges(s: ViewState) {
           {
             className: "link-btn changes-action",
             "data-testid": "view-agent-changes",
-            onclick: () => send({ type: "openAgentDiffAll" }),
-            "data-tip": "Every change the agent made, from OpenCode's snapshots, in VS Code's diff editor",
+            onclick: () => send({ type: "reviewChanges" }),
+            "data-tip":
+              "Keep or undo each change the agent made, in the editor, file by file (from OpenCode's snapshots)",
           },
-          t("reviewAll"),
+          !s.review
+            ? t("reviewAll")
+            : s.review.undecided
+              ? `${t("reviewAll")} · ${s.review.undecided}`
+              : "Reviewed",
         ),
         s.workspace.repoRoot
           ? h(
@@ -8360,7 +8480,7 @@ function renderChanges(s: ViewState) {
             )
           : null,
       ),
-      changesOpen ? fileList(ac.files, "openAgentDiff") : null,
+      changesOpen ? fileList(ac.files, "openAgentDiff", s.review?.files) : null,
     );
   }
   if (showWs && ws) {
@@ -8919,6 +9039,9 @@ window.addEventListener("message", (e: MessageEvent) => {
       }
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
+      break;
+    case "rewindPreview":
+      if (rewindPreviewFor?.messageID === msg.messageID) paintRewindPreview(rewindPreviewFor.el, msg.preview);
       break;
     case "restoreInput": {
       // A message the host handed back keeps its chips; text from the chat (a rewound or

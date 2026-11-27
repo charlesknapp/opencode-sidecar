@@ -22,6 +22,7 @@ import type { AgentDetail, ConfigSources } from "./agents";
 import { sessionMarkdown } from "./exportMarkdown";
 import { summarizeAnswer, validateAnswer } from "./forms";
 import { reconstructSides, type FileSides } from "./patch";
+import { rewindPreview, stepFiles } from "./review";
 import {
   SessionWatch,
   STRIP_MAX,
@@ -51,6 +52,7 @@ import type {
   ContextBreakdown,
   CostBreakdown,
   FileChange,
+  RewindPreview,
   FormAnswer,
   InboxDelivery,
   ModelOption,
@@ -156,6 +158,8 @@ export type AgentChanges =
 export const HISTORY_LIMIT = 400;
 /** Workspace-state key of the side-question sessions not deleted yet. */
 export const ASIDES_KEY = "opencodeSidecar.asides";
+/** Messages read back to find what a rewind would revert (the history's tail). */
+const MAX_REWIND_MESSAGES = 2000;
 /** What a side question asks the model, around the question itself. */
 export const ASIDE_PREFIX =
   "Side question, asked while you work. Answer it briefly from what you already know about this conversation and the code. Do not change files, run commands or continue the task.\n\n";
@@ -214,6 +218,8 @@ export class SessionController {
   steps = 0;
   readonly budget: BudgetTracker;
   private patches = new Map<string, { patch: string; status: FileChange["status"] }>();
+  /** Bumped whenever the agent's patches change, so the review recomputes its hunks only then. */
+  changesVersion = 0;
   private lastStep: { tokens: TokenUsage; modelKey: string | null; at: number | null } | null = null;
   /** OpenCode's slash commands for the open folder. */
   commands: CommandInfo[] = [];
@@ -959,6 +965,7 @@ export class SessionController {
     this.stopping = false;
     this.agentChanges = { status: "none" };
     this.patches.clear();
+    this.changesVersion++;
     this.pending = [];
     this.steps = 0;
     this.lastStep = null;
@@ -2982,6 +2989,7 @@ export class SessionController {
       if (this.current?.id !== id) return;
       this.patches.clear();
       for (const d of diff) this.patches.set(d.file, { patch: d.patch, status: d.status });
+      this.changesVersion++;
       const files = diff.map((d) => ({
         path: d.file,
         additions: d.additions,
@@ -3014,6 +3022,51 @@ export class SessionController {
     const p = this.patches.get(path);
     if (!p) return null;
     return reconstructSides(p.patch, p.status);
+  }
+
+  /** OpenCode's patch and status for one agent-changed file. */
+  agentPatch(path: string): { patch: string; status: FileChange["status"] } | null {
+    return this.patches.get(path) ?? null;
+  }
+
+  /**
+   * What a rewind with code to before this prompt would revert: the files OpenCode's
+   * snapshots recorded from its turn on, and the shell commands run since, which its
+   * snapshots may only partly cover.
+   */
+  async rewindPreview(messageID: string): Promise<RewindPreview | null> {
+    const id = this.current?.id;
+    const items = this.transcript.items;
+    const at = items.findIndex((i) => i.id === `user:${messageID}`);
+    if (!id || at < 0) return null;
+    const tools = items.slice(at).flatMap((i) =>
+      i.kind === "tool"
+        ? [
+            {
+              id: i.id,
+              category: i.category,
+              files: [...i.detail.files.map((f) => f.path), ...(i.detail.path ? [i.detail.path] : [])],
+            },
+          ]
+        : [],
+    );
+    const users = this.userMessageIds();
+    const last = users[users.length - 1];
+    const why = (e: unknown) =>
+      this.log.warn(`Rewind preview: ${e instanceof Error ? e.message : String(e)}`);
+    // What revert undoes is what the agent's steps changed (their snapshot files); the
+    // session diff also has what changed between them, which a rewind leaves alone.
+    const [steps, diff] = await Promise.all([
+      this.client
+        .listMessages(id, MAX_REWIND_MESSAGES)
+        .then((m) => stepFiles(m, messageID))
+        .catch((e) => (why(e), null)),
+      this.client
+        .sessionDiff(id, { from: messageID, to: last && last !== messageID ? last : undefined })
+        .then((d) => d.map((f) => ({ path: f.file, status: f.status })))
+        .catch((e) => (why(e), null)),
+    ]);
+    return rewindPreview(tools, steps, diff);
   }
 
   /** The agent's changes in the open session, one patch per file (OpenCode's snapshot diff). */

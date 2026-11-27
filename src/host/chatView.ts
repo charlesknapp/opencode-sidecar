@@ -64,6 +64,7 @@ import { getGitApi, type GitAPI, type GitRepository } from "./gitApi";
 import type { Logger } from "./log";
 import { addExcerpts, documentProblems, workspaceProblems } from "./problems";
 import { AgentsHost } from "./agents";
+import { AgentReview } from "./review";
 import { vscodeConnectUi } from "./providers";
 import type { ToolTextProvider } from "./toolText";
 import { WorkspaceTracker } from "./workspace";
@@ -132,6 +133,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private readonly agents: AgentsHost;
   /** Open the Agents panel (true: its import preview) once the webview is ready. */
   private agentsPending: boolean | null = null;
+  /** Keep / Undo review of the agent's changes in the editor. */
+  readonly review: AgentReview;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -147,6 +150,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       log,
       storage: context.globalStorageUri.fsPath,
     });
+    this.review = new AgentReview(
+      context.workspaceState,
+      {
+        session: () => {
+          const c = this.controller;
+          return c?.current && c.agentChanges.status === "ok"
+            ? { id: c.current.id, files: c.agentChanges.files, version: c.changesVersion }
+            : null;
+        },
+        sides: (file) => this.controller?.agentFileSides(file) ?? null,
+        patch: (file) => this.controller?.agentPatch(file)?.patch ?? "",
+        resolve: (file) => this.workspace.resolveInActive(file),
+        git: () => this.workspace.gitApi,
+        changed: () => this.postState(),
+        openDiff: (file) => (file ? this.openAgentDiff(file) : this.openAgentDiffAll()),
+      },
+      log,
+    );
+    this.disposables.push(this.review);
     // Status Bar shortcut to the chat. It stays neutral until the sidebar has connected.
     this.statusItem = vscode.window.createStatusBarItem(
       "opencodeSidecar.status",
@@ -256,6 +278,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (this.stateTimer) return;
     this.stateTimer = setTimeout(() => {
       this.stateTimer = undefined;
+      this.review.sync();
       const state = this.viewState();
       this.updateBadge();
       this.updateStatusBar(state.onboarding.stage);
@@ -345,6 +368,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       stopping: c?.stopping ?? false,
       attachments: this.chips(),
       agentChanges: c?.agentChanges ?? { status: "none" },
+      review: this.review.view(),
       workspaceChanges:
         this.workspace.current.uncommitted === null ? null : { count: this.workspace.current.uncommitted },
       usage: cfg.showUsage ? (c?.usage() ?? null) : null,
@@ -1289,6 +1313,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return this.openAgentDiff(msg.path);
       case "openAgentDiffAll":
         return this.openAgentDiffAll();
+      case "reviewChanges":
+        return this.review.showReview();
+      case "rewindPreview": {
+        const preview = c && !c.busy ? await c.rewindPreview(msg.messageID) : null;
+        this.post({ type: "rewindPreview", messageID: msg.messageID, preview });
+        return;
+      }
       case "openWorkspaceDiffAll": {
         const files = this.workspace.workspaceChanges();
         if (!files || files.length === 0) {
@@ -2078,6 +2109,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       signInState: () => this.signInState,
       setupReport: () => this.setupReport(),
       importItems: () => this.agents.previewItems(),
+      review: () => this.review.testApi,
       focusPending: () => this.focusPending,
       tap: (fn: (events: UiEvent[]) => void) => {
         this.taps.add(fn);

@@ -163,6 +163,62 @@
         "icon": "$(sparkle)"
       },
       {
+        "command": "opencodeSidecar.reviewChanges",
+        "title": "Review Agent Changes",
+        "category": "Sidecar",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "opencodeSidecar.nextAgentChange",
+        "title": "Next Agent Change",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.previousAgentChange",
+        "title": "Previous Agent Change",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.keepAgentChange",
+        "title": "Keep Agent Change",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.undoAgentChange",
+        "title": "Undo Agent Change",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.keepAgentFile",
+        "title": "Keep Agent Changes in File",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.undoAgentFile",
+        "title": "Undo Agent Changes in File",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.keepAllAgentChanges",
+        "title": "Keep All Agent Changes",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.undoAllAgentChanges",
+        "title": "Undo All Agent Changes",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.stageKeptChanges",
+        "title": "Stage Kept Agent Changes",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.openAgentChangeDiff",
+        "title": "Open Agent Change Diff",
+        "category": "Sidecar"
+      },
+      {
         "command": "opencodeSidecar.stop",
         "title": "Stop",
         "category": "Sidecar"
@@ -226,6 +282,38 @@
         {
           "command": "opencodeSidecar.writeCommitMessage",
           "when": "config.git.enabled && workspaceFolderCount > 0"
+        },
+        {
+          "command": "opencodeSidecar.nextAgentChange",
+          "when": "opencodeSidecar.reviewActive"
+        },
+        {
+          "command": "opencodeSidecar.previousAgentChange",
+          "when": "opencodeSidecar.reviewActive"
+        },
+        {
+          "command": "opencodeSidecar.keepAgentChange",
+          "when": "opencodeSidecar.reviewActive"
+        },
+        {
+          "command": "opencodeSidecar.undoAgentChange",
+          "when": "opencodeSidecar.reviewActive"
+        },
+        {
+          "command": "opencodeSidecar.keepAgentFile",
+          "when": "opencodeSidecar.reviewActive"
+        },
+        {
+          "command": "opencodeSidecar.undoAgentFile",
+          "when": "opencodeSidecar.reviewActive"
+        },
+        {
+          "command": "opencodeSidecar.openAgentChangeDiff",
+          "when": "false"
+        },
+        {
+          "command": "opencodeSidecar.stageKeptChanges",
+          "when": "config.git.enabled && workspaceFolderCount > 0"
         }
       ]
     },
@@ -234,6 +322,16 @@
         "command": "opencodeSidecar.focusChat",
         "key": "cmd+alt+o",
         "when": "isMac"
+      },
+      {
+        "command": "opencodeSidecar.nextAgentChange",
+        "key": "alt+]",
+        "when": "opencodeSidecar.reviewActive && editorTextFocus && !inlineSuggestionVisible"
+      },
+      {
+        "command": "opencodeSidecar.previousAgentChange",
+        "key": "alt+[",
+        "when": "opencodeSidecar.reviewActive && editorTextFocus && !inlineSuggestionVisible"
       }
     ],
     "configuration": {

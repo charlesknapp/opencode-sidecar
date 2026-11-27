@@ -63,7 +63,8 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | New session in a mode ✓      | `POST /api/session` `{ location, agent, model, permissions }`                                                         |
 | Questions (forms)            | `GET …/form`, `POST …/form/{formID}/reply` `{ answer }`, `DELETE …/form/{formID}`                                     |
 | Pending (steer/queue) items  | `GET …/inbox`, `DELETE …/inbox/{inboxID}`, `PATCH …/inbox/{inboxID}` `{ delivery }` (from OpenCode's API description) |
-| Agent-only changes           | `GET …/diff?from=…&to=…` without `context`, for full-file patches                                                     |
+| Agent-only changes ✓         | `GET …/diff?from=…&to=…&context=10000000` (full-file patches; see below)                                              |
+| Rewind preview ✓             | `GET …/message` (each assistant message's `snapshot.files`) and `GET …/diff?from=…&to=…&context=3`                    |
 | Events ✓                     | `GET /api/event` (Server-Sent Events, global for all locations)                                                       |
 
 `decision` is `once`, `always` (only when the request carries `save` patterns, shown as "always allow `npm test *`") or `reject`; a rejection can carry `message`, which OpenCode hands to the agent as what to do instead. Model records can include provider headers or bodies; the adapter drops them on arrival because they can contain secrets. `GET /api/credential` is never called.
@@ -103,6 +104,19 @@ Checked against the live service (2.4.2), its documentation and its OpenAPI docu
 ### Commit messages
 
 "Write commit message with OpenCode" uses `POST /api/experimental/generate/text`, which runs one generation from the server's base configuration and stores nothing, with the chat's selected model as `model: { providerID, id, variant? }`. `POST /api/session/{id}/generate` would also leave the history alone, but its tokens and cost count toward the session, so it is not used. The diff comes from VS Code's Git extension (`repository.diff(true)`, the staged changes), or from the agent's patches in OpenCode's session diff when nothing is staged; the style examples from `repository.log`. The message goes into `repository.inputBox.value`; nothing is committed. Checked live (2.4.2): an unknown model is `404 ModelNotFoundError` with `providerID` and `modelID`; a missing `prompt` is `400 InvalidRequestError`; the free limit is `502 ProviderRequestError` with `reason: "rate_limit"`, `status: 429` and `retryAfterMs`, which Sidecar reports as the model's usage limit.
+
+### Agent changes and the Keep / Undo review
+
+Checked live (2.4.2, `test/live/review.test.ts`, in a temporary Git repository):
+
+- `GET /api/session/{id}/diff` "compares the range's first recorded snapshot with its last". Each agent step records a snapshot at its start and end (also a step that fails at once, such as at the free limit), so edits made between two prompts show in the range like the agent's. A folder that was not a Git repository when OpenCode first loaded it gets no snapshots at all (the diff is empty).
+- Without `context`, OpenCode 2.4.2 sends one whole-file hunk per change (`@@ -1,40 +1,41 @@` repeated, each with only its own change), which is not a valid patch once a file has two changes, so it cannot be rebuilt. With a `context` longer than the file it sends one proper full-file hunk; Sidecar asks for `context=10000000` and rebuilds the baseline and the snapshot from it (`src/core/patch.ts`). CRLF lines keep their `\r`. The baseline includes changes the user had made before the session.
+- The review splits the two sides into hunks itself (`src/core/review.ts`, a line diff), places each one in the document as it is now through a diff between the snapshot and the document, and undoes one with a `WorkspaceEdit`. Decisions are kept in workspace state (`opencodeSidecar.review`) per session, file and hunk content hash.
+- VS Code's Git API (`vscode.git`, version 1) can stage whole files only (`add`), and its `apply` changes the working tree. **Stage kept changes** reads the staged blob (`git cat-file blob :<path>`, its mode from `git ls-files -s`), applies the kept hunks to it and runs `git apply --cached --whitespace=nowarn -` with the patch on stdin, through `execFile` (no shell) with the Git that VS Code uses, in the file's repository. The patch uses the blob's own line endings (LF with `core.autocrlf`); paths are `/`-separated and C-quoted when needed.
+
+### Rewind with code
+
+Checked live: `POST …/revert/stage` with `files: true` reverts what the agent's steps changed, the files in each assistant message's `snapshot.files` from the prompt on (its reply lists them as `files`). A `!command` (`POST …/shell`) is not a step: its changes, and edits made between prompts, are in the session diff but are not reverted. Sidecar's rewind dialog lists the steps' files, the changed files no edit tool reported (written by a shell command), the agent's shell commands since (their changes outside the folder or in ignored files are not in OpenCode's snapshots) and the changed files that stay.
 
 ### Staged rewinds
 

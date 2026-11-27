@@ -1863,6 +1863,22 @@ th {
   color: var(--err);
   border-color: color-mix(in srgb, var(--err) 45%, transparent);
 }
+/* Hunks left to review in the editor (Keep / Undo), or ✓ once every one is decided. */
+.freview {
+  flex: none;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  font-size: 0.85em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.freview.done {
+  background: none;
+  color: var(--ok);
+}
 .file-open {
   flex: none;
   display: grid;
@@ -3828,6 +3844,35 @@ body.vscode-high-contrast-light .submit {
 .modal-foot {
   display: flex;
   justify-content: flex-end;
+}
+/* What a rewind with code reverts, filled in while the dialog is open. */
+.modal-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.modal-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.modal-files li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.modal-files .fname {
+  max-width: none;
+  min-width: 0;
+}
+.modal p.modal-warn {
+  padding: 6px 8px;
+  border-left: 2px solid var(--warn-border, var(--vscode-editorWarning-foreground));
+  color: var(--vscode-foreground);
 }
 
 /* --------------------------------------------------------- syntax colors */

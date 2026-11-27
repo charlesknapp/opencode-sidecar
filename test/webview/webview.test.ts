@@ -2222,7 +2222,7 @@ describe(
       assert.equal(await page.evaluate(() => document.activeElement?.tagName), "TEXTAREA", "focus stays");
     });
 
-    it("View Agent Changes and per-file Diff use the agent diff; workspace changes are separate", async () => {
+    it("Review all opens the review; per-file Diff uses the agent diff; workspace changes are separate", async () => {
       await host({
         type: "state",
         state: baseState({
@@ -2235,7 +2235,7 @@ describe(
       assert.match(await text(".changes"), /Agent changes · 1 file/);
       assert.match(await text(".changes"), /Workspace changes: 2 files/);
       await page.click('[data-testid="view-agent-changes"]');
-      assert.ok(await lastSent("openAgentDiffAll"));
+      assert.ok(await lastSent("reviewChanges"));
       await page.click('[data-testid="agent-changes-toggle"]');
       await page.click('[data-testid="file-diff"]');
       assert.deepEqual(await lastSent("openAgentDiff"), { type: "openAgentDiff", path: "a.txt" });
@@ -2276,6 +2276,82 @@ describe(
       assert.deepEqual(await lastSent("openAgentDiff"), { type: "openAgentDiff", path: "test-add.mjs" });
       await page.click('.changes li:nth-child(1) [data-testid="file-open"]');
       assert.deepEqual(await lastSent("openFile"), { type: "openFile", path: "src/math.js" });
+    });
+
+    it("shows what is left to review on Review all and on each file row", async () => {
+      const files = [
+        { path: "src/math.js", additions: 5, deletions: 1, status: "modified" as const },
+        { path: "img/logo.png", additions: 0, deletions: 0, status: "modified" as const },
+        { path: "test-add.mjs", additions: 15, deletions: 0, status: "added" as const },
+      ];
+      const counts = (undecided: number, kept: number, undone: number, more = {}) => ({
+        undecided,
+        kept,
+        undone,
+        changed: 0,
+        fileOnly: false,
+        ...more,
+      });
+      await host({
+        type: "state",
+        state: baseState({
+          agentChanges: { status: "ok", files },
+          review: {
+            files: {
+              "src/math.js": counts(2, 1, 1, { changed: 1 }),
+              "img/logo.png": counts(1, 0, 0, { fileOnly: true }),
+              "test-add.mjs": counts(0, 1, 0),
+            },
+            undecided: 3,
+            kept: 2,
+            undone: 1,
+          },
+        }),
+      });
+      assert.equal(await text('[data-testid="view-agent-changes"]'), "Review all · 3");
+      await page.click('[data-testid="agent-changes-toggle"]');
+      const tags = await page.$$eval('[data-testid="file-review"]', (t) =>
+        t.map((e) => [(e as HTMLElement).innerText, (e as HTMLElement).dataset.tip, e.className]),
+      );
+      assert.deepEqual(tags, [
+        ["2", "2 to review · 1 kept · 1 undone · 1 edited since", "freview"],
+        ["1", "1 to review · reviewed as a whole file", "freview"],
+        ["✓", "Reviewed · 1 kept", "freview done"],
+      ]);
+      // Keyboard: the button opens the review.
+      await clearSent();
+      await page.focus('[data-testid="view-agent-changes"]');
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await sent(), [{ type: "reviewChanges" }]);
+      // All decided.
+      await host({
+        type: "state",
+        state: baseState({
+          agentChanges: { status: "ok", files },
+          review: {
+            files: {
+              "src/math.js": counts(0, 3, 1),
+              "img/logo.png": counts(0, 1, 0, { fileOnly: true }),
+              "test-add.mjs": counts(0, 1, 0),
+            },
+            undecided: 0,
+            kept: 5,
+            undone: 1,
+          },
+        }),
+      });
+      assert.equal(await text('[data-testid="view-agent-changes"]'), "Reviewed");
+      // Narrow and wide panels: nothing scrolls sideways.
+      for (const width of [300, 520]) {
+        await page.setViewport({ width, height: 800 });
+        await host({ type: "state", state: baseState({ agentChanges: { status: "ok", files } }) });
+        assert.equal(
+          await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+          true,
+          `no sideways scroll at ${width} px`,
+        );
+      }
+      assert.equal(await page.$('[data-testid="file-review"]'), null, "no tags without a review");
     });
 
     it("shows no strip when the agent-only diff is unavailable, and says why on workspace changes", async () => {
@@ -3547,7 +3623,11 @@ describe(
       await new Promise((r) => setTimeout(r, 200));
       assert.equal(await actions(), "1");
       await page.click('[data-testid="rewind"]');
-      assert.deepEqual(await sent(), [], "nothing happens before the dialog is answered");
+      assert.deepEqual(
+        await sent(),
+        [{ type: "rewindPreview", messageID: "msg_9" }],
+        "only the preview is asked for before the dialog is answered",
+      );
       const g = await page.evaluate(() => {
         const d = document.querySelector('[data-testid="dialog"]')!.getBoundingClientRect();
         return {
@@ -3562,16 +3642,89 @@ describe(
       assert.equal(g.role, "alertdialog");
       await page.keyboard.press("Escape");
       assert.equal(await page.$('[data-testid="dialog"]'), null);
-      assert.deepEqual(await sent(), [], "Escape cancels");
+      assert.equal(await lastSent("rewind"), undefined, "Escape cancels");
+      await clearSent();
       await page.click('[data-testid="rewind"]');
       await page.click('[data-testid="rewind-code"]');
-      assert.deepEqual(await sent(), [{ type: "rewind", messageID: "msg_9", files: true }]);
+      assert.deepEqual(await sent(), [
+        { type: "rewindPreview", messageID: "msg_9" },
+        { type: "rewind", messageID: "msg_9", files: true },
+      ]);
       await host({ type: "state", state: baseState({ busy: true }) });
       assert.equal(
         await page.$eval('[data-testid="rewind"]', (b) => (b as HTMLButtonElement).disabled),
         true,
       );
       assert.equal(await page.$eval(".bubble", (b) => b.className), "bubble", "clicking ↺ does not open it");
+    });
+
+    it("the rewind dialog lists the files that revert and warns about shell commands", async () => {
+      await host({ type: "transcript", items: [prompt("msg_9", "hello")] });
+      await page.setViewport({ width: 300, height: 700 });
+      await page.hover(".bubble");
+      await page.click('[data-testid="rewind"]');
+      assert.match(await text('[data-testid="rewind-preview"]'), /Checking which files would revert/);
+      // An answer for another prompt is ignored.
+      await host({ type: "rewindPreview", messageID: "msg_other", preview: null });
+      assert.match(await text('[data-testid="rewind-preview"]'), /Checking/);
+      const files = Array.from({ length: 8 }, (_, i) => ({
+        path: `src/file-with-a-long-name-${i}.ts`,
+        status: i === 0 ? ("added" as const) : ("modified" as const),
+      }));
+      await host({
+        type: "rewindPreview",
+        messageID: "msg_9",
+        preview: { files, agentShell: 2, userShell: 1, shellFiles: ["dist/out.js"], kept: ["notes.md"] },
+      });
+      assert.match(await text('[data-testid="rewind-preview"]'), /With code, 8 files revert:/);
+      assert.deepEqual(
+        await page.$$eval('[data-testid="rewind-files"] li', (li) =>
+          li.map((l) => (l as HTMLElement).innerText.replace(/\s+/g, " ")),
+        ),
+        [
+          "src/file-with-a-long-name-0.ts new",
+          ...Array.from({ length: 5 }, (_, i) => `src/file-with-a-long-name-${i + 1}.ts`),
+          "and 2 more",
+        ],
+      );
+      const warn = await text('[data-testid="rewind-shell-warning"]');
+      assert.match(warn, /The agent ran 2 shell commands since/);
+      assert.match(warn, /outside the folder or in ignored files stay/);
+      assert.match(warn, /Changed by a command, not an edit: dist\/out\.js\./);
+      assert.match(warn, /1 command you ran with ! is not in OpenCode's snapshots/);
+      assert.match(warn, /Changed since, but not by the agent's steps, so it stays: notes\.md\./);
+      assert.equal(
+        await page.evaluate(() => {
+          const d = document.querySelector('[data-testid="dialog"]')!.getBoundingClientRect();
+          return (
+            d.left >= 0 &&
+            d.right <= window.innerWidth &&
+            document.documentElement.scrollWidth <= window.innerWidth
+          );
+        }),
+        true,
+        "fits at 300 px",
+      );
+      assert.equal(
+        await page.evaluate(() => (document.activeElement as HTMLElement).dataset.testid),
+        "rewind-chat",
+        "the safer choice keeps focus",
+      );
+      await page.keyboard.press("Escape");
+      // Nothing recorded, and no shell command: plain sentences, no warning.
+      await page.click('[data-testid="rewind"]');
+      await host({
+        type: "rewindPreview",
+        messageID: "msg_9",
+        preview: { files: [], agentShell: 0, userShell: 0, shellFiles: [], kept: [] },
+      });
+      assert.match(await text('[data-testid="rewind-preview"]'), /OpenCode recorded no file changes/);
+      assert.equal(await page.$('[data-testid="rewind-shell-warning"]'), null);
+      await page.keyboard.press("Escape");
+      await page.click('[data-testid="rewind"]');
+      await host({ type: "rewindPreview", messageID: "msg_9", preview: null });
+      assert.match(await text('[data-testid="rewind-preview"]'), /could not tell which files would revert/);
+      await page.keyboard.press("Escape");
     });
 
     it("forks from a prompt, and the whole session from the / palette", async () => {

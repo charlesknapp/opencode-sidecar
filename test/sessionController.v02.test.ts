@@ -709,6 +709,69 @@ describe("agent-only changes", () => {
     assert.equal(c.agentFileSides("img.png"), null);
     assert.equal(c.agentFileSides("other.txt"), null);
   });
+
+  it("bumps the changes version on every new diff, for the review", async () => {
+    const { c } = await running();
+    const v = c.changesVersion;
+    await c.refreshChanges();
+    assert.equal(c.changesVersion, v + 1);
+  });
+
+  it("previews a rewind with code: the files from that turn on and the shell commands run since", async () => {
+    const { c, client } = await running();
+    const user = c.transcript.items.find((i) => i.kind === "user");
+    assert.ok(user);
+    const messageID = user.id.slice("user:".length);
+    c.handleRawEvent(
+      raw("session.tool.input.started", {
+        sessionID: "ses_1",
+        assistantMessageID: "m",
+        id: "b1",
+        name: "bash",
+      }),
+    );
+    c.handleRawEvent(
+      raw("session.tool.success", {
+        sessionID: "ses_1",
+        assistantMessageID: "m",
+        id: "b1",
+        content: [{ type: "text", text: "ok" }],
+      }),
+    );
+    client.diff = [
+      { file: "dist/out.js", patch: "", additions: 1, deletions: 0, status: "added" },
+      { file: "a.txt", patch: "", additions: 1, deletions: 0, status: "modified" },
+      { file: "between.txt", patch: "", additions: 1, deletions: 0, status: "modified" },
+    ];
+    // The history as OpenCode stores it: the agent's step recorded the files it changed.
+    client.messages = [
+      { id: "msg_0", type: "user", payload: { text: "earlier" } },
+      { id: messageID, type: "user", payload: { text: "do the task" } },
+      { id: "m", type: "assistant", snapshot: { start: "s0", end: "s1", files: ["dist/out.js", "a.txt"] } },
+    ];
+    const p = await c.rewindPreview(messageID);
+    assert.deepEqual(client.callsTo("sessionDiff").at(-1)?.args, [
+      "ses_1",
+      { from: messageID, to: undefined },
+    ]);
+    assert.deepEqual(p, {
+      files: [
+        { path: "dist/out.js", status: "added" },
+        { path: "a.txt", status: "modified" },
+      ],
+      agentShell: 1,
+      userShell: 0,
+      shellFiles: ["dist/out.js", "a.txt"],
+      kept: ["between.txt"],
+    });
+    client.diffError = new OpenCodeHttpError(400, null, "no");
+    const noDiff = await c.rewindPreview(messageID);
+    assert.equal(noDiff?.files?.length, 2, "the steps still name the files");
+    assert.deepEqual(noDiff?.kept, []);
+    client.messages = [];
+    assert.equal((await c.rewindPreview(messageID))?.files, null, "unknown files, still the shell warning");
+    assert.equal(await c.rewindPreview("msg_unknown"), null);
+  });
 });
 
 describe("errors and titles", () => {

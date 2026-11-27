@@ -198,7 +198,9 @@ describe("client requests", () => {
     const q = new URL(captured.at(-1)!.url).searchParams;
     assert.equal(q.get("from"), "msg_a");
     assert.equal(q.get("to"), "msg_b");
-    assert.equal(q.get("context"), null, "full-file patches omit context");
+    assert.equal(q.get("context"), "10000000", "full-file patches ask for more context than any file");
+    await client.sessionDiff("ses_1", { from: "msg_a" });
+    assert.equal(new URL(captured.at(-1)!.url).searchParams.get("context"), "3");
     assert.equal(await client.firstUserText("ses_1"), "First prompt");
   });
 });

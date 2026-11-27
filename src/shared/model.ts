@@ -185,6 +185,42 @@ export interface FileChange {
   status: "added" | "deleted" | "modified";
 }
 
+/** Review of one agent-changed file: its hunks by decision. */
+export interface ReviewCounts {
+  undecided: number;
+  kept: number;
+  undone: number;
+  /** Undecided hunks the user has edited since (only known for files that were checked). */
+  changed: number;
+  /** Reviewed as a whole file (binary, incomplete snapshot or too large). */
+  fileOnly: boolean;
+}
+
+/** Keep / Undo review of the open session's agent changes, per file (relative path). */
+export interface ReviewView {
+  files: Record<string, ReviewCounts>;
+  undecided: number;
+  kept: number;
+  undone: number;
+}
+
+/** What a rewind with code would revert, as far as OpenCode's data tells. */
+export interface RewindPreview {
+  /**
+   * Files a rewind with code reverts: those the agent's steps from the prompt on changed, as
+   * OpenCode's step snapshots recorded them (null: it could not tell).
+   */
+  files: Array<{ path: string; status: "added" | "deleted" | "modified" }> | null;
+  /** Shell commands the agent ran from the prompt on. */
+  agentShell: number;
+  /** Commands the user ran with `!` from the prompt on (OpenCode takes no snapshot for them). */
+  userShell: number;
+  /** Reverted files no edit tool reported: most likely written by a shell command. */
+  shellFiles: string[];
+  /** Files that changed since but in no agent step (`!` commands, edits between turns): they stay. */
+  kept: string[];
+}
+
 export interface TokenUsage {
   input: number;
   output: number;
