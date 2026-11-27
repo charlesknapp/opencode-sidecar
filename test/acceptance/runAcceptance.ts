@@ -309,6 +309,24 @@ function stopIsolated(proc: ChildProcess): void {
   proc.kill();
 }
 
+/**
+ * A stand-in `opencode` for the sign-in scenario. The real `opencode auth login` opens OpenCode's
+ * login page in the user's browser on every run; this prints its arguments and waits like a
+ * login waiting for the browser, until its terminal is closed.
+ */
+function signInStub(base: string): string {
+  const dir = path.join(base, "signin-stub");
+  fs.mkdirSync(dir, { recursive: true });
+  if (process.platform === "win32") {
+    const file = path.join(dir, "opencode.cmd");
+    fs.writeFileSync(file, "@echo off\r\necho Sign-in stub: %*\r\nping -n 3600 127.0.0.1 >nul\r\n");
+    return file;
+  }
+  const file = path.join(dir, "opencode");
+  fs.writeFileSync(file, '#!/bin/sh\necho "Sign-in stub: $*"\nexec sleep 3600\n', { mode: 0o755 });
+  return file;
+}
+
 /** Onboarding and easy-open scenarios (A–G). */
 async function onboardingScenarios(base: string, repo: string, summary: Record<string, unknown>) {
   // Found the way the extension finds it (PATH, then the usual install folders).
@@ -351,9 +369,11 @@ async function onboardingScenarios(base: string, repo: string, summary: Record<s
       await new Promise((r) => setTimeout(r, 1000));
     }
     const dead = `http://127.0.0.1:${await freePort()}`;
+    const signInCli = signInStub(base);
     const env = {
       OPENCODE_SERVER_PASSWORD: password,
       ACCEPT_CLI: cli,
+      ACCEPT_SIGNIN_CLI: signInCli,
       ACCEPT_FREE_URL: free.url,
       ACCEPT_BARE_URL: bare.url,
       ACCEPT_DEAD_URL: dead,
@@ -373,7 +393,13 @@ async function onboardingScenarios(base: string, repo: string, summary: Record<s
         "onb-b-stopped",
         { env, settings: { "opencodeSidecar.executablePath": cli, "opencodeSidecar.serverUrl": dead } },
       ],
-      ["onb-c-signin", { env, settings: { "opencodeSidecar.serverUrl": bare.url } }],
+      [
+        "onb-c-signin",
+        {
+          env,
+          settings: { "opencodeSidecar.executablePath": signInCli, "opencodeSidecar.serverUrl": bare.url },
+        },
+      ],
       ["onb-f-nofolder", { env, noFolder: true, settings: { "opencodeSidecar.serverUrl": free.url } }],
       // Read-only against the user's real OpenCode service: a configured user sees no onboarding.
       ["onb-e-ready", { env: { ACCEPT_CLI: cli } }],

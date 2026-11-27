@@ -2032,6 +2032,8 @@ async function worktree(api: TestApi): Promise<void> {
 // ------------------------------------------------------- onboarding (A–G)
 
 const CLI = process.env.ACCEPT_CLI ?? "";
+/** The stand-in `opencode` the sign-in scenario runs, so no real login page opens in a browser. */
+const SIGNIN_CLI = process.env.ACCEPT_SIGNIN_CLI ?? CLI;
 const FREE_URL = process.env.ACCEPT_FREE_URL ?? "";
 const BARE_URL = process.env.ACCEPT_BARE_URL ?? "";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -2156,13 +2158,14 @@ async function onbSignIn(api: TestApi): Promise<void> {
     api.statusBar().text,
   );
 
-  // Sign in to OpenCode (same handler as the button): OpenCode's own device login in a terminal.
+  // Sign in to OpenCode (same handler as the button): OpenCode's own device login in a terminal,
+  // here the stand-in CLI, which records the command and waits as the login would.
   await vscode.commands.executeCommand("opencodeSidecar.signIn");
   const term = await waitFor("sign-in terminal", () => terminalNamed("OpenCode Sign In")[0], 10_000);
   const opts = term.creationOptions as vscode.TerminalOptions;
   check(
     "C. Sign in runs `opencode auth login opencode --method device` (OpenCode's flow)",
-    opts.shellPath === CLI &&
+    opts.shellPath === SIGNIN_CLI &&
       JSON.stringify(opts.shellArgs) ===
         JSON.stringify(["auth", "login", "opencode", "--method", "device", "--server", BARE_URL]),
     `${path.basename(String(opts.shellPath))} ${JSON.stringify(opts.shellArgs)}`,
@@ -2171,7 +2174,7 @@ async function onbSignIn(api: TestApi): Promise<void> {
   await vscode.commands.executeCommand("opencodeSidecar.signIn");
   check("C. A second click reuses the open sign-in terminal", terminalNamed("OpenCode Sign In").length === 1);
   await sleep(5000);
-  check("C. OpenCode device login started and is waiting for the browser", term.exitStatus === undefined);
+  check("C. The sign-in started and is waiting for the browser", term.exitStatus === undefined);
 
   // Login cancelled: the user closes the sign-in terminal (Terminal: Kill) before anything changed.
   term.show();
