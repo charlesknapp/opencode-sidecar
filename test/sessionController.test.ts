@@ -21,7 +21,7 @@ function setup(defaults = { model: "", agent: "" }) {
     { onEvents: (e) => emitted.push(...e), onTranscriptReset: () => resets++, onStateChanged() {} },
     silentLog,
     () => defaults,
-    { debounceMs: 1, stopCheckMs: 20, modelRetryMs: 1 },
+    { debounceMs: 1, stopCheckMs: 20, modelRetryMs: 1, deliveryWaitMs: 1 },
   );
   return { client, store, c, emitted, resets: () => resets };
 }
@@ -470,6 +470,83 @@ describe("session controller: cancellation", () => {
     assert.equal(c.busy, false);
     assert.equal(c.stopping, false);
     assert.ok(c.transcript.items.some((i) => i.kind === "notice" && i.text === "Stopped."));
+  });
+
+  // OpenCode drops a prompt it has accepted but not delivered when the session is
+  // interrupted first: the message would vanish from the session (seen live).
+  function waiting(deliveryWaitMs: number) {
+    const client = new MockClient();
+    const c = new SessionController(
+      client,
+      new MemoryStore(),
+      { onEvents() {}, onTranscriptReset() {}, onStateChanged() {} },
+      silentLog,
+      () => ({ model: "", agent: "" }),
+      { debounceMs: 1, stopCheckMs: 1000, modelRetryMs: 1, deliveryWaitMs },
+    );
+    const sentId = () => c.transcript.items.find((i) => i.kind === "user")?.id.replace(/^user:/, "");
+    return { c, client, sentId };
+  }
+
+  it("waits for a prompt just sent to be delivered before interrupting", async () => {
+    const { c, client, sentId } = waiting(5000);
+    await c.setDirectory(DIR);
+    await c.send("oops, wrong prompt", []);
+    const id = sentId();
+    assert.ok(id);
+    const stopped = c.stop();
+    await tick(30);
+    assert.equal(client.callsTo("interrupt").length, 0, "not before OpenCode delivered it");
+    assert.equal(c.stopping, true);
+    c.handleRawEvent(raw("session.inbox.delivered", { sessionID: "ses_1", inboxID: id }));
+    await stopped;
+    assert.deepEqual(client.callsTo("interrupt")[0].args, ["ses_1"]);
+  });
+
+  it("interrupts at once once the prompt was delivered, and after a bounded wait when it never is", async () => {
+    const a = waiting(5000);
+    await a.c.setDirectory(DIR);
+    await a.c.send("x", []);
+    a.c.handleRawEvent(raw("session.inbox.delivered", { sessionID: "ses_1", inboxID: a.sentId() }));
+    const t0 = Date.now();
+    await a.c.stop();
+    assert.equal(a.client.callsTo("interrupt").length, 1);
+    assert.ok(Date.now() - t0 < 1000);
+
+    const b = waiting(60);
+    await b.c.setDirectory(DIR);
+    await b.c.send("x", []);
+    await b.c.stop();
+    assert.equal(b.client.callsTo("interrupt").length, 1, "Stop still stops");
+  });
+
+  it("waits for a command's message (a goal's kickoff too) OpenCode enqueued while idle", async () => {
+    const { c, client } = waiting(5000);
+    await c.setDirectory(DIR);
+    await c.runCommand("init", "");
+    const item = { type: "synthetic", delivery: "steer", payload: { text: "A goal is set" } };
+    c.handleRawEvent(raw("session.inbox.enqueued", { sessionID: "ses_1", inboxID: "msg_cmd", item }));
+    c.handleRawEvent(raw("session.execution.started", { sessionID: "ses_1" }));
+    assert.equal(c.busy, true);
+    const stopped = c.stop();
+    await tick(30);
+    assert.equal(client.callsTo("interrupt").length, 0);
+    c.handleRawEvent(raw("session.inbox.delivered", { sessionID: "ses_1", inboxID: "msg_cmd" }));
+    await stopped;
+    assert.equal(client.callsTo("interrupt").length, 1);
+  });
+
+  it("does not wait for a message sent while the agent works (it steers or queues)", async () => {
+    const { c, client, sentId } = waiting(5000);
+    await c.setDirectory(DIR);
+    await c.send("x", []);
+    c.handleRawEvent(raw("session.inbox.delivered", { sessionID: "ses_1", inboxID: sentId() }));
+    c.handleRawEvent(raw("session.execution.started", { sessionID: "ses_1" }));
+    await c.send("and also this", []);
+    const t0 = Date.now();
+    await c.stop();
+    assert.equal(client.callsTo("interrupt").length, 1);
+    assert.ok(Date.now() - t0 < 1000);
   });
 
   it("clears busy immediately when OpenCode reports nothing was running", async () => {

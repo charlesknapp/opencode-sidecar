@@ -263,6 +263,12 @@ export class SessionController {
   private lastPayload: PromptPayload | null = null;
   private deliveredEarly = new Set<string>();
   /**
+   * Prompts and commands sent while idle that OpenCode has accepted but not yet delivered.
+   * OpenCode drops such a message (it is never stored) when the session is interrupted
+   * before the delivery, so Stop waits for it first.
+   */
+  private undelivered = new Set<string>();
+  /**
    * Subagent sessions started (directly or through other subagents) by the open session.
    * Their progress is summarized for the subagent cards; their permission requests and
    * questions block the open session's run, so they are shown in its conversation.
@@ -375,6 +381,8 @@ export class SessionController {
       goalRetryMs?: number;
       /** How often an MCP server's state is read while it connects after a sign-in. */
       mcpPollMs?: number;
+      /** How long Stop waits for a prompt just sent to be delivered before interrupting. */
+      deliveryWaitMs?: number;
       /** How often busy sessions are checked for a stall. */
       stuckCheckMs?: number;
       /** Clock for subagent timing and the stall check (tests). */
@@ -1118,6 +1126,7 @@ export class SessionController {
     this.lastPayload = null;
     this.firstUserText = null;
     this.deliveredEarly.clear();
+    this.undelivered.clear();
     this.subagents.reset();
     this.viewer = null;
     this.viewerToken++;
@@ -1903,6 +1912,8 @@ export class SessionController {
         ...(delivery ? { delivery } : {}),
       });
       this.lastPayload = payload;
+      if (!wasBusy && res.id && !this.deliveredEarly.has(res.id) && !this.transcript.has(`user:${res.id}`))
+        this.undelivered.add(res.id);
       this.log.info(
         `Prompt sent to ${session.id} (${payload.text.length} chars, ${payload.files.length} file attachment(s)${delivery ? `, ${delivery}` : ""})`,
       );
@@ -1985,6 +1996,9 @@ export class SessionController {
     this.stopping = true;
     this.sink.onStateChanged();
     try {
+      const deadline = Date.now() + (this.timing.deliveryWaitMs ?? 3000);
+      while (this.undelivered.size && this.current?.id === id && Date.now() < deadline) await delay(50);
+      if (this.current?.id !== id) return;
       const interrupted = await this.client.interrupt(id);
       this.log.info(`Interrupt ${id}: ${interrupted ? "accepted" : "nothing running"}`);
       if (!interrupted) {
@@ -2858,6 +2872,9 @@ export class SessionController {
     if (env.sessionID) this.watchEvents(raw, env);
     if (!this.current || !env.sessionID) return;
     const root = this.current.id;
+    // A prompt, command or notice (a goal's kickoff, a subagent's report) that starts a run.
+    const queued = env.sessionID === root && !this.execActive ? enqueuedId(raw) : null;
+    if (queued && !this.deliveredEarly.has(queued)) this.undelivered.add(queued);
     if (env.parentID && this.subagents.created(env.sessionID, env.parentID, root, env.created))
       this.sink.onStateChanged();
     if (env.events.length === 0) return;
@@ -3039,6 +3056,7 @@ export class SessionController {
         }
         return [];
       case "inbox.delivered": {
+        this.undelivered.delete(ev.id);
         const item = this.pending.find((p) => p.id === ev.id);
         this.pending = this.pending.filter((p) => p.id !== ev.id);
         if (!item) {
@@ -3059,6 +3077,7 @@ export class SessionController {
         ];
       }
       case "inbox.cancelled":
+        this.undelivered.delete(ev.id);
         this.pending = this.pending.filter((p) => p.id !== ev.id);
         this.pendingStartsTask.delete(ev.id);
         return [];
@@ -3083,6 +3102,7 @@ export class SessionController {
         this.busy = false;
         this.stopping = false;
         this.execActive = false;
+        this.undelivered.clear();
         this.budget.endTask();
         clearTimeout(this.stopTimer);
         if (this.budgetDrain) {
@@ -3161,7 +3181,12 @@ export class SessionController {
       case "user.message":
         if (this.firstUserText === null) this.firstUserText = ev.text;
         break;
+      case "step.started":
+        // The model has the messages: none is waiting for delivery any more.
+        this.undelivered.clear();
+        break;
       case "usage.step":
+        this.undelivered.clear();
         this.lastStep = {
           tokens: ev.tokens,
           modelKey: ev.modelKey,
@@ -3175,6 +3200,7 @@ export class SessionController {
         }
         break;
       case "usage.session":
+        this.undelivered.clear();
         this.sessionCost = ev.cost;
         if (!replay) this.checkBudget(this.budget.recordCost(ev.cost));
         break;
@@ -3538,6 +3564,12 @@ export function isCatalogEvent(raw: unknown): boolean {
   if (!raw || typeof raw !== "object") return false;
   const type = (raw as { type?: unknown }).type;
   return typeof type === "string" && CATALOG_EVENTS.has(type);
+}
+
+/** The inbox item of a `session.inbox.enqueued` event (user messages and synthetic notices alike). */
+function enqueuedId(raw: unknown): string | null {
+  const r = raw as { type?: unknown; data?: { inboxID?: unknown } } | null;
+  return r?.type === "session.inbox.enqueued" && typeof r.data?.inboxID === "string" ? r.data.inboxID : null;
 }
 
 function delay(ms: number): Promise<void> {

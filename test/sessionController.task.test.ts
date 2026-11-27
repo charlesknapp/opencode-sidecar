@@ -26,7 +26,7 @@ function setup(budget: BudgetLevel = "off") {
       budgetLevel: budget,
       budget: { presets: { ...DEFAULT_BUDGETS, small: { maxCost: null, maxSteps: 3 } }, warnAt: 0.8 },
     }),
-    { debounceMs: 1, stopCheckMs: 20, modelRetryMs: 1 },
+    { debounceMs: 1, stopCheckMs: 20, modelRetryMs: 1, deliveryWaitMs: 1 },
   );
   return { c, client, notices };
 }
