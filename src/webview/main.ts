@@ -171,6 +171,7 @@ const ICON_PATHS: Record<string, string[]> = {
   rewind: ["M3 4v3.5h3.5", "M3.4 7.4A5 5 0 1 1 4.5 11.5"],
   bookmark: ["M4.5 2.5h7v11L8 11l-3.5 2.5z"],
   notes: ["M3.5 2.5h9v11h-9z", "M5.5 5.5h5", "M5.5 8h5", "M5.5 10.5h3"],
+  commit: ["M10.5 8a2.5 2.5 0 1 1-5 0a2.5 2.5 0 1 1 5 0", "M1.5 8h4M10.5 8h4"],
   goal: ["M13.5 8a5.5 5.5 0 1 1-11 0a5.5 5.5 0 1 1 11 0", "M10.5 8a2.5 2.5 0 1 1-5 0a2.5 2.5 0 1 1 5 0"],
   history: ["M13.8 8a5.8 5.8 0 1 1-11.6 0a5.8 5.8 0 1 1 11.6 0", "M8 5v3l2 1.3"],
   clock: ["M13.8 8a5.8 5.8 0 1 1-11.6 0a5.8 5.8 0 1 1 11.6 0", "M8 5v3l2 1.3"],
@@ -929,12 +930,17 @@ function renderPasteView(live: readonly Paste[]): void {
 //
 // `/btw <question>` (or Ask aside in the / palette) asks in a copy of the session that
 // only this card shows; the main session keeps working undisturbed. The card is built
-// once, so a follow-up being typed survives the answer streaming in.
+// once, so a follow-up being typed survives the answer streaming in. It folds to one
+// line (the question and how it stands) on request, and by itself once the answer is
+// done and the user goes on in the session, so the conversation gets its room back.
 
 /** The side question from the host; null when none is open. */
 let aside: AsideView | null = null;
 /** The card is open, also before its first question. */
 let asideShown = false;
+/** Folded to its head line. */
+let asideCollapsed = false;
+const asideTitle = h("span", { className: "aside-title", dir: "auto", "data-testid": "aside-title" });
 const asideStatus = h("span", { className: "aside-status", "data-testid": "aside-status" });
 const asideBody = h("div", { className: "aside-body", "data-testid": "aside-body" });
 const asideInput = h("input", {
@@ -955,18 +961,41 @@ const asideMainBtn = h(
     className: "btn small",
     "data-testid": "aside-to-main",
     "data-tip": "Add this answer to the session as a message (queued while the agent works)",
-    onclick: () => send({ type: "asideToMain" }),
+    onclick: () => {
+      send({ type: "asideToMain" });
+      collapseAside(true);
+    },
   },
   "Add to session",
 );
+const asideToggle = h(
+  "button",
+  {
+    className: "ico aside-toggle",
+    "data-testid": "aside-toggle",
+    onclick: (e: Event) => {
+      e.stopPropagation();
+      collapseAside(!asideCollapsed);
+    },
+  },
+  icon("chev"),
+);
+const asideFoot = h("div", { className: "aside-foot" }, asideInput, asideAskBtn, asideMainBtn);
 asideEl.append(
   h(
     "div",
-    { className: "aside-head" },
+    {
+      className: "aside-head",
+      // The folded line opens with a click anywhere on it, not only on its chevron.
+      onclick: (e: Event) => {
+        if (asideCollapsed && !(e.target as Element).closest("button")) collapseAside(false);
+      },
+    },
     icon("aside"),
-    h("span", { className: "aside-title" }, "Ask aside"),
+    asideTitle,
     asideStatus,
     h("span", { className: "grow" }),
+    asideToggle,
     h(
       "button",
       {
@@ -980,7 +1009,7 @@ asideEl.append(
     ),
   ),
   asideBody,
-  h("div", { className: "aside-foot" }, asideInput, asideAskBtn, asideMainBtn),
+  asideFoot,
 );
 asideInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -998,6 +1027,7 @@ const asideBusy = () => aside?.status === "starting" || aside?.status === "runni
 /** Opens the card; with `focus`, its question field takes the caret. */
 function openAside(focus: boolean): void {
   asideShown = true;
+  asideCollapsed = false;
   renderAside();
   if (focus) asideInput.focus();
 }
@@ -1020,10 +1050,20 @@ function closeAside(): void {
   if (aside) send({ type: "closeAside" });
   aside = null;
   asideShown = false;
+  asideCollapsed = false;
   asideInput.value = "";
   renderAside();
   input.focus();
 }
+
+function collapseAside(fold: boolean): void {
+  if (fold === asideCollapsed || !asideShown) return;
+  asideCollapsed = fold;
+  renderAside();
+}
+
+/** The last turn with a finished answer, the one Add to session sends. */
+const asideAnswered = () => [...(aside?.turns ?? [])].reverse().find((tn) => tn.done && tn.answer.trim());
 
 function renderAside(): void {
   asideEl.hidden = !asideShown;
@@ -1031,17 +1071,34 @@ function renderAside(): void {
   const a = aside;
   const turns = a?.turns ?? [];
   const busy = asideBusy();
-  asideStatus.textContent = busy ? "Answering…" : "Not added to this session";
+  const last = asideAnswered();
+  const folded = asideCollapsed && turns.length > 0;
+  asideEl.classList.toggle("collapsed", folded);
+  asideFoot.hidden = folded;
+  // Folded, the head names the question in place of the card's title.
+  asideTitle.textContent = folded ? turns[turns.length - 1].question : "Ask aside";
+  asideTitle.title = folded ? turns[turns.length - 1].question : "";
+  asideStatus.textContent = busy
+    ? "Answering…"
+    : last?.sent
+      ? "Added to session"
+      : folded
+        ? "Answered"
+        : "Not added to this session";
+  asideToggle.hidden = !turns.length;
+  asideToggle.setAttribute("aria-expanded", String(!folded));
+  asideToggle.setAttribute("aria-label", folded ? "Show the side question" : "Fold the side question");
+  asideToggle.dataset.tip = folded ? "Show the answer" : "Fold to one line";
   // State pushes repaint the controls only; the answer is rebuilt when it changed.
   const sig = JSON.stringify(a);
   if (sig !== asideSignature) {
     asideSignature = sig;
     paintAsideBody(a);
   }
+  asideBody.hidden = folded || !asideBody.childElementCount;
   asideInput.placeholder = turns.length ? "Ask a follow-up…" : "Ask a side question…";
   const connected = state?.connection.kind === "connected";
   asideAskBtn.disabled = !connected || busy || !asideInput.value.trim();
-  const last = [...turns].reverse().find((tn) => tn.done && tn.answer.trim());
   asideMainBtn.hidden = !last;
   asideMainBtn.disabled = !connected || !!last?.sent;
   asideMainBtn.textContent = last?.sent ? "Added to session" : "Add to session";
@@ -1077,7 +1134,6 @@ function paintAsideBody(a: AsideView | null): void {
       ),
     );
   asideBody.replaceChildren(...nodes);
-  asideBody.hidden = nodes.length === 0;
   if (stick) asideBody.scrollTop = asideBody.scrollHeight;
 }
 boxEl.addEventListener("dragover", (e) => {
@@ -1166,21 +1222,25 @@ function submit(flip = false) {
   const cmd = /^\/([\w.:/-]+)(?:\s+([\s\S]*))?$/.exec(full.trim());
   const known = cmd && (state.commands ?? []).some((c) => c.name === cmd[1]);
   const builtin = cmd && !cmd[2]?.trim() ? builtinCommand(cmd[1]) : undefined;
+  /** The message went to the session (a prompt or one of OpenCode's commands). */
+  let toSession = false;
   // /btw is Sidecar's side question, unless OpenCode has a command of that name.
   if (builtin) builtin.run();
   else if (cmd && cmd[1] === "btw" && !known) {
     if (cmd[2]?.trim()) askAside(cmd[2]);
     else openAside(true);
-  } else if (cmd && known)
+  } else if (cmd && known) {
     send(
       state.busy
         ? { type: "runCommand", name: cmd[1], text: cmd[2] ?? "", delivery }
         : { type: "runCommand", name: cmd[1], text: cmd[2] ?? "" },
     );
-  else if (cmd && cmd[1] === "compact" && !cmd[2]) send({ type: "compact" });
+    toSession = true;
+  } else if (cmd && cmd[1] === "compact" && !cmd[2]) send({ type: "compact" });
   else if (full.startsWith("!") && full.slice(1).trim())
     send({ type: "shellCommand", command: full.slice(1).trim() });
   else {
+    toSession = true;
     const picked = mentions.filter((m) => text.includes(m.text));
     send({
       type: "send",
@@ -1191,6 +1251,8 @@ function submit(flip = false) {
     });
     lastSentPastes = live.length ? { text, pastes: live } : null;
   }
+  // Going on in the session after a side answer folds its card to one line.
+  if (toSession && !asideBusy() && asideAnswered()) collapseAside(true);
   if (live.length) rememberPastes(live.map((p) => p.text));
   input.value = "";
   draft = "";
@@ -1606,7 +1668,7 @@ function openMenu(anchor: HTMLElement, entries: MenuEntry[], opts: MenuOptions =
       focus(e.key === "Home" ? 0 : v.length - 1);
     } else if (e.key === "Tab") closeMenu(true);
   });
-  const onOutside = (e: MouseEvent) => {
+  const onOutside = (e: Event) => {
     const target = e.target as Node;
     if (!menu.contains(target) && !anchor.contains(target)) closeMenu();
   };
@@ -9548,7 +9610,7 @@ function renderChanges(s: ViewState) {
     parts.push(
       h(
         "div",
-        { className: "row" },
+        { className: "row agent-row" },
         h(
           "button",
           {
@@ -9583,20 +9645,25 @@ function renderChanges(s: ViewState) {
           ? h(
               "button",
               {
-                className: "link-btn changes-action",
+                className: "link-btn changes-action commit-btn",
                 "data-testid": "write-commit-message",
+                "aria-label": "Commit message",
                 onclick: () => send({ type: "writeCommitMessage" }),
                 "data-tip":
                   "Write a commit message with OpenCode for the staged changes (or the agent's changes when nothing is staged) into the Source Control commit box. Nothing is committed.",
               },
-              "Commit message",
+              // In a narrow panel only the icon shows, so the line stays one row.
+              icon("commit"),
+              h("span", { className: "commit-label" }, "Commit message"),
             )
           : null,
       ),
       changesOpen ? fileList(ac.files, "openAgentDiff", s.review?.files) : null,
     );
   }
-  if (showWs && ws) {
+  // Beside the agent's changes, the workspace line waits in the opened list: the strip
+  // stays one line until asked.
+  if (showWs && ws && (!showAgent || changesOpen)) {
     const label = `${t("workspaceChanges")}: ${ws.count} file${ws.count === 1 ? "" : "s"}`;
     const why = ac.status === "unavailable" ? `\n${t("agentDiffUnavailable")}: ${ac.reason}` : "";
     parts.push(
@@ -9685,10 +9752,10 @@ function renderPending(s: ViewState) {
 // --------------------------------------------------------------- goal header
 
 /**
- * The open session's goal (`/goal`), pinned above the conversation: the objective, how it
- * stands (in progress, achieved or stopped, with OpenCode's reason) and its round, with
- * Rounds (go to the goal's notices in the conversation, one after another), Pause,
- * Resume and End goal through OpenCode's own `/goal` command.
+ * The open session's goal (`/goal`), pinned above the conversation: one line with the
+ * objective and how it stands (in progress, achieved or stopped), which opens to its
+ * round, OpenCode's reason, Rounds (go to the goal's notices in the conversation, one
+ * after another), Pause, Resume and End goal through OpenCode's own `/goal` command.
  */
 const GOAL_STATUS: Record<GoalState["status"], string> = {
   active: "In progress",
@@ -9697,6 +9764,8 @@ const GOAL_STATUS: Record<GoalState["status"], string> = {
 };
 /** The goal notice Rounds went to last, so the next click goes on from there. */
 let goalRound = -1;
+/** The goal's second line (round, reason, actions) is open; it stays as the user left it. */
+let goalOpen = false;
 
 /** The current goal's notices in the conversation: its "set" row and every round after it. */
 function goalRows(): string[] {
@@ -9769,11 +9838,21 @@ function renderGoal(s: ViewState) {
       : btn("End goal", "goal-end", "Stop working toward it and forget it", () => void endGoal()),
   );
   const status = g.status ? GOAL_STATUS[g.status] : null;
+  const toggle = () => {
+    goalOpen = !goalOpen;
+    renderGoal(s);
+  };
   goalEl.dataset.status = g.status ?? "unknown";
+  goalEl.classList.toggle("open", goalOpen);
   goalEl.replaceChildren(
     h(
       "div",
-      { className: "goal-main" },
+      {
+        className: "goal-main",
+        onclick: (e: Event) => {
+          if (!(e.target as Element).closest("button")) toggle();
+        },
+      },
       icon("goal"),
       h("span", { className: "goal-label" }, "Goal"),
       h(
@@ -9781,13 +9860,33 @@ function renderGoal(s: ViewState) {
         { className: "goal-objective", dir: "auto", title: g.objective, "data-testid": "goal-objective" },
         g.objective,
       ),
+      status
+        ? h(
+            "span",
+            {
+              className: `goal-status s-${g.status}`,
+              "data-testid": "goal-status",
+              title: [status, round, g.status !== "active" ? g.reason : null].filter(Boolean).join(" · "),
+            },
+            status,
+          )
+        : null,
+      h(
+        "button",
+        {
+          className: "ico small goal-toggle",
+          "aria-expanded": String(goalOpen),
+          "aria-label": goalOpen ? "Hide the goal's round and actions" : "Show the goal's round and actions",
+          "data-tip": goalOpen ? "Fold to one line" : "Round, Pause and End goal",
+          "data-testid": "goal-toggle",
+          onclick: toggle,
+        },
+        icon("chev"),
+      ),
     ),
     h(
       "div",
-      { className: "goal-meta" },
-      status
-        ? h("span", { className: `goal-status s-${g.status}`, "data-testid": "goal-status" }, status)
-        : null,
+      { className: "goal-meta", hidden: !goalOpen },
       round ? h("span", { className: "muted", "data-testid": "goal-round" }, round) : null,
       g.reason && g.status !== "active"
         ? h(
@@ -10254,6 +10353,8 @@ window.addEventListener("message", (e: MessageEvent) => {
       // Closed by the host (another folder, a reconnect): the card goes too.
       if (msg.aside) asideShown = true;
       else if (aside) asideShown = false;
+      // A new question, or a card opened afresh, unfolds.
+      if (!msg.aside || msg.aside.turns.length > (aside?.turns.length ?? 0)) asideCollapsed = false;
       aside = msg.aside;
       renderAside();
       break;

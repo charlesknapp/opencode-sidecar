@@ -46,9 +46,12 @@ export const REVIEW_COMMANDS = {
   keepAll: "opencodeSidecar.keepAllAgentChanges",
   undoAll: "opencodeSidecar.undoAllAgentChanges",
   stage: "opencodeSidecar.stageKeptChanges",
-  /** The "Changed since — open diff" CodeLens (hidden from the palette). */
+  /** The "You edited this since — compare" CodeLens (hidden from the palette). */
   diff: "opencodeSidecar.openAgentChangeDiff",
 } as const;
+
+/** The CodeLens over an agent change edited since, in place of Undo. */
+export const EDITED_SINCE = "You edited this since — compare";
 
 /** What the review needs from the session (implemented by the chat view's controller). */
 export interface ReviewSource {
@@ -380,7 +383,13 @@ export class AgentReview implements vscode.Disposable, vscode.CodeLensProvider {
       if (p.kind === "changed") {
         const r = new vscode.Range(Math.min(p.near, last), 0, Math.min(p.near, last), 0);
         out.push(
-          lens(r, "Changed since — open diff", REVIEW_COMMANDS.diff, [e.file]),
+          lens(
+            r,
+            EDITED_SINCE,
+            REVIEW_COMMANDS.diff,
+            [e.file],
+            "Compare with what the agent wrote. Undo is off for this change, so your edit stays.",
+          ),
           lens(r, "Keep", REVIEW_COMMANDS.keep, [doc.uri, h.id], "Mark this agent change reviewed"),
         );
         continue;

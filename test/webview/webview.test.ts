@@ -2229,10 +2229,12 @@ describe(
         }),
       });
       assert.match(await text(".changes"), /Agent changes · 1 file/);
-      assert.match(await text(".changes"), /Workspace changes: 2 files/);
+      // One line until opened: the workspace line waits in the list.
+      assert.equal(await page.$('[data-testid="workspace-changes"]'), null);
       await page.click('[data-testid="view-agent-changes"]');
       assert.ok(await lastSent("reviewChanges"));
       await page.click('[data-testid="agent-changes-toggle"]');
+      assert.match(await text(".changes"), /Workspace changes: 2 files/);
       await page.click('[data-testid="file-diff"]');
       assert.deepEqual(await lastSent("openAgentDiff"), { type: "openAgentDiff", path: "a.txt" });
       await page.click('[data-testid="view-workspace-changes"]');
@@ -2515,9 +2517,31 @@ describe(
           files: [{ path: "a.txt", additions: 1, deletions: 0, status: "modified" as const }],
         },
       };
+      await page.setViewport({ width: 520, height: 800 });
       await host({ type: "state", state: baseState(changes) });
       const btn = '[data-testid="write-commit-message"]';
       assert.equal(await text(btn), "Commit message");
+      // In a narrow panel it is an icon with the same name, and the line stays one row.
+      for (const width of [300, 400]) {
+        await page.setViewport({ width, height: 800 });
+        const m = await page.$eval(btn, (b) => {
+          const toggle = document
+            .querySelector('[data-testid="agent-changes-toggle"]')!
+            .getBoundingClientRect();
+          const r = b.getBoundingClientRect();
+          return {
+            text: (b as HTMLElement).innerText.trim(),
+            label: b.getAttribute("aria-label"),
+            sameRow: Math.abs(r.top + r.height / 2 - (toggle.top + toggle.height / 2)) < 4,
+            inside: r.right <= window.innerWidth,
+          };
+        });
+        assert.deepEqual(
+          m,
+          { text: "", label: "Commit message", sameRow: true, inside: true },
+          `${width} px`,
+        );
+      }
       assert.match(
         (await page.$eval(btn, (b) => (b as HTMLElement).dataset.tip)) ?? "",
         /Nothing is committed/,
@@ -2968,14 +2992,37 @@ describe(
     const goalBar = () =>
       page.$eval('[data-testid="goal-bar"]', (e) => (e as HTMLElement).innerText.replace(/\s+/g, " ").trim());
 
-    it("the goal header pins the objective with its status, round and actions", async () => {
+    it("the goal header pins the objective with its status, and opens to its round and actions", async () => {
       await host({ type: "transcript", items: GOAL_ITEMS });
       await host({ type: "state", state: baseState({ goal: null }) });
       assert.equal(await page.$eval('[data-testid="goal-bar"]', (e) => (e as HTMLElement).hidden), true);
       await host({ type: "state", state: baseState({ goal: goal() }) });
+      // One line by default; the status names the round in its tooltip.
+      assert.equal(await goalBar(), "Goal make the tests pass In progress");
+      assert.equal(
+        await page.$eval('[data-testid="goal-status"]', (e) => e.getAttribute("title")),
+        "In progress · Round 2 of 50",
+      );
+      assert.equal(
+        await page.$eval('[data-testid="goal-toggle"]', (e) => e.getAttribute("aria-expanded")),
+        "false",
+      );
+      // A click on the line opens it, and it stays open across updates.
+      await page.click('[data-testid="goal-objective"]');
       assert.equal(
         await goalBar(),
         "Goal make the tests pass In progress Round 2 of 50 Rounds Pause End goal",
+      );
+      await host({ type: "state", state: baseState({ goal: goal({ rounds: 2 }) }) });
+      assert.match(await goalBar(), /Round 3 of 50 Rounds Pause End goal$/);
+      await page.click('[data-testid="goal-toggle"]');
+      assert.equal(await goalBar(), "Goal make the tests pass In progress");
+      // The keyboard reaches the toggle.
+      await page.focus('[data-testid="goal-toggle"]');
+      await page.keyboard.press("Enter");
+      assert.equal(
+        await page.$eval('[data-testid="goal-toggle"]', (e) => e.getAttribute("aria-expanded")),
+        "true",
       );
       await clearSent();
       await page.click('[data-testid="goal-pause"]');
@@ -2999,6 +3046,12 @@ describe(
           goal: goal({ status: "paused", reason: "The session failed: Free usage limit reached." }),
         }),
       });
+      assert.equal(await goalBar(), "Goal make the tests pass Stopped");
+      assert.equal(
+        await page.$eval('[data-testid="goal-status"]', (e) => e.getAttribute("title")),
+        "Stopped · 2 rounds · The session failed: Free usage limit reached.",
+      );
+      await page.click('[data-testid="goal-toggle"]');
       assert.equal(
         await goalBar(),
         "Goal make the tests pass Stopped 2 rounds The session failed: Free usage limit reached. Rounds Resume End goal",
@@ -3031,6 +3084,7 @@ describe(
     it("Rounds goes to the goal's notices in the conversation, one after another", async () => {
       await host({ type: "transcript", items: GOAL_ITEMS });
       await host({ type: "state", state: baseState({ goal: goal() }) });
+      await page.click('[data-testid="goal-toggle"]');
       const flashed = () =>
         page.$$eval(".flash", (els) =>
           els.map((e) => e.querySelector('[data-testid="background"]')?.textContent ?? ""),
@@ -3058,6 +3112,9 @@ describe(
             }),
           }),
         });
+        const line = await page.$eval('[data-testid="goal-bar"]', (el) => el.getBoundingClientRect().height);
+        assert.ok(line < 32, `one line by default: ${line}px`);
+        await page.click('[data-testid="goal-toggle"]');
         const fit = await page.$eval('[data-testid="goal-bar"]', (el) => {
           const r = el.getBoundingClientRect();
           const obj = el.querySelector<HTMLElement>('[data-testid="goal-objective"]')!;
@@ -6641,10 +6698,14 @@ describe(
         await page.$eval('[data-testid="aside-body"] .aside-a strong', (b) => b.textContent),
         "login",
       );
-      // The main box still steers the running task.
+      // The main box still steers the running task; the card stays open while it answers.
       await page.type("textarea", "keep going");
       await page.keyboard.press("Enter");
       assert.deepEqual(await lastSent("send"), { type: "send", text: "keep going", delivery: "steer" });
+      assert.equal(
+        await page.$eval('[data-testid="aside"]', (a) => a.classList.contains("collapsed")),
+        false,
+      );
       // A follow-up waits until the answer is done.
       assert.equal(
         await page.$eval('[data-testid="aside-ask"]', (b) => (b as HTMLButtonElement).disabled),
@@ -6662,6 +6723,12 @@ describe(
         type: "aside",
         aside: asideView([asideTurn({ answer: "It exports **login**.", done: true, sent: true })]),
       });
+      // Added to the session, the card folds to its question and how it stands.
+      assert.equal(
+        (await text('[data-testid="aside"]')).replace(/\s+/g, " "),
+        "What does auth.ts export? Added to session",
+      );
+      await page.click('[data-testid="aside-toggle"]');
       assert.equal(await text('[data-testid="aside-to-main"]'), "Added to session");
       assert.equal(
         await page.$eval('[data-testid="aside-to-main"]', (b) => (b as HTMLButtonElement).disabled),
@@ -6675,6 +6742,78 @@ describe(
       await page.click('[data-testid="aside-close"]');
       assert.ok(await lastSent("closeAside"));
       assert.equal(await asideShown(), false);
+    });
+
+    it("the side question folds to one line: by hand, and once answered when the session goes on", async () => {
+      const folded = () => page.$eval('[data-testid="aside"]', (a) => a.classList.contains("collapsed"));
+      await page.type("textarea", "/btw What does auth.ts export?");
+      await page.keyboard.press("Enter");
+      // Nothing to fold before the first question.
+      assert.equal(await page.$eval('[data-testid="aside-toggle"]', (b) => (b as HTMLElement).hidden), true);
+      await host({ type: "aside", aside: asideView([asideTurn({ answer: "It exports login." })]) });
+      await page.click('[data-testid="aside-toggle"]');
+      assert.equal(await folded(), true);
+      const line = await page.evaluate(() => {
+        const card = document.querySelector('[data-testid="aside"]')!.getBoundingClientRect();
+        const body = document.querySelector<HTMLElement>('[data-testid="aside-body"]')!;
+        const foot = document.querySelector<HTMLElement>(".aside-foot")!;
+        return { h: card.height, body: body.hidden, foot: foot.hidden };
+      });
+      assert.ok(line.h < 34 && line.body && line.foot, JSON.stringify(line));
+      assert.equal(
+        (await text('[data-testid="aside"]')).replace(/\s+/g, " "),
+        "What does auth.ts export? Answering…",
+      );
+      assert.equal(
+        await page.$eval('[data-testid="aside-toggle"]', (b) => b.getAttribute("aria-expanded")),
+        "false",
+      );
+      // A click on the line opens it again.
+      await page.click('[data-testid="aside-title"]');
+      assert.equal(await folded(), false);
+      assert.equal(await text('[data-testid="aside-title"]'), "Ask aside");
+      // Sending to the session while it still answers keeps it open; once done, folds it.
+      await page.type("textarea", "keep going");
+      await page.keyboard.press("Enter");
+      assert.equal(await folded(), false);
+      await host({
+        type: "aside",
+        aside: asideView([asideTurn({ answer: "It exports login.", done: true })]),
+      });
+      await page.type("textarea", "now the tests");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("send"), { type: "send", text: "now the tests" });
+      assert.equal(await folded(), true);
+      assert.equal(await text('[data-testid="aside-status"]'), "Answered");
+      // A follow-up (or a new question) opens it.
+      await host({
+        type: "aside",
+        aside: asideView([
+          asideTurn({ answer: "It exports login.", done: true }),
+          asideTurn({ question: "And logout?" }),
+        ]),
+      });
+      assert.equal(await folded(), false);
+      // Narrow: the folded line keeps to one row and its buttons inside the panel.
+      await page.setViewport({ width: 300, height: 700 });
+      await host({
+        type: "aside",
+        aside: asideView([
+          asideTurn({ answer: "It exports login.", done: true }),
+          asideTurn({ question: "And logout? ".repeat(10), answer: "Yes.", done: true }),
+        ]),
+      });
+      await page.click('[data-testid="aside-toggle"]');
+      const narrow = await page.evaluate(() => {
+        const card = document.querySelector('[data-testid="aside"]')!.getBoundingClientRect();
+        const t = document.querySelector<HTMLElement>('[data-testid="aside-title"]')!;
+        return {
+          h: card.height,
+          cut: t.scrollWidth > t.clientWidth,
+          close: document.querySelector('[data-testid="aside-close"]')!.getBoundingClientRect().right,
+        };
+      });
+      assert.ok(narrow.h < 34 && narrow.cut && narrow.close <= 300, JSON.stringify(narrow));
     });
 
     it("/btw alone, or Ask aside in the / palette, opens the card with its field focused", async () => {
@@ -7023,6 +7162,9 @@ describe(
             ],
           },
         });
+        // The side answer is done and the user goes on in the session: its card folds.
+        await page.type("textarea", "keep going");
+        await page.keyboard.press("Enter");
         await page.evaluate(
           (t) => {
             const box = document.querySelector("textarea")!;
@@ -7055,6 +7197,11 @@ describe(
               .sort((x, y) => x - y)
               .filter((c, i, all) => i === 0 || c - all[i - 1] > 6).length,
             sendRight: r('[data-testid="stop"], [data-testid="send"]').right,
+            // What is left of the conversation between the cards above it and the box.
+            conversation: r(".bottom").top - r("main.conversation").top,
+            aside: r('[data-testid="aside"]').height,
+            goal: r('[data-testid="goal-bar"]').height,
+            changes: r(".changes").height,
             boxRight: r(".box").right,
             labelCut: label.scrollWidth > label.clientWidth,
             shown: [
@@ -7075,6 +7222,9 @@ describe(
         assert.ok(m.rows <= 2, `the footer takes ${m.rows} rows`);
         assert.ok(m.sendRight <= m.boxRight, "Send inside the box");
         assert.equal(m.labelCut, false, "the paste chip keeps its name and number");
+        // The aside, the goal and the agent's changes take one line each.
+        assert.ok(m.aside < 34 && m.goal < 32 && m.changes < 30, JSON.stringify(m));
+        assert.ok(m.conversation >= 300, `${m.conversation}px of conversation left in a 760px panel`);
       });
     }
   },

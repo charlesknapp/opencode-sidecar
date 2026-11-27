@@ -11,6 +11,7 @@ import { summarizeTask } from "../../src/core/currentTask";
 import { statusBarText } from "../../src/core/onboarding";
 import { opencodeDirectory, sameDirectory } from "../../src/opencode/client";
 import { serviceFilePath } from "../../src/opencode/service";
+import { EDITED_SINCE } from "../../src/host/review";
 import type { OnboardingStage, TranscriptItem, UiEvent } from "../../src/shared/model";
 import type { WebviewMessage } from "../../src/shared/protocol";
 
@@ -661,6 +662,30 @@ async function agentReview(api: TestApi, edits: "agent" | "between-turns" = "age
     ["Keep file", "Undo file", "Keep", "Undo"].every((t) => lenses?.some((l) => l.command?.title === t)),
     (lenses ?? []).map((l) => l.command?.title).join(" | "),
   );
+  // A change edited since offers a comparison in place of Undo; put back, Undo returns.
+  const lensTitles = async () =>
+    (await vscode.commands.executeCommand<vscode.CodeLens[]>("vscode.executeCodeLensProvider", doc.uri))?.map(
+      (l) => l.command?.title ?? "",
+    ) ?? [];
+  const line16 = doc.lineAt(15).range;
+  const mine = new vscode.WorkspaceEdit();
+  mine.replace(doc.uri, line16, "agent 16 (mine)");
+  await vscode.workspace.applyEdit(mine);
+  // The review re-places hunks a moment after an edit.
+  const lensesUntil = async (ok: (titles: string[]) => boolean) => {
+    for (let i = 0; i < 20; i++) {
+      const titles = await lensTitles();
+      if (ok(titles)) return titles;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return lensTitles();
+  };
+  const edited = await lensesUntil((t) => t.includes(EDITED_SINCE));
+  check(`A change you edited says "${EDITED_SINCE}"`, edited.includes(EDITED_SINCE), edited.join(" | "));
+  const back = new vscode.WorkspaceEdit();
+  back.replace(doc.uri, doc.lineAt(15).range, "agent 16");
+  await vscode.workspace.applyEdit(back);
+  await lensesUntil((t) => t.filter((x) => x === "Undo").length === 2);
   const [first, second] = entry.hunks;
   await vscode.commands.executeCommand("opencodeSidecar.undoAgentChange", entry.uri, second);
   await vscode.commands.executeCommand("opencodeSidecar.keepAgentChange", entry.uri, first);

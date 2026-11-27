@@ -2002,6 +2002,33 @@ th {
   color: var(--vscode-foreground);
   font-weight: 600;
 }
+/* The agent's line keeps to one row: its label gives way to an ellipsis, never the
+   counts or the actions, and Commit message folds to its icon in a narrow panel. */
+.changes .agent-row {
+  flex-wrap: nowrap;
+}
+.changes .agent-row > .adds,
+.changes .agent-row > .dels {
+  flex: none;
+}
+.changes .agent-row > .changes-action + .changes-action {
+  margin-left: 0;
+}
+.commit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.commit-btn .i {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+@container sidecar (max-width: 420px) {
+  .commit-btn .commit-label {
+    display: none;
+  }
+}
 
 /* ---------------------------------------------------------- message box */
 
@@ -3027,8 +3054,9 @@ kbd {
   background: var(--menu-active);
 }
 
-/* The session's goal: a slim bar above the conversation, the objective on one line and
-   how it stands with its actions under it (they wrap in a narrow view). */
+/* The session's goal: a slim bar above the conversation, the objective and how it stands
+   on one line; it opens to a second line with the round, the reason and the actions
+   (they wrap in a narrow view). */
 .goal-bar {
   display: flex;
   flex-direction: column;
@@ -3061,9 +3089,22 @@ kbd {
   flex-wrap: wrap;
   row-gap: 2px;
 }
+.goal-main {
+  cursor: pointer;
+}
 .goal-main > .i {
   flex: none;
   color: var(--muted);
+}
+.goal-toggle {
+  flex: none;
+  margin: -2px 0;
+}
+.goal-toggle .i {
+  color: var(--muted);
+}
+.goal-bar.open .goal-toggle .i {
+  transform: rotate(180deg);
 }
 .goal-label {
   flex: none;
@@ -3692,6 +3733,33 @@ kbd {
   white-space: nowrap;
   color: var(--muted);
   font-size: 0.88em;
+}
+/* Folded: one line with the question (cut with …) and how it stands; a click opens it. */
+.aside.collapsed .aside-head {
+  cursor: pointer;
+}
+.aside.collapsed .aside-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: normal;
+}
+.aside.collapsed .aside-status {
+  flex: none;
+}
+.aside-toggle .i {
+  transform: rotate(180deg);
+}
+/* A fold toggle, not a menu: open is its resting state. */
+.aside-toggle[aria-expanded="true"]:not(:hover),
+.goal-toggle[aria-expanded="true"]:not(:hover) {
+  background: none;
+  color: var(--muted);
+}
+.aside.collapsed .aside-toggle .i {
+  transform: none;
 }
 .aside-head .grow {
   flex: 1;
