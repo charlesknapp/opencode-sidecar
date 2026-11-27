@@ -754,3 +754,48 @@ describe("live OpenCode service", () => {
     }
   });
 });
+
+// Sidecar has no voice input (docs/OPENCODE_INTEGRATION.md, "Voice input"): OpenCode's voice
+// is realtime speech models that need a paid provider's key on the server. This keeps the
+// write-up honest. A session is only asked for where OpenCode says it cannot start one.
+describe("live: OpenCode's voice (not used by Sidecar)", () => {
+  it("lists realtime voice models, and refuses a session without a provider key", async (t) => {
+    if (!live(t)) return;
+    const res = await fetch(new URL("/api/experimental/voice/models", endpoint!.url), {
+      headers: endpoint!.authorization ? { authorization: endpoint!.authorization } : {},
+    });
+    assert.equal(res.status, 200);
+    const { data } = (await res.json()) as {
+      data: {
+        models: Array<{ model: string; provider: string; transports: string[]; available: boolean }>;
+        default?: string | null;
+      };
+    };
+    assert.ok(Array.isArray(data.models));
+    for (const m of data.models) {
+      assert.equal(typeof m.model, "string");
+      assert.ok(
+        m.transports.every((x) => x === "webrtc" || x === "websocket"),
+        m.model,
+      );
+    }
+    const unavailable = data.models.find((m) => !m.available && m.transports.includes("websocket"));
+    t.diagnostic(
+      `${data.models.length} voice models (${[...new Set(data.models.map((m) => m.provider))].join(", ")}), ` +
+        `${data.models.filter((m) => m.available).length} available here`,
+    );
+    if (!unavailable) return;
+    const session = await fetch(new URL("/api/experimental/voice/session", endpoint!.url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(endpoint!.authorization ? { authorization: endpoint!.authorization } : {}),
+      },
+      body: JSON.stringify({ model: unavailable.model, transport: { type: "websocket" } }),
+    });
+    assert.equal(session.status, 503);
+    const err = (await session.json()) as { _tag?: string; message?: string; service?: string };
+    assert.equal(err._tag, "ServiceUnavailableError");
+    assert.match(err.message ?? "", /API key/);
+  });
+});
