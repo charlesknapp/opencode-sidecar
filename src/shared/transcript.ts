@@ -369,6 +369,19 @@ export class Transcript {
         if (prev?.kind !== "budget") return [];
         return [this.upsert({ ...prev, resolved: ev.resolution })];
       }
+      case "stuck": {
+        const prev = this.get(ev.id);
+        // A card the user dismissed or stopped stays that way when the loop grows.
+        if (prev?.kind === "stuck" && prev.resolved && prev.resolved !== "moved-on") return [];
+        return [
+          this.upsert({ kind: "stuck", id: ev.id, sessionID: ev.sessionID, stuck: ev.stuck, resolved: null }),
+        ];
+      }
+      case "stuck.resolved": {
+        const prev = this.get(ev.id);
+        if (prev?.kind !== "stuck" || prev.resolved === ev.resolution) return [];
+        return [this.upsert({ ...prev, resolved: ev.resolution })];
+      }
       case "notice":
         return [
           this.upsert({ kind: "notice", id: `notice:${this.items.length}`, level: ev.level, text: ev.text }),

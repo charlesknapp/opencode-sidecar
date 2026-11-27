@@ -4,7 +4,7 @@
 // for the subagent cards and the Current Task bar. Their full conversations are loaded
 // only when the user opens one.
 
-import type { SessionSummary, SubagentActivity, SubagentView, UiEvent } from "../shared/model";
+import type { SessionSummary, StuckView, SubagentActivity, SubagentView, UiEvent } from "../shared/model";
 import { describeTool } from "../shared/tools";
 import { CostLedger, rollupCosts } from "./usage";
 
@@ -220,6 +220,15 @@ export class SubagentTracker {
   /** Each subagent with its steps, for the usage menu's cost tables. */
   costs(): Array<{ view: SubagentView; ledger: CostLedger; modelKey: string | null }> {
     return [...this.entries.values()].map((e) => ({ view: e.view, ledger: e.ledger, modelKey: e.modelKey }));
+  }
+
+  /** Marks a subagent as seemingly stuck, or clears it (null). Returns true when its view changed. */
+  setStuck(sessionID: string, stuck: StuckView | null): boolean {
+    const v = this.entries.get(sessionID)?.view;
+    if (!v || JSON.stringify(v.stuck ?? null) === JSON.stringify(stuck)) return false;
+    if (stuck) v.stuck = stuck;
+    else delete v.stuck;
+    return true;
   }
 
   view(sessionID: string): SubagentView | null {

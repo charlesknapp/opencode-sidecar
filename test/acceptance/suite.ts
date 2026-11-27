@@ -428,8 +428,46 @@ async function pastedText(api: TestApi): Promise<void> {
   await mcpServers(api);
   await projectInstructions(api);
   await goalHeader(api);
+  await stuckCheck(api);
   await problemsAndCommit(api);
   await agentReview(api);
+}
+
+// ============================================================ the agent seems stuck
+
+/**
+ * Three identical reads in a row bring up the stuck card in the timeline, which only
+ * suggests (the run ends by itself), and Dismiss hides it. A model that does not repeat
+ * the read as asked gets no card, which is checked too.
+ */
+async function stuckCheck(api: TestApi): Promise<void> {
+  await api.handle({ type: "newSession" });
+  const since = events.length;
+  await api.handle({
+    type: "send",
+    text: "Use the read tool on a.txt three times in a row, one call after another, without anything in between. Then reply with the word done.",
+  });
+  await waitIdle(api, since);
+  const reads = toolsSince(api, 0).filter((t) => t.category === "read");
+  const card = items(api).find((i) => i.kind === "stuck");
+  if (reads.length >= 3) {
+    check("Stuck: three identical reads show the card", card?.kind === "stuck", String(reads.length));
+    check(
+      "Stuck: the card names the call and the run was not stopped for the user",
+      card?.kind === "stuck" &&
+        /a\.txt/.test(card.stuck.calls[0] ?? "") &&
+        !items(api).some((i) => i.kind === "notice" && i.text === "Stopped."),
+      JSON.stringify(card),
+    );
+    if (card?.kind === "stuck") {
+      await api.handle({ type: "stuckAction", sessionID: card.sessionID, action: "dismiss" });
+      const after = api.controller()!.transcript.get(card.id);
+      check(
+        "Stuck: Dismiss hides it",
+        after?.kind === "stuck" && (after.resolved === "dismissed" || after.resolved === "moved-on"),
+      );
+    }
+  } else check("Stuck: no card without a loop", !card, `${reads.length} read(s)`);
 }
 
 // ===================================================== problems and commit messages

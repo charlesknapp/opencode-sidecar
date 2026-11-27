@@ -183,6 +183,10 @@ The stream is global, so the controller filters by `sessionID`.
 
 Stored history replays `user`, `assistant` (text, thinking, tool parts), `shell`, `synthetic`, `compaction` and `idle` messages through the same model, with OpenCode's stored times.
 
+## Stuck detection
+
+No endpoint: Sidecar watches the event stream of the open session and its subagents (`src/core/stuck.ts`). A call is the tool's name and its input from `session.tool.called`, with key order, spacing, `\` and drive-letter case evened out and the model's `description` left out, plus its result from `session.tool.success` / `failed` (numbers evened out, so timings do not hide a loop). The same call three times in a row, or two taking turns three times, is a loop; calls that wait or poll (`sleep`, `Start-Sleep`, `tail`, `Get-Job`, a tool named like `*_status` or `*_output`) never are. A busy session (`session.execution.started` without its end) that sends no event for the set minutes has stalled, unless a shell tool is running (no output arrives until it ends) or a permission or question waits; a subagent's events count as progress for its parent. A user message or a delivered steer starts over.
+
 ## Permissions and approval modes
 
 How OpenCode 2.4 decides, checked against the live service (and its build):

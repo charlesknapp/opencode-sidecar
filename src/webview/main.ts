@@ -36,6 +36,7 @@ import type {
   ProvidersView,
   QuotaMeter,
   StripStatus,
+  StuckView,
   SubagentView,
   TodoEntry,
   TranscriptItem,
@@ -7888,7 +7889,122 @@ function renderItem(item: TranscriptItem): HTMLElement {
             : null,
       );
     }
+    case "stuck":
+      return renderStuck(item);
   }
+}
+
+// ------------------------------------------------------------------ stuck
+//
+// A card when the agent seems to go round in circles or makes no progress. It only
+// suggests: Stop, Steer… (the message box in steer mode with a suggestion) or Dismiss.
+
+type StuckItem = Extract<TranscriptItem, { kind: "stuck" }>;
+
+const code = (s: string) => h("code", {}, s);
+
+/** "repeating `read a.ts` (4 times)" and the like, as nodes. */
+function stuckWhat(v: StuckView): Array<Node | string> {
+  if (v.reason === "stall") return [`making no progress (nothing for ${v.minutes} min)`];
+  if (v.reason === "alternate")
+    return ["going back and forth between ", code(v.calls[0]), " and ", code(v.calls[1] ?? "")];
+  return ["repeating ", code(v.calls[0]), ` (${v.count} times in a row)`];
+}
+
+/** What Steer… puts in the message box. */
+function stuckSuggestion(v: StuckView): string {
+  if (v.reason === "stall")
+    return "You seem to be stuck. Say what you are waiting for, or try a different approach.";
+  const calls = v.calls.map((c) => `\`${c}\``).join(" and ");
+  return `You keep running ${calls} with the same result. Stop repeating it and try a different approach.`;
+}
+
+/** Steer…: the message box switches to steer and offers the suggestion (selected, to edit or send). */
+function steerStuck(v: StuckView): void {
+  deliveryMode = "steer";
+  if (!input.value.trim()) {
+    input.value = stuckSuggestion(v);
+    draft = input.value;
+    autosize();
+  }
+  persist();
+  if (state) renderComposer(state);
+  input.focus();
+  input.setSelectionRange(0, input.value.length);
+}
+
+/** Dismissed, or the agent moved on: the card goes. */
+function stuckHidden(item: StuckItem): boolean {
+  return item.resolved === "dismissed" || item.resolved === "moved-on";
+}
+
+function renderStuck(item: StuckItem): HTMLElement {
+  const v = item.stuck;
+  if (stuckHidden(item)) return h("div", { hidden: true });
+  const act = (action: "stop" | "dismiss") =>
+    send({ type: "stuckAction", sessionID: item.sessionID, action });
+  return h(
+    "div",
+    { className: "budget-card budget-warning stuck-card", role: "status", "data-testid": "stuck-card" },
+    h("div", { dir: "auto" }, h("strong", {}, "⚠ "), "The agent seems stuck ", ...stuckWhat(v), "."),
+    item.resolved === "stopped"
+      ? h("div", { className: "small muted" }, "Stopped.")
+      : h(
+          "div",
+          { className: "actions" },
+          state?.busy
+            ? h(
+                "button",
+                {
+                  className: "btn",
+                  "data-testid": "stuck-stop",
+                  "data-key": "stuck-stop",
+                  onclick: () => act("stop"),
+                },
+                "Stop",
+              )
+            : null,
+          h(
+            "button",
+            {
+              className: "btn",
+              "data-testid": "stuck-steer",
+              "data-key": "stuck-steer",
+              title: "Tell the agent what to do instead; it reads it at its next step",
+              onclick: () => steerStuck(v),
+            },
+            "Steer…",
+          ),
+          h(
+            "button",
+            {
+              className: "btn",
+              "data-testid": "stuck-dismiss",
+              "data-key": "stuck-dismiss",
+              onclick: () => act("dismiss"),
+            },
+            "Dismiss",
+          ),
+        ),
+  );
+}
+
+/** A subagent row's stuck note: what it repeats, Steer is not offered (its parent gets steered). */
+function subagentStuck(v: SubagentView): HTMLElement | null {
+  if (!v.stuck || (v.status !== "running" && v.status !== "waiting")) return null;
+  return h(
+    "div",
+    { className: "ag-stuck", role: "status", "data-testid": "subagent-stuck", dir: "auto" },
+    h("span", { "aria-hidden": "true" }, "⚠ "),
+    "Seems stuck ",
+    ...stuckWhat(v.stuck),
+    " ",
+    inlineLink(
+      "Dismiss",
+      { "data-testid": "subagent-stuck-dismiss", "data-key": `stuck:${v.sessionID}` },
+      () => send({ type: "stuckAction", sessionID: v.sessionID, action: "dismiss" }),
+    ),
+  );
 }
 
 // ----------------------------------------------------------------- prompts
@@ -8243,6 +8359,7 @@ function dotOf(item: TranscriptItem): Dot {
     case "error":
       return "err";
     case "budget":
+    case "stuck":
     case "turn-summary":
     case "turn-meta":
     case "handback":
@@ -8278,7 +8395,7 @@ function renderEntry(item: TranscriptItem, tr: Transcript): HTMLElement {
     );
   // Some models send a reply part with only whitespace before a tool call: no dot for it.
   // It stays in the list (hidden) so text streamed into it later still shows.
-  if (item.kind === "assistant" && !item.text.trim())
+  if ((item.kind === "assistant" && !item.text.trim()) || (item.kind === "stuck" && stuckHidden(item)))
     return h("div", { className: "tl-item", "data-id": item.id, hidden: true });
   const ts = showsTime(item, tr) ? timestamp(item.time!) : null;
   return h(
@@ -8678,6 +8795,8 @@ function renderSubagentCard(item: ToolItem): HTMLElement {
         : null,
     ),
   );
+  const stuck = v ? subagentStuck(v) : null;
+  if (stuck) parts.push(stuck);
   return h(
     "div",
     {
@@ -9451,6 +9570,7 @@ function render() {
       if (
         item.kind === "assistant" ||
         item.kind === "budget" ||
+        item.kind === "stuck" ||
         item.kind === "error" ||
         item.kind === "user"
       )

@@ -26,6 +26,10 @@ export interface SidebarConfig {
   sessionStrip: boolean;
   /** The active editor's selection or file as a chip that follows the editor (off by default). */
   autoContext: boolean;
+  /** A card when the agent repeats the same tool call or makes no progress. */
+  stuckDetection: boolean;
+  /** Minutes a busy run may send nothing before the card shows; 0 checks only for loops. */
+  stuckMinutes: number;
 }
 
 export const CONFIG_SECTION = "opencodeSidecar";
@@ -89,5 +93,10 @@ export function readConfig(): SidebarConfig {
     activity: c.get<string>("activity", "detailed") === "grouped" ? "grouped" : "detailed",
     sessionStrip: c.get<boolean>("sessionStrip", true),
     autoContext: c.get<boolean>("autoContext", false),
+    stuckDetection: c.get<boolean>("stuckDetection", true),
+    stuckMinutes: (() => {
+      const v = c.get<number>("stuckMinutes", 3);
+      return Number.isFinite(v) ? Math.min(120, Math.max(0, v)) : 3;
+    })(),
   };
 }

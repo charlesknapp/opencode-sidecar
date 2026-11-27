@@ -763,7 +763,27 @@ export type TranscriptItem =
       text: string;
       /** Set once the user picked an action on a stopped card. */
       resolved: "continued" | "increased" | "new-session" | null;
+    }
+  /** The agent seems stuck (a loop of tool calls, or no progress): a suggestion, never a stop. */
+  | {
+      kind: "stuck";
+      id: string;
+      sessionID: string;
+      stuck: StuckView;
+      /** Dismissed, stopped from the card, or over because the agent moved on (then it is hidden). */
+      resolved: "dismissed" | "stopped" | "moved-on" | null;
     };
+
+/**
+ * Why the agent seems stuck: one call repeated (`calls` has it, as "tool arg"), two taking
+ * turns (both), or no progress for `minutes`. `count`: repeats, or rounds for two calls.
+ */
+export interface StuckView {
+  reason: "repeat" | "alternate" | "stall";
+  calls: string[];
+  count: number;
+  minutes: number;
+}
 
 // --------------------------------------------------------------- subagents
 
@@ -817,6 +837,8 @@ export interface SubagentView {
   /** With the cost of its own subagents; set only when it has some. */
   totalCost?: number | null;
   error: string | null;
+  /** Set while it seems stuck (see StuckView). */
+  stuck?: StuckView;
 }
 
 export type InboxDelivery = "steer" | "queue";
@@ -1041,6 +1063,9 @@ export type UiEvent =
     }
   | { type: "budget"; id: string; state: "warning" | "stopped"; text: string }
   | { type: "budget.resolved"; id: string; resolution: "continued" | "increased" | "new-session" }
+  /** The open session seems stuck (raised by Sidecar, live only); the same id again updates the card. */
+  | { type: "stuck"; id: string; sessionID: string; stuck: StuckView }
+  | { type: "stuck.resolved"; id: string; resolution: "dismissed" | "stopped" | "moved-on" }
   | { type: "session.retry"; attempt: number; message: string }
   | { type: "session.renamed"; title: string }
   /** The session was rewound (by any client): its messages changed, reload them. */

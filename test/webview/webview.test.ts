@@ -2545,6 +2545,108 @@ describe(
       assert.equal((await lastSent("budgetAction"))?.action, "newSession");
     });
 
+    const STUCK = (over: Partial<Extract<TranscriptItem, { kind: "stuck" }>> = {}): TranscriptItem => ({
+      kind: "stuck",
+      id: "stuck:1",
+      sessionID: "ses_1",
+      stuck: { reason: "repeat", calls: ["read src/auth/token.ts"], count: 3, minutes: 0 },
+      resolved: null,
+      ...over,
+    });
+
+    it("stuck card: says what repeats, Stop and Dismiss go to the host, never stops by itself", async () => {
+      await host({ type: "state", state: baseState({ busy: true }) });
+      await host({ type: "transcript", items: [STUCK()] });
+      const card = '[data-testid="stuck-card"]';
+      assert.match(
+        await text(card),
+        /^⚠ The agent seems stuck repeating read src\/auth\/token\.ts \(3 times in a row\)\./,
+      );
+      assert.equal(await page.$eval(card, (e) => e.getAttribute("role")), "status", "not an alert");
+      assert.deepEqual(await lastSent("stop"), undefined);
+      await clearSent();
+      await page.click('[data-testid="stuck-stop"]');
+      await page.click('[data-testid="stuck-dismiss"]');
+      assert.deepEqual(await sent(), [
+        { type: "stuckAction", sessionID: "ses_1", action: "stop" },
+        { type: "stuckAction", sessionID: "ses_1", action: "dismiss" },
+      ]);
+      await host({
+        type: "events",
+        events: [{ type: "stuck.resolved", id: "stuck:1", resolution: "dismissed" }],
+      });
+      assert.equal(await page.$(card), null, "dismissed: hidden");
+      // The loop grows: a dismissed card stays hidden.
+      await host({
+        type: "events",
+        events: [
+          {
+            type: "stuck",
+            id: "stuck:1",
+            sessionID: "ses_1",
+            stuck: { reason: "repeat", calls: ["read src/auth/token.ts"], count: 5, minutes: 0 },
+          },
+        ],
+      });
+      assert.equal(await page.$(card), null);
+      assert.equal(await page.$eval('[data-id="stuck:1"]', (e) => (e as HTMLElement).hidden), true);
+    });
+
+    it("stuck card: Steer… switches to steer and offers a suggestion, keeping typed text", async () => {
+      await host({ type: "state", state: baseState({ busy: true }) });
+      await host({ type: "transcript", items: [STUCK()] });
+      await page.click('[data-testid="delivery-queue"]');
+      await page.click('[data-testid="stuck-steer"]');
+      const box = () =>
+        page.$eval("textarea", (t) => {
+          const a = t as HTMLTextAreaElement;
+          return {
+            value: a.value,
+            selected: a.value.slice(a.selectionStart, a.selectionEnd),
+            focus: document.activeElement === a,
+          };
+        });
+      const b = await box();
+      assert.match(b.value, /^You keep running `read src\/auth\/token\.ts` with the same result\./);
+      assert.equal(b.selected, b.value, "selected, to type over or send");
+      assert.ok(b.focus);
+      assert.equal(
+        await page.$eval('[data-testid="delivery-steer"]', (e) => e.classList.contains("on")),
+        true,
+        "steer mode",
+      );
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("send"), { type: "send", text: b.value, delivery: "steer" });
+      // Something typed already stays.
+      await page.type("textarea", "look at the tests instead");
+      await page.click('[data-testid="stuck-steer"]');
+      assert.equal((await box()).value, "look at the tests instead");
+    });
+
+    it("stuck card: two calls taking turns and no progress, no Stop once idle, a stopped card, 300px", async () => {
+      await page.setViewport({ width: 300, height: 700 });
+      await host({
+        type: "transcript",
+        items: [
+          STUCK({ stuck: { reason: "alternate", calls: ["read a.ts", "grep TODO"], count: 3, minutes: 0 } }),
+          STUCK({ id: "stuck:2", stuck: { reason: "stall", calls: [], count: 0, minutes: 3 } }),
+          STUCK({ id: "stuck:3", resolved: "stopped" }),
+          STUCK({ id: "stuck:4", resolved: "moved-on" }),
+        ],
+      });
+      const cards = await page.$$eval('[data-testid="stuck-card"]', (n) =>
+        n.filter((e) => (e as HTMLElement).offsetParent !== null).map((e) => (e as HTMLElement).innerText),
+      );
+      assert.equal(cards.length, 3, "the one the agent moved on from is hidden");
+      assert.match(cards[0], /going back and forth between read a\.ts and grep TODO\./);
+      assert.match(cards[1], /making no progress \(nothing for 3 min\)\./);
+      assert.match(cards[2], /Stopped\./);
+      assert.equal(await page.$('[data-testid="stuck-stop"]'), null, "nothing to stop while idle");
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+      await page.click('[data-testid="stuck-dismiss"]');
+      assert.equal((await lastSent("stuckAction"))?.action, "dismiss");
+    });
+
     it("error card offers Change model (opens the model menu) and Retry", async () => {
       await host({
         type: "transcript",
@@ -5149,6 +5251,29 @@ describe(
       });
       assert.equal(await text('[data-testid="subagent-activity"]'), "Finished");
       assert.equal(await page.$('[data-testid="subagent-stop"]'), null, "no Stop once finished");
+    });
+
+    it("notes on a subagent's row that it seems stuck, with Dismiss, and fits 300px", async () => {
+      await page.setViewport({ width: 300, height: 700 });
+      await host({ type: "transcript", items: [SUBAGENT_TOOL] });
+      const stuck = { reason: "repeat" as const, calls: ["glob src/**/*.service.ts"], count: 4, minutes: 0 };
+      await host({ type: "state", state: baseState({ busy: true, subagents: [SUB({ stuck })] }) });
+      assert.equal(
+        await text('[data-testid="subagent-stuck"]'),
+        "⚠ Seems stuck repeating glob src/**/*.service.ts (4 times in a row) Dismiss",
+      );
+      assert.ok(
+        await page.$eval('[data-testid="subagent-stuck"]', (e) => e.scrollWidth <= e.clientWidth + 1),
+        "wraps inside the row",
+      );
+      await clearSent();
+      await page.click('[data-testid="subagent-stuck-dismiss"]');
+      assert.deepEqual(await sent(), [{ type: "stuckAction", sessionID: "ses_sub", action: "dismiss" }]);
+      await host({
+        type: "state",
+        state: baseState({ subagents: [SUB({ stuck, status: "completed", ended: Date.now() })] }),
+      });
+      assert.equal(await page.$('[data-testid="subagent-stuck"]'), null, "not once it finished");
     });
 
     it("says what a waiting subagent waits for: a permission or an answer", async () => {

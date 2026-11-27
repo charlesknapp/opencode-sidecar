@@ -345,6 +345,8 @@ export type WebviewMessage =
   | { type: "openSubagent"; sessionID: string }
   | { type: "closeSubagent" }
   | { type: "stopSubagent"; sessionID: string }
+  /** Stop or Dismiss on a stuck card (the open session) or a subagent row's stuck note. */
+  | { type: "stuckAction"; sessionID: string; action: "stop" | "dismiss" }
   /**
    * Rewind the session to just before this prompt (OpenCode revert), after the view's
    * confirmation; `files` also undoes the file changes made since.
@@ -619,6 +621,7 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   openSubagent: (m) => isStr(m.sessionID),
   closeSubagent: () => true,
   stopSubagent: (m) => isStr(m.sessionID),
+  stuckAction: (m) => isStr(m.sessionID) && (m.action === "stop" || m.action === "dismiss"),
   rewind: (m) => isStr(m.messageID) && typeof m.files === "boolean",
   renameSession: (m) => typeof m.title === "string" && m.title.trim().length > 0 && m.title.length <= 200,
   runCommand: (m) =>
@@ -693,6 +696,7 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   openOfficial: ["link"],
   openSubagent: ["sessionID"],
   stopSubagent: ["sessionID"],
+  stuckAction: ["sessionID", "action"],
   rewind: ["messageID", "files"],
   rewindPreview: ["messageID"],
   openToolText: ["itemId", "part"],

@@ -530,6 +530,18 @@
           "default": 80,
           "markdownDescription": "Warn when the context window is this full (warning only, never stops the agent). `0` disables the warning."
         },
+        "opencodeSidecar.stuckDetection": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show a card when the agent seems stuck: the same tool call with the same result three times in a row, two calls taking turns, or no progress for `#opencodeSidecar.stuckMinutes#` minutes. It only suggests; the agent is never stopped for you. Subagents show it on their row."
+        },
+        "opencodeSidecar.stuckMinutes": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 3,
+          "markdownDescription": "Minutes a running task may send nothing before Sidecar says it seems stuck. Not counted while a shell command runs or a request waits for you. `0` checks only for repeated calls."
+        },
         "opencodeSidecar.notifications.taskComplete": {
           "type": "boolean",
           "default": true,

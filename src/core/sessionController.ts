@@ -31,6 +31,7 @@ import {
   type StripEntry,
   type WatchContext,
 } from "./sessionWatch";
+import { DEFAULT_STUCK, StuckDetector, type StuckFinding, type StuckSettings } from "./stuck";
 import { MAX_SUBAGENTS, SubagentTracker } from "./subagents";
 import { displayTitle, isUsableTitle } from "./titles";
 import { contextBreakdown, CostLedger, costBreakdown } from "./usage";
@@ -69,6 +70,7 @@ import type {
   SkillOption,
   StripStatus,
   StripTab,
+  StuckView,
   SubagentView,
   TokenUsage,
   TranscriptItem,
@@ -137,6 +139,8 @@ export interface ControllerDefaults {
   contextWarnPercent?: number;
   /** Localized UI strings for controller-generated messages. */
   strings?: Partial<ControllerStrings>;
+  /** When the agent counts as stuck; null turns the check off. Defaults to DEFAULT_STUCK. */
+  stuck?: StuckSettings | null;
 }
 
 export interface ControllerStrings {
@@ -332,6 +336,12 @@ export class SessionController {
   private goalToken = 0;
   /** MCP servers added from Sidecar for this OpenCode run, by folder. */
   private readonly mcpAdded = new Map<string, Set<string>>();
+  /** Loops and stalls of the open session and its subagents (see src/core/stuck.ts). */
+  private readonly stuck: StuckDetector;
+  /** The open session's stuck card while it shows. */
+  private stuckCard: string | null = null;
+  private stuckSeq = 0;
+  private stuckTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
     private readonly client: OpenCodeClient,
@@ -353,7 +363,9 @@ export class SessionController {
       goalRetryMs?: number;
       /** How often an MCP server's state is read while it connects after a sign-in. */
       mcpPollMs?: number;
-      /** Clock for subagent timing (tests). */
+      /** How often busy sessions are checked for a stall. */
+      stuckCheckMs?: number;
+      /** Clock for subagent timing and the stall check (tests). */
       now?: () => number;
     } = { debounceMs: 400, stopCheckMs: 15_000, modelRetryMs: 1500 },
   ) {
@@ -374,6 +386,13 @@ export class SessionController {
     });
     this.budget.level = this.defaults().budgetLevel ?? "off";
     for (const id of this.store.get<string[]>(ASIDES_KEY) ?? []) this.asideIds.add(id);
+    this.stuck = new StuckDetector(() => {
+      const s = this.defaults().stuck;
+      return s === null ? { repeats: 0, stallMs: 0 } : (s ?? DEFAULT_STUCK);
+    });
+    this.stuckTimer = setInterval(() => this.checkStalls(), timing.stuckCheckMs ?? 15_000);
+    // The check never keeps the extension host (or a test run) alive by itself.
+    (this.stuckTimer as { unref?: () => void }).unref?.();
   }
 
   dispose(): void {
@@ -384,6 +403,7 @@ export class SessionController {
     clearTimeout(this.catalogTimer);
     clearTimeout(this.revertTimer);
     clearTimeout(this.commandsTimer);
+    clearInterval(this.stuckTimer);
   }
 
   /**
@@ -1097,6 +1117,8 @@ export class SessionController {
     clearTimeout(this.stopTimer);
     this.goal = null;
     this.goalToken++;
+    this.stuck.reset();
+    this.stuckCard = null;
     this.transcript.reset();
     this.sink.onTranscriptReset([]);
   }
@@ -1163,7 +1185,13 @@ export class SessionController {
       this.execActive = this.busy;
       this.task = deriveTaskFromHistory(messages, this.busy);
       for (const item of inbox) this.pendingStartsTask.set(item.id, item.delivery === "queue");
-      if (this.busy) this.budget.startTask(this.sessionCost);
+      if (this.busy) {
+        this.budget.startTask(this.sessionCost);
+        this.stuck.observe(id, [{ type: "session.busy" }], this.now());
+      }
+      for (const s of subagents)
+        if (active.has(s.summary.id))
+          this.stuck.observe(s.summary.id, [{ type: "session.busy" }], this.now());
       if (selection !== this.selectionVersion) {
         // A model, variant or agent chosen while the session loaded (a reload after the event
         // stream reconnected, say) is the user's latest choice: it goes to the session instead.
@@ -2722,11 +2750,15 @@ export class SessionController {
     if (env.events.some((ev) => ev.type === "session.idle")) void this.closeStaleRequests(root);
     if (env.sessionID === root) {
       this.emit(env.events);
+      this.observeStuck(root, env.events);
       return;
     }
     if (!this.subagents.has(env.sessionID)) return;
     const wasActive = this.subagentsActive();
-    if (this.subagents.apply(env.sessionID, env.events)) this.sink.onStateChanged();
+    // A subagent working is progress for the session waiting on it.
+    this.stuck.touch(root, this.now());
+    const stuckChanged = this.observeStuck(env.sessionID, env.events);
+    if (this.subagents.apply(env.sessionID, env.events) || stuckChanged) this.sink.onStateChanged();
     // A subagent's own output and lifecycle stay in its session; only the requests that
     // block the open session's run are shown here.
     const requests = env.events.filter(isInputRequest);
@@ -2740,6 +2772,78 @@ export class SessionController {
     // The open session can finish its turn while subagents work; report completion once they are done.
     if (wasActive && !this.subagentsActive() && !this.busy && this.task?.status === "completed")
       this.notify("completed", `completed:${this.task.id}:${this.execSeq}`);
+  }
+
+  private now(): number {
+    return (this.timing.now ?? Date.now)();
+  }
+
+  /** Feeds a session's events to the stuck check; true when a subagent's row changed. */
+  private observeStuck(sessionID: string, events: UiEvent[]): boolean {
+    let changed = false;
+    for (const c of this.stuck.observe(sessionID, events, this.now()))
+      changed = this.showStuck(c.sessionID, c.finding) || changed;
+    return changed;
+  }
+
+  /** Busy sessions that sent nothing for the stall time get a card (or their subagent row a note). */
+  checkStalls(): void {
+    if (this.disposed || !this.current) return;
+    let changed = false;
+    // A request the user has not answered yet (also a subagent's) is not the agent's stall.
+    const waiting = () => this.pendingRequestCount() > 0;
+    for (const c of this.stuck.stalls(this.now(), waiting))
+      changed = this.showStuck(c.sessionID, c.finding) || changed;
+    if (changed) this.sink.onStateChanged();
+  }
+
+  /**
+   * Shows what the stuck check found: a card in the open session's timeline, updated while
+   * the loop grows and hidden once it is over, or a note on a subagent's row.
+   */
+  private showStuck(sessionID: string, finding: StuckFinding | null): boolean {
+    const view = finding ? this.stuckView(finding) : null;
+    if (sessionID !== this.current?.id) return this.subagents.setStuck(sessionID, view);
+    if (!view) {
+      const id = this.stuckCard;
+      this.stuckCard = null;
+      if (id) this.emit([{ type: "stuck.resolved", id, resolution: "moved-on" }]);
+      return false;
+    }
+    if (!this.stuckCard) {
+      this.stuckCard = `stuck:${++this.stuckSeq}`;
+      this.log.warn(`The agent seems stuck (${view.reason}, ${view.calls.length} call(s))`);
+    }
+    this.emit([{ type: "stuck", id: this.stuckCard, sessionID, stuck: view }]);
+    return false;
+  }
+
+  private stuckView(f: StuckFinding): StuckView {
+    if (f.kind === "stall")
+      return { reason: "stall", calls: [], count: 0, minutes: Math.max(1, Math.round(f.idleMs / 60_000)) };
+    const name = (c: { tool: string; arg: string | null; path: boolean }) =>
+      c.arg ? `${c.tool} ${c.path ? (this.displayPath(c.arg) ?? c.arg) : c.arg}` : c.tool;
+    const calls = f.kind === "repeat" ? [name(f.call)] : [name(f.call), name(f.other)];
+    return { reason: f.kind, calls, count: f.count, minutes: 0 };
+  }
+
+  /** Stop or Dismiss on a stuck card (the open session) or on a subagent's row. */
+  async stuckAction(sessionID: string, action: "stop" | "dismiss"): Promise<void> {
+    const root = this.current?.id;
+    if (!root) return;
+    if (sessionID !== root) {
+      if (!this.subagents.has(sessionID)) return;
+      this.stuck.dismiss(sessionID);
+      if (this.subagents.setStuck(sessionID, null)) this.sink.onStateChanged();
+      if (action === "stop") await this.stopSubagent(sessionID);
+      return;
+    }
+    const id = this.stuckCard;
+    this.stuck.dismiss(root);
+    this.stuckCard = null;
+    if (id)
+      this.emit([{ type: "stuck.resolved", id, resolution: action === "stop" ? "stopped" : "dismissed" }]);
+    if (action === "stop") await this.stop();
   }
 
   /**

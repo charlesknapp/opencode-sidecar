@@ -582,6 +582,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           budgetLevel: c.budgetDefault,
           budget: c.budget,
           contextWarnPercent: c.contextWarnPercent,
+          stuck: c.stuckDetection ? { repeats: 3, stallMs: c.stuckMinutes * 60_000 } : null,
           strings: uiLocale() === "ar" ? AR_STRINGS : undefined,
         };
       },
@@ -1473,6 +1474,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return;
       case "closeSubagent":
         c?.closeSubagent();
+        return;
+      case "stuckAction":
+        if (c) await c.stuckAction(msg.sessionID, msg.action);
         return;
       case "stopSubagent":
         if (c) await c.stopSubagent(msg.sessionID);

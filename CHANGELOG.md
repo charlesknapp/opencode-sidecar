@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Says when the agent seems stuck.** The same tool call with the same input and result three times in a row, two calls taking turns, or a running task that sends nothing for 3 minutes (`opencodeSidecar.stuckMinutes`; not while a shell command runs or a request waits for you) brings up a card in the timeline naming the call, with **Stop**, **Steer…** (the message box in steer mode with a suggested message) and **Dismiss**. It never stops the agent by itself and goes away once the agent moves on. Re-reading files that changed, reading different files and polling a background job do not count. A subagent shows it on its row. `opencodeSidecar.stuckDetection` turns it off.
+
 - **A header for the session's goal.** With `/goal` running, the objective stays pinned above the conversation with how it stands (in progress, achieved, or stopped with OpenCode's reason) and its round, read from OpenCode's goal plugin and kept up to date by its events, also for a goal set in another client. **Rounds** jumps through the goal's notices, **Pause** / **Resume** / **End goal** use OpenCode's own `/goal` command (ending asks first), and an achieved goal can be cleared.
 
 - **Project instructions.** **/ → Project instructions…** and the Agents panel show which instruction files OpenCode reads for the folder (the global AGENTS.md or Claude's, each folder's AGENTS.md or CLAUDE.md up to your home folder, the config's `instructions`), worked out the way OpenCode 2.4.2 does, with what it skips (a CLAUDE.md beside an AGENTS.md). **Open** any of them, **Create AGENTS.md** from a short template (a global one only after asking), or **Set up with /init**.

@@ -1519,6 +1519,17 @@ button:disabled {
 .ag-link:hover {
   text-decoration: underline;
 }
+/* A subagent that seems stuck: one warning line under its status, wrapping in a narrow panel. */
+.ag-stuck {
+  margin-top: 2px;
+  font-size: 0.85em;
+  color: var(--vscode-editorWarning-foreground, var(--warn-border));
+  overflow-wrap: anywhere;
+}
+.stuck-card code,
+.ag-stuck code {
+  overflow-wrap: anywhere;
+}
 
 /* Hand-back: a subagent's report, one muted italic line that expands. */
 .activity.handback {
