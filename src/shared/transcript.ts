@@ -369,6 +369,10 @@ export class Transcript {
         if (prev?.kind !== "budget") return [];
         return [this.upsert({ ...prev, resolved: ev.resolution })];
       }
+      case "history.unreadable":
+        return [
+          this.upsert({ kind: "unreadable", id: `unreadable:${ev.id}`, messageID: ev.id, reason: ev.reason }),
+        ];
       case "stuck": {
         const prev = this.get(ev.id);
         // A card the user dismissed or stopped stays that way when the loop grows.

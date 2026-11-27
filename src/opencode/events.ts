@@ -591,118 +591,134 @@ function time(raw: unknown, key: "created" | "completed" | "firstToken" | "strea
  * live streaming share one rendering path.
  */
 export function historyToEvents(messages: readonly unknown[]): UiEvent[] {
+  return messages.flatMap((m, i) => messageEvents(m, i));
+}
+
+/**
+ * One stored message as UiEvents. A message that cannot be read (not an object, no type,
+ * or something in it that breaks the replay) becomes a `history.unreadable` placeholder,
+ * so one bad message never stops a session from opening. `index` names it when it has no id.
+ */
+export function messageEvents(raw: unknown, index = 0): UiEvent[] {
+  const m = rec(raw);
+  const id = s(m?.id) ?? `#${index}`;
+  if (!m || typeof m.type !== "string")
+    return [{ type: "history.unreadable", id, reason: m ? "It has no type." : "It is not an object." }];
+  try {
+    return replayMessage(m, id);
+  } catch (e) {
+    return [{ type: "history.unreadable", id, reason: e instanceof Error ? e.message : String(e) }];
+  }
+}
+
+function replayMessage(m: Record<string, unknown>, id: string): UiEvent[] {
   const events: UiEvent[] = [];
-  for (const raw of messages) {
-    const m = rec(raw);
-    if (!m) continue;
-    const id = s(m.id) ?? "?";
-    // OpenCode stores times in epoch milliseconds: messages have time.created, reasoning
-    // parts time.created/completed.
-    const created = time(m.time, "created");
-    switch (m.type) {
-      case "user": {
-        const ev = userMessageEvent(id, s(m.text) ?? "", m.files);
-        events.push(created !== undefined && ev.type === "user.message" ? { ...ev, time: created } : ev);
-        break;
-      }
-      case "assistant": {
-        const counters = { text: 0, reasoning: 0 };
-        const content = Array.isArray(m.content) ? m.content : [];
-        for (const partRaw of content) {
-          const part = rec(partRaw);
-          if (!part) continue;
-          if (part.type === "text") {
-            const at = time(part.time, "created") ?? created;
+  // OpenCode stores times in epoch milliseconds: messages have time.created, reasoning
+  // parts time.created/completed.
+  const created = time(m.time, "created");
+  switch (m.type) {
+    case "user": {
+      const ev = userMessageEvent(id, s(m.text) ?? "", m.files);
+      events.push(created !== undefined && ev.type === "user.message" ? { ...ev, time: created } : ev);
+      break;
+    }
+    case "assistant": {
+      const counters = { text: 0, reasoning: 0 };
+      const content = Array.isArray(m.content) ? m.content : [];
+      for (const partRaw of content) {
+        const part = rec(partRaw);
+        if (!part) continue;
+        if (part.type === "text") {
+          const at = time(part.time, "created") ?? created;
+          events.push({
+            type: "assistant.completed",
+            partId: `${id}:${counters.text++}`,
+            text: s(part.text) ?? "",
+            ...(at !== undefined ? { time: at } : {}),
+          });
+        } else if (part.type === "reasoning") {
+          const started = time(part.time, "created");
+          const ended = time(part.time, "completed");
+          events.push({
+            type: "reasoning.completed",
+            partId: `${id}:${counters.reasoning++}`,
+            text: s(part.text) ?? "",
+            ...(started !== undefined ? { started } : {}),
+            ...(ended !== undefined ? { time: ended } : {}),
+          });
+        } else if (part.type === "tool") {
+          const toolId = s(part.id) ?? "?";
+          const state = rec(part.state) ?? {};
+          events.push({ type: "tool.started", toolId, name: s(part.name) ?? "tool" });
+          events.push({ type: "tool.input", toolId, name: s(part.name), input: rec(state.input) ?? {} });
+          if (state.status === "completed") {
             events.push({
-              type: "assistant.completed",
-              partId: `${id}:${counters.text++}`,
-              text: s(part.text) ?? "",
-              ...(at !== undefined ? { time: at } : {}),
+              type: "tool.completed",
+              toolId,
+              output: toolOutput(state.content),
+              metadata: rec(state.metadata),
             });
-          } else if (part.type === "reasoning") {
-            const started = time(part.time, "created");
-            const ended = time(part.time, "completed");
+          } else if (state.status === "error") {
             events.push({
-              type: "reasoning.completed",
-              partId: `${id}:${counters.reasoning++}`,
-              text: s(part.text) ?? "",
-              ...(started !== undefined ? { started } : {}),
-              ...(ended !== undefined ? { time: ended } : {}),
+              type: "tool.failed",
+              toolId,
+              error: errorMessage(state.error, "Tool failed"),
+              output: toolOutput(state.content),
+              metadata: rec(state.metadata),
             });
-          } else if (part.type === "tool") {
-            const toolId = s(part.id) ?? "?";
-            const state = rec(part.state) ?? {};
-            events.push({ type: "tool.started", toolId, name: s(part.name) ?? "tool" });
-            events.push({ type: "tool.input", toolId, name: s(part.name), input: rec(state.input) ?? {} });
-            if (state.status === "completed") {
-              events.push({
-                type: "tool.completed",
-                toolId,
-                output: toolOutput(state.content),
-                metadata: rec(state.metadata),
-              });
-            } else if (state.status === "error") {
-              events.push({
-                type: "tool.failed",
-                toolId,
-                error: errorMessage(state.error, "Tool failed"),
-                output: toolOutput(state.content),
-                metadata: rec(state.metadata),
-              });
-            }
           }
         }
-        const tokens = toTokenUsage(m.tokens);
-        const finished = time(m.time, "completed");
-        if (tokens)
-          events.push({
-            type: "usage.step",
-            tokens,
-            modelKey: modelKey(m.model),
-            cost: cost(m.cost),
-            agent: s(m.agent),
-            ...streamTime(time(m.time, "firstToken"), time(m.time, "streamed")),
-            ...(finished !== undefined ? { time: finished } : {}),
-          });
-        if (rec(m.error) && m.finish === "error") {
-          events.push({
-            type: "session.error",
-            message: errorMessage(m.error, "The step failed."),
-            error: toRawError(m.error),
-            modelKey: modelKey(m.model),
-          });
-        }
-        break;
       }
-      case "shell": {
-        const toolId = `shell-msg:${id}`;
-        events.push({ type: "tool.started", toolId, name: "shell" });
-        events.push({ type: "tool.input", toolId, name: "shell", input: { command: s(m.command) ?? "" } });
-        const output = s(rec(m.output)?.output);
+      const tokens = toTokenUsage(m.tokens);
+      const finished = time(m.time, "completed");
+      if (tokens)
         events.push({
-          type: "tool.completed",
-          toolId,
-          output,
-          metadata: typeof m.exit === "number" ? { exit: m.exit } : null,
+          type: "usage.step",
+          tokens,
+          modelKey: modelKey(m.model),
+          cost: cost(m.cost),
+          agent: s(m.agent),
+          ...streamTime(time(m.time, "firstToken"), time(m.time, "streamed")),
+          ...(finished !== undefined ? { time: finished } : {}),
         });
-        break;
+      if (rec(m.error) && m.finish === "error") {
+        events.push({
+          type: "session.error",
+          message: errorMessage(m.error, "The step failed."),
+          error: toRawError(m.error),
+          modelKey: modelKey(m.model),
+        });
       }
-      case "synthetic": {
-        const report = subagentReport(id, m, created) ?? backgroundNotice(id, m, created);
-        if (report) events.push(report);
-        break;
-      }
-      case "compaction":
-        events.push({ type: "notice", level: "info", text: "Conversation context was compacted." });
-        break;
-      case "idle": {
-        const outcome = m.outcome === "failed" || m.outcome === "interrupted" ? m.outcome : "succeeded";
-        events.push({ type: "session.idle", outcome });
-        break;
-      }
-      default:
-        break;
+      break;
     }
+    case "shell": {
+      const toolId = `shell-msg:${id}`;
+      events.push({ type: "tool.started", toolId, name: "shell" });
+      events.push({ type: "tool.input", toolId, name: "shell", input: { command: s(m.command) ?? "" } });
+      const output = s(rec(m.output)?.output);
+      events.push({
+        type: "tool.completed",
+        toolId,
+        output,
+        metadata: typeof m.exit === "number" ? { exit: m.exit } : null,
+      });
+      break;
+    }
+    case "synthetic": {
+      const report = subagentReport(id, m, created) ?? backgroundNotice(id, m, created);
+      if (report) events.push(report);
+      break;
+    }
+    case "compaction":
+      events.push({ type: "notice", level: "info", text: "Conversation context was compacted." });
+      break;
+    case "idle": {
+      const outcome = m.outcome === "failed" || m.outcome === "interrupted" ? m.outcome : "succeeded";
+      events.push({ type: "session.idle", outcome });
+      break;
+    }
+    default:
+      break;
   }
   return events;
 }

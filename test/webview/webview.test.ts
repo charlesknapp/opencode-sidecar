@@ -3863,6 +3863,125 @@ describe(
       assert.deepEqual(await sent(), [{ type: "checkSetup" }]);
     });
 
+    const turns = (from: number, to: number): TranscriptItem[] =>
+      Array.from({ length: to - from }, (_, k) => {
+        const i = from + k;
+        return [
+          { kind: "user", id: `user:u${i}`, text: `prompt ${i}`, attachments: [] },
+          { kind: "assistant", id: `text:a${i}:0`, text: `answer ${i}\n\nmore text`, streaming: false },
+        ] as TranscriptItem[];
+      }).flat();
+    const hist = (over: Partial<NonNullable<ViewState["history"]>> = {}) => ({
+      more: false,
+      capped: false,
+      loading: false,
+      error: null,
+      ...over,
+    });
+
+    it("Load earlier messages sits above the oldest one and keeps the reader's place", async () => {
+      await host({ type: "transcript", items: turns(50, 80) });
+      await host({ type: "state", state: baseState({ history: hist({ more: true }) }) });
+      const btn = '[data-testid="load-earlier"]';
+      assert.equal(await text(btn), "Load earlier messages");
+      // Scrolled to the top, the first prompt is in view.
+      await page.$eval("main.conversation", (m) => (m.scrollTop = 0));
+      const topOf = () =>
+        page.$eval('[data-id="user:u50"]', (e) => {
+          const m = document.querySelector("main.conversation")!;
+          return Math.round(e.getBoundingClientRect().top - m.getBoundingClientRect().top);
+        });
+      const before = await topOf();
+      await clearSent();
+      await page.click(btn);
+      assert.deepEqual(await sent(), [{ type: "loadEarlier" }]);
+      await host({ type: "state", state: baseState({ history: hist({ more: true, loading: true }) }) });
+      assert.equal(await page.$eval(btn, (b) => b.getAttribute("aria-disabled")), "true");
+      assert.equal(await text(btn), "Loading earlier messages…");
+      // The host resets the conversation (empty first, then with the earlier turns).
+      await host({ type: "transcript", items: [] });
+      await host({ type: "transcript", items: turns(20, 80) });
+      await host({ type: "state", state: baseState({ history: hist({ more: true }) }) });
+      assert.ok(Math.abs((await topOf()) - before) <= 2, "the same message stays where it was");
+      assert.ok(
+        await page.$eval("main.conversation", (m) => m.scrollTop > 0),
+        "the earlier turns are above, not in view",
+      );
+      await host({ type: "state", state: baseState({ history: hist({ capped: true }) }) });
+      assert.equal(await page.$(btn), null);
+      assert.equal(await text('[data-testid="history-more"]'), "Showing the newest 2,000 messages.");
+      await host({ type: "state", state: baseState({ history: hist() }) });
+      assert.equal(await page.$eval('[data-testid="history-more"]', (e) => (e as HTMLElement).hidden), true);
+    });
+
+    it("messages that did not load: the reason, Retry, and a read-only box, at 300px", async () => {
+      await page.setViewport({ width: 300, height: 700 });
+      await host({ type: "transcript", items: [] });
+      await host({
+        type: "state",
+        state: baseState({
+          history: hist({ error: "Could not load the messages: OpenCode did not respond in time." }),
+        }),
+      });
+      assert.match(
+        await text('[data-testid="history-error"]'),
+        /could not be loaded[\s\S]*did not respond in time/,
+      );
+      assert.equal(await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).disabled), true);
+      assert.equal(
+        await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).placeholder),
+        "Read-only until the messages load",
+      );
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+      await clearSent();
+      await page.focus('[data-testid="history-retry"]');
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await sent(), [{ type: "retryHistory" }]);
+      await host({ type: "state", state: baseState({ history: hist() }) });
+      assert.equal(await page.$('[data-testid="history-error"]'), null);
+      assert.equal(await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).disabled), false);
+    });
+
+    it("shows a message that could not be read, or an entry that fails to render, as a row with Open raw JSON", async () => {
+      await clearSent();
+      await host({
+        type: "transcript",
+        items: [
+          { kind: "user", id: "user:u1", text: "hello", attachments: [] },
+          { kind: "unreadable", id: "unreadable:msg_bad", messageID: "msg_bad", reason: "It has no type." },
+          // A tool entry missing its detail: rendering it throws.
+          {
+            kind: "tool",
+            id: "tool:broken",
+            name: "read",
+            title: "Read",
+            category: "read",
+            status: "completed",
+          } as unknown as TranscriptItem,
+          { kind: "assistant", id: "text:a1:0", text: "still here", streaming: false },
+        ],
+      });
+      const rows = await page.$$eval('[data-testid="unreadable"]', (n) =>
+        n.map((e) => (e as HTMLElement).innerText),
+      );
+      assert.deepEqual(rows, [
+        "This part couldn't be shown — Open raw JSON",
+        "This part couldn't be shown — Open raw JSON",
+      ]);
+      assert.equal(await text('[data-id="text:a1:0"] .msg-body'), "still here", "the rest shows");
+      const viewErrors = (await sent()).filter((m) => m.type === "viewError");
+      assert.equal(viewErrors.length, 1);
+      assert.equal(viewErrors[0].itemId, "tool:broken");
+      await clearSent();
+      const links = await page.$$('[data-testid="open-raw"]');
+      await links[0].click();
+      await links[1].click();
+      assert.deepEqual(await sent(), [
+        { type: "openRawJson", itemId: "unreadable:msg_bad" },
+        { type: "openRawJson", itemId: "tool:broken" },
+      ]);
+    });
+
     it("stays responsive with a large history and a long streaming report", async () => {
       const md = "## Section\n\n- a\n- b\n\n| x | y |\n|--|--|\n| 1 | 2 |\n\n```ts\nconst a = 1;\n```\n";
       const many: TranscriptItem[] = Array.from({ length: 400 }, (_, i) => ({

@@ -473,6 +473,10 @@ export class MockClient implements OpenCodeClient {
     this.record("listMessages", id);
     return this.messagesBySession.get(id) ?? this.messages;
   }
+  async listHistory(id: string, max: number) {
+    const all = await this.listMessages(id);
+    return { messages: all.slice(-max), more: all.length > max };
+  }
   async prompt(id: string, input: PromptInput) {
     this.record("prompt", id, input);
     if (this.promptError) throw this.promptError;

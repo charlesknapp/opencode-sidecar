@@ -4433,3 +4433,25 @@ body.vscode-high-contrast-light .p-approval {
 .seg-btn:disabled {
   opacity: 0.5;
 }
+
+/* Above the oldest loaded message: Load earlier messages, or why the messages did not load. */
+.history-more {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 10px;
+}
+.history-more .error-card {
+  width: 100%;
+}
+.history-more .error-card .actions {
+  margin-top: 6px;
+}
+/* A message or entry that could not be shown. */
+.unreadable {
+  font-size: 0.9em;
+  font-style: italic;
+}
+.history-more .btn[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}

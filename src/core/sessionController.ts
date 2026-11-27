@@ -40,6 +40,7 @@ import {
   describeSensitive,
   EventNormalizer,
   historyToEvents,
+  messageEvents,
   type NormalizedEnvelope,
 } from "../opencode/events";
 import type {
@@ -58,6 +59,7 @@ import type {
   FormAnswer,
   GoalState,
   GoalView,
+  HistoryView,
   InboxDelivery,
   ModelOption,
   PendingInboxItem,
@@ -165,6 +167,8 @@ export type AgentChanges =
   { status: "none" } | { status: "ok"; files: FileChange[] } | { status: "unavailable"; reason: string };
 
 export const HISTORY_LIMIT = 400;
+/** Most messages "Load earlier messages" brings in for one session. */
+export const MAX_HISTORY = 2000;
 /** Workspace-state key of the side-question sessions not deleted yet. */
 export const ASIDES_KEY = "opencodeSidecar.asides";
 /** Messages read back to find what a rewind would revert (the history's tail). */
@@ -342,6 +346,14 @@ export class SessionController {
   private stuckCard: string | null = null;
   private stuckSeq = 0;
   private stuckTimer: ReturnType<typeof setInterval> | undefined;
+  /** How many of the open session's newest messages are loaded, and whether it has earlier ones. */
+  private historyLimit = HISTORY_LIMIT;
+  private historyMore = false;
+  private historyLoading = false;
+  /** Why the open session's messages could not be read; it is read-only until a retry works. */
+  private historyError: string | null = null;
+  /** Stored messages shown as unreadable rows, by message id, for Open raw JSON. */
+  private readonly unreadable = new Map<string, unknown>();
 
   constructor(
     private readonly client: OpenCodeClient,
@@ -1119,6 +1131,10 @@ export class SessionController {
     this.goalToken++;
     this.stuck.reset();
     this.stuckCard = null;
+    this.historyLimit = HISTORY_LIMIT;
+    this.historyMore = false;
+    this.historyError = null;
+    this.unreadable.clear();
     this.transcript.reset();
     this.sink.onTranscriptReset([]);
   }
@@ -1133,14 +1149,20 @@ export class SessionController {
     this.sink.onStateChanged();
   }
 
-  /** Continues an existing OpenCode session: replays history, pending permissions, forms and queue. */
-  async openSession(id: string): Promise<boolean> {
+  /**
+   * Continues an existing OpenCode session: replays history, pending permissions, forms and
+   * queue. `limit`: how many of its newest messages to load (the open session keeps its own,
+   * so a reload after a rewind or a reconnect keeps the earlier messages the user loaded).
+   */
+  async openSession(id: string, limit?: number): Promise<boolean> {
     const token = ++this.loadToken;
     const selection = this.selectionVersion;
+    const max = limit ?? (id === this.current?.id ? this.historyLimit : HISTORY_LIMIT);
     try {
-      const [summary, messages, rootPermissions, rootForms, inbox, active, subagents] = await Promise.all([
+      const [summary, history, rootPermissions, rootForms, inbox, active, subagents] = await Promise.all([
         this.client.getSession(id),
-        this.client.listMessages(id, HISTORY_LIMIT),
+        // Messages that cannot be read leave the session open, read-only, with a retry.
+        this.client.listHistory(id, max).catch((e: unknown) => ({ failed: e })),
         this.client.listPermissions(id).catch(() => []),
         this.client.listForms(id).catch(() => []),
         this.client.listInbox(id).catch(() => []),
@@ -1164,6 +1186,14 @@ export class SessionController {
       if (token !== this.loadToken) return false;
       if (this.current?.id !== id) this.leaveSession();
       this.clearSession();
+      const failed = "failed" in history ? history.failed : null;
+      const messages = "failed" in history ? [] : history.messages;
+      this.historyLimit = max;
+      this.historyMore = !("failed" in history) && history.more;
+      if (failed) {
+        this.historyError = friendlyError(failed, "Could not load the messages");
+        this.log.error(`Loading the messages of ${id} failed`, failed);
+      }
       this.subagents.restore(subagents, active);
       for (const s of subagents) this.watch.link(s.summary.id, s.parentID);
       for (const request of permissions)
@@ -1172,7 +1202,7 @@ export class SessionController {
       this.current = summary;
       this.sessionCost = summary.cost;
       this.busy = active.has(id);
-      for (const ev of historyToEvents(messages)) this.applyLocal(ev, true);
+      this.replayHistory(id, messages);
       // Pending requests are restored silently: reopening never replays notifications.
       for (const request of permissions) {
         this.applyLocal(
@@ -1183,7 +1213,11 @@ export class SessionController {
       for (const form of forms) this.applyLocal({ type: "form.requested", form }, true);
       this.pending = inbox;
       this.execActive = this.busy;
-      this.task = deriveTaskFromHistory(messages, this.busy);
+      try {
+        this.task = deriveTaskFromHistory(messages, this.busy);
+      } catch {
+        this.task = null;
+      }
       for (const item of inbox) this.pendingStartsTask.set(item.id, item.delivery === "queue");
       if (this.busy) {
         this.budget.startTask(this.sessionCost);
@@ -1220,6 +1254,80 @@ export class SessionController {
       this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not open the session") }]);
       return false;
     }
+  }
+
+  /**
+   * Replays stored messages one by one: a message that cannot be read or replayed becomes a
+   * placeholder row (its raw JSON kept for Open raw JSON), and the rest of the session shows.
+   */
+  private replayHistory(id: string, messages: readonly unknown[]): void {
+    const bad: string[] = [];
+    messages.forEach((m, i) => {
+      const events = messageEvents(m, i);
+      try {
+        for (const ev of events) this.applyLocal(ev, true);
+      } catch (e) {
+        events.push({
+          type: "history.unreadable",
+          id: events.find((ev) => ev.type === "history.unreadable")?.id ?? messageId(m, i),
+          reason: e instanceof Error ? e.message : String(e),
+        });
+        this.applyLocal(events[events.length - 1], true);
+      }
+      for (const ev of events)
+        if (ev.type === "history.unreadable") {
+          this.unreadable.set(ev.id, m);
+          bad.push(`${ev.id} (${ev.reason})`);
+        }
+    });
+    if (bad.length) this.log.warn(`${bad.length} message(s) of ${id} could not be shown: ${bad.join(", ")}`);
+  }
+
+  /** The open session's history for the view: earlier messages left out, loading, or failed. */
+  historyView(): HistoryView {
+    return {
+      more: this.historyMore && this.historyLimit < MAX_HISTORY,
+      capped: this.historyMore && this.historyLimit >= MAX_HISTORY,
+      loading: this.historyLoading,
+      error: this.historyError,
+    };
+  }
+
+  /** Loads the open session's next HISTORY_LIMIT earlier messages (up to MAX_HISTORY in all). */
+  async loadEarlier(): Promise<void> {
+    const id = this.current?.id;
+    if (!id || !this.historyMore || this.historyLoading || this.historyLimit >= MAX_HISTORY) return;
+    this.historyLoading = true;
+    this.sink.onStateChanged();
+    try {
+      await this.openSession(id, Math.min(MAX_HISTORY, this.historyLimit + HISTORY_LIMIT));
+    } finally {
+      this.historyLoading = false;
+      this.sink.onStateChanged();
+    }
+  }
+
+  /** Reads the open session's messages again after they failed to load. */
+  async retryHistory(): Promise<void> {
+    if (this.current) await this.openSession(this.current.id);
+  }
+
+  /**
+   * A timeline entry as JSON, for Open raw JSON: an unreadable message as OpenCode sent it,
+   * anything else as Sidecar holds it. Null when there is no such entry.
+   */
+  rawJson(itemId: string): { title: string; text: string } | null {
+    const item = this.transcript.get(itemId) ?? this.viewer?.transcript.get(itemId);
+    if (!item) return null;
+    const raw = item.kind === "unreadable" ? this.unreadable.get(item.messageID) : item;
+    const id = item.kind === "unreadable" ? item.messageID : item.id;
+    let text: string;
+    try {
+      text = JSON.stringify(raw, null, 2) ?? String(raw);
+    } catch (e) {
+      text = `Could not turn it into JSON: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    return { title: `${id.replace(/:/g, " ")}.json`, text };
   }
 
   /** Sends the selected model, variant and agent to the open session where they differ from `summary`. */
@@ -1677,6 +1785,13 @@ export class SessionController {
       return false;
     }
     if (this.busy && (!delivery || !this.current)) return false;
+    if (this.historyError && this.current) {
+      // Read-only: a prompt now would go in after messages nobody could see.
+      this.emit([
+        { type: "notice", level: "info", text: "Load the session's messages again before sending." },
+      ]);
+      return false;
+    }
     const payload = buildPrompt(text, attachments, mentions, pastes);
     if (!payload.text) {
       if (payload.files.length) {
@@ -3427,4 +3542,10 @@ export function isCatalogEvent(raw: unknown): boolean {
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** A stored message's id, or its place when it has none (as `messageEvents` names it). */
+function messageId(m: unknown, index: number): string {
+  const id = m && typeof m === "object" ? (m as { id?: unknown }).id : undefined;
+  return typeof id === "string" && id ? id : `#${index}`;
 }

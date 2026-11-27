@@ -356,6 +356,31 @@ describe("HTTP OpenCode client", () => {
     );
   });
 
+  it("says whether a session has messages before the newest ones it loaded", async () => {
+    const pages: Record<string, { data: unknown[]; cursor: { next: string | null } }> = {
+      first: { data: [{ id: "m4" }, { id: "m3" }], cursor: { next: "c1" } },
+      c1: { data: [{ id: "m2" }], cursor: { next: "c2" } },
+      c2: { data: [], cursor: { next: null } },
+    };
+    const { fn, captured } = mockFetch({
+      "GET /api/session/ses_1/message": (req) => {
+        const q = new URL(req.url).searchParams;
+        const page = pages[q.get("cursor") ?? "first"];
+        return json({ ...page, data: page.data.slice(0, Number(q.get("limit"))) });
+      },
+    });
+    const c = new HttpOpenCodeClient({ url: "http://127.0.0.1:9" }, fn);
+    const two = await c.listHistory("ses_1", 2);
+    assert.deepEqual(
+      two.messages.map((m) => (m as { id: string }).id),
+      ["m3", "m4"],
+    );
+    assert.equal(two.more, true, "one message past the limit is there");
+    assert.equal(new URL(captured[1].url).searchParams.get("limit"), "1", "asked for just one more");
+    assert.deepEqual(await c.listHistory("ses_1", 3).then((h) => h.more), false, "an empty page after it");
+    assert.deepEqual(await c.listHistory("ses_1", 10).then((h) => h.more), false, "a short page");
+  });
+
   it("pages message history from newest and returns it oldest-first", async () => {
     let call = 0;
     const { fn, captured } = mockFetch({

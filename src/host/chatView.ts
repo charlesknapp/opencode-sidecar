@@ -421,6 +421,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       goal: c?.goalView() ?? null,
       revert: c?.stagedRevert() ?? null,
       archivedSessions: c?.archivedSessions ?? null,
+      history: c?.historyView() ?? { more: false, capped: false, loading: false, error: null },
       strip: c?.stripView() ?? [],
       approval: {
         ...(c?.approvalView() ?? {
@@ -1475,6 +1476,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       case "closeSubagent":
         c?.closeSubagent();
         return;
+      case "loadEarlier":
+        return c?.loadEarlier();
+      case "retryHistory":
+        return c?.retryHistory();
+      case "viewError":
+        this.log.warn(`The chat could not show ${msg.itemId}: ${msg.message}`);
+        return;
+      case "openRawJson": {
+        const raw = c?.rawJson(msg.itemId);
+        if (raw && this.toolText) await this.toolText.open(raw.title, raw.text);
+        return;
+      }
       case "stuckAction":
         if (c) await c.stuckAction(msg.sessionID, msg.action);
         return;

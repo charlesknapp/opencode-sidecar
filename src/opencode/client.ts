@@ -208,6 +208,8 @@ export interface OpenCodeClient {
     permissions?: PermissionRule[];
   }): Promise<SessionSummary>;
   listMessages(id: string, max: number): Promise<unknown[]>;
+  /** The newest `max` messages (oldest first), and whether the session has earlier ones. */
+  listHistory(id: string, max: number): Promise<{ messages: unknown[]; more: boolean }>;
   /** The messages that make up the session's context now (after its last compaction), raw. */
   sessionContext(id: string): Promise<unknown[]>;
   /** OpenCode Go and Console limits of the signed-in OpenCode workspace; null when none. */
@@ -880,10 +882,24 @@ export class HttpOpenCodeClient implements OpenCodeClient {
   }
 
   async listMessages(id: string, max: number): Promise<unknown[]> {
+    return (await this.pageMessages(id, max, false)).messages;
+  }
+
+  listHistory(id: string, max: number): Promise<{ messages: unknown[]; more: boolean }> {
+    return this.pageMessages(id, max, true);
+  }
+
+  /** `probe`: when exactly `max` came back, ask for one more to know whether earlier ones exist. */
+  private async pageMessages(
+    id: string,
+    max: number,
+    probe: boolean,
+  ): Promise<{ messages: unknown[]; more: boolean }> {
     // Newest-first pages, then reversed, so very long sessions only load their tail.
     // OpenCode rejects `order` together with `cursor`; the cursor carries the order.
     const out: unknown[] = [];
     let cursor: string | undefined;
+    let more = false;
     while (out.length < max) {
       const limit = Math.min(100, max - out.length);
       const query: Record<string, string | undefined> = cursor
@@ -893,10 +909,21 @@ export class HttpOpenCodeClient implements OpenCodeClient {
       const page = Array.isArray(d.data) ? d.data : [];
       out.push(...page);
       const next = str(rec(d.cursor).next);
+      // A full page with a cursor after it: there may be more (an empty next page says no).
+      more = !!next && page.length === limit;
       if (!next || page.length === 0) break;
       cursor = next;
     }
-    return out.reverse();
+    if (probe && more && cursor) {
+      // Stopped at `max` exactly: one message past it says whether earlier ones exist.
+      const d = rec(
+        await this.request("GET", `/api/session/${encodeURIComponent(id)}/message`, {
+          query: { cursor, limit: "1" },
+        }),
+      );
+      more = Array.isArray(d.data) && d.data.length > 0;
+    }
+    return { messages: out.reverse(), more };
   }
 
   async sessionContext(id: string): Promise<unknown[]> {

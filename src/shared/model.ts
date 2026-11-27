@@ -764,6 +764,8 @@ export type TranscriptItem =
       /** Set once the user picked an action on a stopped card. */
       resolved: "continued" | "increased" | "new-session" | null;
     }
+  /** A stored message (`messageID`) that could not be shown; its raw JSON opens in an editor. */
+  | { kind: "unreadable"; id: string; messageID: string; reason: string }
   /** The agent seems stuck (a loop of tool calls, or no progress): a suggestion, never a stop. */
   | {
       kind: "stuck";
@@ -778,6 +780,14 @@ export type TranscriptItem =
  * Why the agent seems stuck: one call repeated (`calls` has it, as "tool arg"), two taking
  * turns (both), or no progress for `minutes`. `count`: repeats, or rounds for two calls.
  */
+/** See ViewState.history. */
+export interface HistoryView {
+  more: boolean;
+  capped: boolean;
+  loading: boolean;
+  error: string | null;
+}
+
 export interface StuckView {
   reason: "repeat" | "alternate" | "stall";
   calls: string[];
@@ -1063,6 +1073,8 @@ export type UiEvent =
     }
   | { type: "budget"; id: string; state: "warning" | "stopped"; text: string }
   | { type: "budget.resolved"; id: string; resolution: "continued" | "increased" | "new-session" }
+  /** A stored message that could not be replayed (see `messageEvents`). */
+  | { type: "history.unreadable"; id: string; reason: string }
   /** The open session seems stuck (raised by Sidecar, live only); the same id again updates the card. */
   | { type: "stuck"; id: string; sessionID: string; stuck: StuckView }
   | { type: "stuck.resolved"; id: string; resolution: "dismissed" | "stopped" | "moved-on" }

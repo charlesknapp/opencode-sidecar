@@ -4,6 +4,7 @@
 
 import { isRule, type PermissionRule } from "./approval";
 import type {
+  HistoryView,
   AgentDraft,
   AgentOption,
   AgentsView,
@@ -72,6 +73,11 @@ export interface ViewState {
   busy: boolean;
   stopping: boolean;
   attachments: AttachmentChip[];
+  /**
+   * The open session's stored messages: whether earlier ones were left out (`more`, until
+   * `capped`), one being loaded, or why they could not be read (the session is then read-only).
+   */
+  history?: HistoryView;
   /** Changes attributed to the agent by OpenCode's session snapshots. */
   agentChanges:
     { status: "none" } | { status: "ok"; files: FileChange[] } | { status: "unavailable"; reason: string };
@@ -345,6 +351,14 @@ export type WebviewMessage =
   | { type: "openSubagent"; sessionID: string }
   | { type: "closeSubagent" }
   | { type: "stopSubagent"; sessionID: string }
+  /** Loads the open session's earlier messages (the next HISTORY_LIMIT). */
+  | { type: "loadEarlier" }
+  /** Reads the open session's messages again after they failed to load. */
+  | { type: "retryHistory" }
+  /** Opens a timeline entry as JSON (for an unreadable message: the message as OpenCode sent it). */
+  | { type: "openRawJson"; itemId: string }
+  /** An entry the view could not render (logged; the view shows a placeholder). */
+  | { type: "viewError"; itemId: string; message: string }
   /** Stop or Dismiss on a stuck card (the open session) or a subagent row's stuck note. */
   | { type: "stuckAction"; sessionID: string; action: "stop" | "dismiss" }
   /**
@@ -621,6 +635,10 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   openSubagent: (m) => isStr(m.sessionID),
   closeSubagent: () => true,
   stopSubagent: (m) => isStr(m.sessionID),
+  loadEarlier: () => true,
+  retryHistory: () => true,
+  openRawJson: (m) => isStr(m.itemId),
+  viewError: (m) => isStr(m.itemId) && typeof m.message === "string" && m.message.length <= 1000,
   stuckAction: (m) => isStr(m.sessionID) && (m.action === "stop" || m.action === "dismiss"),
   rewind: (m) => isStr(m.messageID) && typeof m.files === "boolean",
   renameSession: (m) => typeof m.title === "string" && m.title.trim().length > 0 && m.title.length <= 200,
@@ -696,6 +714,8 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   openOfficial: ["link"],
   openSubagent: ["sessionID"],
   stopSubagent: ["sessionID"],
+  openRawJson: ["itemId"],
+  viewError: ["itemId", "message"],
   stuckAction: ["sessionID", "action"],
   rewind: ["messageID", "files"],
   rewindPreview: ["messageID"],

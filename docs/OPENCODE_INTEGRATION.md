@@ -48,7 +48,7 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | MCP sign-in ✓                | the server's `integrationID`: `GET /api/integration/{id}`, then the OAuth calls below                                             |
 | Fork ✓                       | `POST /api/session/{id}/fork` `{ before? }` (a non-empty session; the copy has `fork`, not `parentID`)                            |
 | Side question (`/btw`) ✓     | `POST …/fork` `{}`, `POST …/agent` `{ agent: "plan" }`, `POST …/prompt`, then `DELETE /api/session/{id}` on close                 |
-| History ✓                    | `GET /api/session/{id}/message` (newest first, cursor paging)                                                                     |
+| History ✓                    | `GET /api/session/{id}/message` (newest first, cursor paging; one `limit=1` page past the newest 400 says whether there are more) |
 | Prompt, steer, queue ✓       | `POST /api/session/{id}/prompt` `{ text, files?, agents?, skills?, delivery? }`                                                   |
 | Model and agent ✓            | `POST /api/session/{id}/model` (with `variant`), `POST /api/session/{id}/agent`                                                   |
 | Running state, stop ✓        | `GET /api/session/active`, `POST /api/session/{id}/interrupt`                                                                     |
@@ -181,7 +181,7 @@ The stream is global, so the controller filters by `sessionID`.
 | `session.created/deleted/renamed/archived/unarchived/forked/moved`                                  | the session list; `parentID` marks a subagent          |
 | `agent.updated`, `integration.updated`, `provider.updated`, `model.updated`, `models-dev.refreshed` | reload models, agents and account state (debounced)    |
 
-Stored history replays `user`, `assistant` (text, thinking, tool parts), `shell`, `synthetic`, `compaction` and `idle` messages through the same model, with OpenCode's stored times.
+Stored history replays one message at a time: one that is not an object, has no `type` or breaks the replay becomes a placeholder row with its raw JSON, and the rest still shows. Checked live with 1,203 stored messages (`test/live/history.test.ts`, built with `POST /api/session/{id}/synthetic` `{ text, metadata, resume: false }`, which holds each note in the inbox until one run delivers them all): all of them load in about 0.4 s, the newest 400 open through the controller in about 0.2 s. Stored history replays `user`, `assistant` (text, thinking, tool parts), `shell`, `synthetic`, `compaction` and `idle` messages through the same model, with OpenCode's stored times.
 
 ## Stuck detection
 

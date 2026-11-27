@@ -358,7 +358,9 @@ const listEl = h("div", {
 });
 /** "Working…" with the elapsed time, under the timeline while the agent runs. */
 const workingEl = h("div", { className: "working", "data-testid": "working", hidden: true });
-scroller.append(emptyEl, listEl, workingEl);
+/** Above the oldest loaded message: Load earlier messages, or why the messages did not load. */
+const historyEl = h("div", { className: "history-more", "data-testid": "history-more", hidden: true });
+scroller.append(emptyEl, historyEl, listEl, workingEl);
 const subHeaderEl = h("section", { className: "subagent-header", "aria-label": "Subagent", hidden: true });
 /** The side question (`/btw`) card, above the conversation. */
 const asideEl = h("section", {
@@ -7891,6 +7893,8 @@ function renderItem(item: TranscriptItem): HTMLElement {
     }
     case "stuck":
       return renderStuck(item);
+    case "unreadable":
+      return unreadableRow(item.id, item.reason);
   }
 }
 
@@ -8357,6 +8361,7 @@ function dotOf(item: TranscriptItem): Dot {
     case "notice":
       return item.level === "error" ? "err" : "idle";
     case "error":
+    case "unreadable":
       return "err";
     case "budget":
     case "stuck":
@@ -8383,8 +8388,127 @@ function showsTime(
   return prev?.kind !== "assistant" || !prev.text.trim();
 }
 
-/** An item in its timeline frame: the prompt with its time, or a rail entry with its dot. */
+/**
+ * An item in its timeline frame. An item that fails to render becomes a placeholder row
+ * (the host logs why), so one bad entry never blanks the conversation.
+ */
 function renderEntry(item: TranscriptItem, tr: Transcript): HTMLElement {
+  try {
+    return entryOf(item, tr);
+  } catch (e) {
+    const message = (e instanceof Error ? e.message : String(e)).slice(0, 500);
+    // Logged once: a streaming entry renders again on every frame.
+    if (!renderErrors.has(item.id)) {
+      renderErrors.add(item.id);
+      send({ type: "viewError", itemId: item.id.slice(0, 200), message });
+    }
+    return h(
+      "div",
+      { className: "tl-item dot-err", "data-id": item.id },
+      h("span", { className: "dot", "aria-hidden": "true" }),
+      unreadableRow(item.id, message),
+    );
+  }
+}
+
+const renderErrors = new Set<string>();
+
+/** "This part couldn't be shown — Open raw JSON", for a message or an entry that cannot be shown. */
+function unreadableRow(itemId: string, reason: string): HTMLElement {
+  return h(
+    "div",
+    { className: "unreadable muted", "data-testid": "unreadable", title: reason },
+    "This part couldn't be shown — ",
+    inlineLink("Open raw JSON", { "data-testid": "open-raw", "data-key": `raw:${itemId}` }, () =>
+      send({ type: "openRawJson", itemId }),
+    ),
+  );
+}
+
+// ---------------------------------------------------------------- history
+//
+// A session opens with its newest HISTORY_LIMIT messages. Load earlier messages brings in
+// the next ones, keeping the reader's place; messages that did not load leave the
+// session read-only with Retry.
+
+/** The first message on screen and its place, kept across the reload Load earlier makes. */
+let historyAnchor: { id: string; top: number } | null = null;
+let historySig = "";
+
+function renderHistory(s: ViewState): void {
+  const hist = s.history;
+  const err = hist?.error && s.currentSession && !subView ? hist.error : null;
+  const more = !subView && !err && !!hist?.more;
+  const capped = !subView && !err && !!hist?.capped;
+  const loading = !!hist?.loading;
+  // The button stays the same element while it says "Loading…", so keyboard focus stays on it.
+  const sig = JSON.stringify([err, more, capped]);
+  const existing = historyEl.querySelector<HTMLButtonElement>('[data-testid="load-earlier"]');
+  if (sig === historySig) {
+    if (existing) paintLoadEarlier(existing, loading);
+    return;
+  }
+  historySig = sig;
+  historyEl.hidden = !err && !more && !capped;
+  if (historyEl.hidden) {
+    historyEl.replaceChildren();
+    return;
+  }
+  if (err) {
+    historyEl.replaceChildren(
+      h(
+        "div",
+        { className: "error-card", role: "alert", "data-testid": "history-error" },
+        h("div", { className: "error-title" }, "This session's messages could not be loaded"),
+        h("div", { className: "small", dir: "auto" }, err),
+        h("div", { className: "small muted" }, "The session is read-only until they load."),
+        h(
+          "div",
+          { className: "actions" },
+          h(
+            "button",
+            {
+              className: "btn primary",
+              "data-testid": "history-retry",
+              onclick: () => send({ type: "retryHistory" }),
+            },
+            t("retry"),
+          ),
+        ),
+      ),
+    );
+    return;
+  }
+  if (capped) {
+    historyEl.replaceChildren(h("p", { className: "small muted" }, "Showing the newest 2,000 messages."));
+    return;
+  }
+  const btn = h("button", {
+    className: "btn",
+    "data-testid": "load-earlier",
+    onclick: () => {
+      if (btn.getAttribute("aria-disabled") === "true") return;
+      const first = listEl.querySelector<HTMLElement>("[data-id]");
+      historyAnchor = first?.dataset.id
+        ? {
+            id: first.dataset.id,
+            top: first.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
+          }
+        : null;
+      send({ type: "loadEarlier" });
+    },
+  }) as HTMLButtonElement;
+  paintLoadEarlier(btn, loading);
+  historyEl.replaceChildren(btn);
+}
+
+function paintLoadEarlier(btn: HTMLButtonElement, loading: boolean): void {
+  btn.textContent = loading ? "Loading earlier messages…" : "Load earlier messages";
+  btn.setAttribute("aria-disabled", String(loading));
+}
+
+/** An item in its timeline frame: the prompt with its time, or a rail entry with its dot. */
+function entryOf(item: TranscriptItem, tr: Transcript): HTMLElement {
   const content = renderItem(item);
   if (item.kind === "user")
     return h(
@@ -9387,19 +9511,24 @@ function renderComposer(s: ViewState) {
   renderPasteView(live);
   // The message box works only when the chat is usable (connected, folder open, models available).
   // A subagent's conversation is read-only: messages always go to the main chat.
-  const connected = s.connection.kind === "connected" && s.onboarding.stage === "ready" && !subView;
+  // A session whose messages did not load is read-only until they do.
+  const unread = !!s.history?.error && !!s.currentSession;
+  const connected =
+    s.connection.kind === "connected" && s.onboarding.stage === "ready" && !subView && !unread;
   input.disabled = !connected;
   input.placeholder = subView
     ? t("subagentReadOnly")
-    : connected
-      ? s.busy
-        ? deliveryMode === "queue"
-          ? "Queue a message for after this task…"
-          : "Steer the agent…"
-        : "Ask anything…"
-      : s.onboarding.stage === "connecting" || s.onboarding.stage === "loading"
-        ? "Connecting to OpenCode…"
-        : "Finish the setup above to start chatting";
+    : unread
+      ? "Read-only until the messages load"
+      : connected
+        ? s.busy
+          ? deliveryMode === "queue"
+            ? "Queue a message for after this task…"
+            : "Steer the agent…"
+          : "Ask anything…"
+        : s.onboarding.stage === "connecting" || s.onboarding.stage === "loading"
+          ? "Connecting to OpenCode…"
+          : "Finish the setup above to start chatting";
   boxTools.hidden = !!subView;
   boxEl.classList.toggle("active", s.busy && !subView);
   // Steer or queue: only meaningful while the agent works.
@@ -9509,6 +9638,7 @@ function render() {
   renderPending(state);
   renderRevert(state);
   renderGoal(state);
+  renderHistory(state);
   syncSubagentView(state);
   renderSubHeader();
   renderComposer(state);
@@ -9596,13 +9726,26 @@ window.addEventListener("message", (e: MessageEvent) => {
       document.documentElement.lang = state.locale;
       render();
       break;
-    case "transcript":
+    case "transcript": {
+      // After Load earlier messages, the message that was first stays where it was.
+      const anchor =
+        historyAnchor && msg.items.some((i) => i.id === historyAnchor!.id) ? historyAnchor : null;
+      if (anchor) historyAnchor = null;
       transcript.reset(msg.items);
       renderAllItems();
       if (state) renderEmpty(state);
-      stickToBottom = true;
-      maybeScroll();
+      const el = anchor ? itemEls.get(anchor.id) : undefined;
+      if (anchor && el) {
+        stickToBottom = false;
+        scroller.scrollTop +=
+          el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.top;
+        renderJump();
+      } else {
+        stickToBottom = true;
+        maybeScroll();
+      }
       break;
+    }
     case "events": {
       const now = Date.now();
       for (const ev of msg.events) {

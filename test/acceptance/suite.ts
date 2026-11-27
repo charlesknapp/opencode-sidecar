@@ -429,8 +429,52 @@ async function pastedText(api: TestApi): Promise<void> {
   await projectInstructions(api);
   await goalHeader(api);
   await stuckCheck(api);
+  await longHistory(api);
   await problemsAndCommit(api);
   await agentReview(api);
+}
+
+// ============================================================ long sessions
+
+/**
+ * A session with 450 more stored messages (synthetic notes held back, then delivered by
+ * one run) opens with its newest 400 and **Load earlier messages**, which loads the rest.
+ */
+async function longHistory(api: TestApi): Promise<void> {
+  await api.handle({ type: "newSession" });
+  await sendAndWait(api, "Reply with the word ok.");
+  const sid = api.controller()?.current?.id;
+  if (!sid) return check("History: a session to grow", false);
+  const svc = JSON.parse(fs.readFileSync(serviceFilePath(), "utf8"));
+  const post = (body: unknown) =>
+    fetch(new URL(`/api/session/${sid}/synthetic`, svc.url), {
+      method: "POST",
+      headers: {
+        authorization: "Basic " + Buffer.from("opencode:" + svc.password).toString("base64"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  for (let i = 0; i < 450; i += 25)
+    await Promise.all(
+      Array.from({ length: 25 }, (_, k) =>
+        post({ text: `Note ${i + k}`, metadata: { source: "shell", state: "completed" }, resume: false }),
+      ),
+    );
+  const since = events.length;
+  await post({ text: "Reply with the word ok.", resume: true });
+  await waitIdle(api, since);
+  await api.handle({ type: "newSession" });
+  await api.handle({ type: "selectSession", id: sid });
+  await waitFor("the session", () => api.viewState().history?.more || undefined, 30_000);
+  const first = items(api).length;
+  await api.handle({ type: "loadEarlier" });
+  await waitFor("earlier messages", () => (items(api).length > first ? true : undefined), 30_000);
+  check(
+    "History: Load earlier messages loads the rest",
+    api.viewState().history?.more === false && items(api).some((i) => i.kind === "user"),
+    `${first} → ${items(api).length}`,
+  );
 }
 
 // ============================================================ the agent seems stuck
