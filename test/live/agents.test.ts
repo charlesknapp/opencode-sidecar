@@ -29,12 +29,14 @@ import {
 } from "../../src/core/agents";
 import { importComments, modeToAgent, parseModesFile } from "../../src/core/roomodes";
 import { SessionController } from "../../src/core/sessionController";
-import { HttpOpenCodeClient } from "../../src/opencode/client";
+import { HttpOpenCodeClient, type Endpoint } from "../../src/opencode/client";
+import { forgetLocations } from "./locations";
 import { discoverServer } from "../../src/opencode/service";
 import type { AgentDraft, ModelOption } from "../../src/shared/model";
 import { MemoryStore } from "../mockClient";
 
 let client: HttpOpenCodeClient | undefined;
+let endpoint: Endpoint | undefined;
 let skipReason = "";
 let models: ModelOption[] = [];
 const dirs: string[] = [];
@@ -48,10 +50,12 @@ before(async () => {
     skipReason = `no live OpenCode service (${outcome.reason}: ${outcome.detail})`;
     return;
   }
+  endpoint = outcome.endpoint;
   client = new HttpOpenCodeClient(outcome.endpoint);
 });
 
-after(() => {
+after(async () => {
+  await forgetLocations(endpoint, dirs);
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -69,12 +73,12 @@ async function folder(c: HttpOpenCodeClient): Promise<string> {
   return d;
 }
 
-/** Waits for OpenCode's agent list to satisfy `ok` (it watches the config folders). */
+/** Waits for OpenCode's agent list to satisfy `ok` (it watches the config folders, slower under load). */
 async function until(
   c: HttpOpenCodeClient,
   dir: string,
   ok: (list: AgentDetail[]) => boolean,
-  timeoutMs = 15_000,
+  timeoutMs = 30_000,
 ): Promise<AgentDetail[]> {
   const end = Date.now() + timeoutMs;
   for (;;) {
@@ -105,8 +109,9 @@ async function baseline(c: HttpOpenCodeClient, dir: string): Promise<AgentDetail
 /** The rules an agent file added, without OpenCode's defaults before and after them. */
 function ownRules(agent: AgentDetail, plain: AgentDetail): AgentDetail["permissions"] {
   const base = plain.permissions;
-  // The defaults end with the browser rules, which OpenCode puts after the file's own.
-  const tail = base.findIndex((r) => r.action === "browser");
+  // The defaults end with the browser rules (if any), which OpenCode puts after the file's own.
+  const browser = base.findIndex((r) => r.action === "browser");
+  const tail = browser < 0 ? base.length : browser;
   const head = base.slice(0, tail);
   const rest = agent.permissions.slice(head.length);
   return rest.slice(0, rest.length - (base.length - tail));
@@ -327,11 +332,25 @@ describe("custom agents (live)", () => {
     assert.equal(over[0].name, builtIn.name);
     assert.equal(over[0].mode, "primary");
     assert.equal(over[0].system, d.prompt);
-    assert.deepEqual(over[0].permissions.slice(0, -2), [
-      ...builtIn.permissions.slice(0, -2),
+    // OpenCode's browser rules stay last. Once the folder has agent files it adds them to
+    // the agents, built-in ones too, where it listed none before (seen with OpenCode 2.4.2).
+    const isBrowser = (r: AgentDetail["permissions"][number]) =>
+      r.action === "browser" || (r.action === "skill" && r.resource === "browser");
+    const own = (rules: AgentDetail["permissions"]) => {
+      let end = rules.length;
+      while (end > 0 && isBrowser(rules[end - 1])) end--;
+      return rules.slice(0, end);
+    };
+    assert.deepEqual(own(over[0].permissions), [
+      ...own(builtIn.permissions),
       { action: "shell", resource: "*", effect: "deny" },
     ]);
-    assert.deepEqual(over[0].permissions.slice(-2), builtIn.permissions.slice(-2), "the browser rules last");
+    const tail = over[0].permissions.slice(own(over[0].permissions).length);
+    for (const r of builtIn.permissions.slice(own(builtIn.permissions).length))
+      assert.ok(
+        tail.some((x) => JSON.stringify(x) === JSON.stringify(r)),
+        `the browser rules last: ${JSON.stringify(r)}`,
+      );
     assert.ok(over[0].permissions.some((r) => r.action === "question" && r.effect === "allow"));
 
     // The panel's row: the file's, marked as overriding the built-in, editable in the form.
@@ -368,10 +387,8 @@ describe("custom agents (live)", () => {
         l.some((a) => a.id === "build" && a.description === builtIn.description) &&
         l.some((a) => a.id === "explore" && a.system === explore.system),
     );
-    assert.deepEqual(
-      back.find((a) => a.id === "build"),
-      builtIn,
-    );
+    const plainBuild = (a: AgentDetail | undefined) => a && { ...a, permissions: own(a.permissions) };
+    assert.deepEqual(plainBuild(back.find((a) => a.id === "build")), plainBuild(builtIn));
     assert.deepEqual(
       back.find((a) => a.id === "explore"),
       explore,

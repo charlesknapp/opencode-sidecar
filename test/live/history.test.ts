@@ -13,8 +13,10 @@ import * as path from "node:path";
 import { after, before, describe, it, type TestContext } from "node:test";
 import { HISTORY_LIMIT, SessionController } from "../../src/core/sessionController";
 import { HttpOpenCodeClient, type Endpoint } from "../../src/opencode/client";
+import { forgetLocations } from "./locations";
 import { discoverServer } from "../../src/opencode/service";
 import { MemoryStore } from "../mockClient";
+import { LIVE_MODEL } from "./liveModel";
 
 /**
  * 450 by default (more than one load); `OCS_LIVE_LONG=1` builds 1,200, whose delivery in one
@@ -44,6 +46,7 @@ before(async () => {
 
 after(async () => {
   for (const id of created) await client?.deleteSession(id).catch(() => undefined);
+  await forgetLocations(endpoint, [dir]);
   if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -70,7 +73,7 @@ async function raw(method: string, p: string, body?: unknown): Promise<Record<st
 
 /** A session with `n` stored subagent reports and shell results, and the run that delivered them. */
 async function bigSession(c: HttpOpenCodeClient, n: number): Promise<string> {
-  const s = await c.createSession({ directory: dir });
+  const s = await c.createSession({ directory: dir, model: LIVE_MODEL });
   created.add(s.id);
   const report = (i: number) =>
     `## Report ${i}\n\n- \`src/a${i}.ts\`\n\n\`\`\`ts\nexport const f${i} = () => ${i};\n\`\`\`\n` +

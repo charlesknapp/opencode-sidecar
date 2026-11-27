@@ -1,7 +1,8 @@
 // Live tests: HttpOpenCodeClient against the real local OpenCode service, found the way the
 // extension finds it (discoverServer). They skip when no service is registered or it does not
 // answer, so CI stays green. Every session they create lives in a fresh temporary folder and
-// is deleted afterwards. Only the prompt tests call a model (a free one, with a tiny prompt).
+// is deleted afterwards. Only the prompt tests call a model (OCS_LIVE_MODEL, by default a free
+// one; see liveModel.ts), with a tiny prompt.
 //
 //   npm run test:live
 
@@ -20,6 +21,7 @@ import {
 } from "../../src/opencode/client";
 import { EventNormalizer, historyToEvents, type NormalizedEnvelope } from "../../src/opencode/events";
 import { discoverServer } from "../../src/opencode/service";
+import { forgetLocations } from "./locations";
 import { buildPrompt } from "../../src/core/context";
 import type { TaskNotice } from "../../src/core/currentTask";
 import { ASIDES_KEY, SessionController } from "../../src/core/sessionController";
@@ -28,8 +30,7 @@ import { Transcript } from "../../src/shared/transcript";
 import type { SessionSummary, UiEvent } from "../../src/shared/model";
 import { MemoryStore } from "../mockClient";
 
-/** Free model used by the one test that needs a reply. */
-const FREE_MODEL = { providerID: "opencode", id: "big-pickle" };
+import { LIVE_MODEL, LIVE_MODEL_FREE, LIVE_MODEL_KEY, NOT_OFFERED } from "./liveModel";
 
 let client: HttpOpenCodeClient | undefined;
 let endpoint: Endpoint | undefined;
@@ -61,6 +62,7 @@ before(async () => {
 
 after(async () => {
   for (const id of created) await client?.deleteSession(id).catch(() => undefined);
+  await forgetLocations(endpoint, [dir]);
   if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -257,7 +259,7 @@ describe("live OpenCode service", () => {
     await c.switchAgent(s.id, "plan");
     assert.equal((await c.getSession(s.id)).agent, "plan");
     const models = await c.listModels(dir);
-    const m = models.find((x) => x.key === "opencode/big-pickle") ?? models[0];
+    const m = models.find((x) => x.key === LIVE_MODEL_KEY) ?? models[0];
     await c.switchModel(s.id, { providerID: m.providerID, id: m.id });
     assert.equal((await c.getSession(s.id)).modelKey, m.key);
   });
@@ -345,17 +347,23 @@ describe("live OpenCode service", () => {
   it("receives session.created for a new session on the event stream", async (t) => {
     const c = live(t);
     if (!c) return;
-    let id = "";
-    const { opened, finished, sub } = collect(
+    // The event can arrive before the create call returns, so every created session is kept.
+    const createdEvents = new Map<string, NormalizedEnvelope>();
+    const { opened, sub } = collect(
       c,
-      (env) => env.sessionID === id && env.sessionsChanged && env.created !== null,
-      15_000,
+      (env) => {
+        if (env.sessionsChanged && env.created !== null && env.sessionID)
+          createdEvents.set(env.sessionID, env);
+        return false;
+      },
+      20_000,
     );
     try {
       await opened;
-      id = (await newSession(c)).id;
-      const seen = await finished;
-      const ev = seen.find((e) => e.sessionID === id && e.created)!;
+      const id = (await newSession(c)).id;
+      for (let i = 0; i < 150 && !createdEvents.has(id); i++) await new Promise((r) => setTimeout(r, 100));
+      const ev = createdEvents.get(id);
+      assert.ok(ev, "session.created arrived");
       assert.equal(ev.parentID, null);
       assert.equal(ev.directory === null || opencodeDirectory(ev.directory) === opencodeDirectory(dir), true);
     } finally {
@@ -376,9 +384,8 @@ describe("live OpenCode service", () => {
     const c = live(t);
     if (!c) return;
     const models = await c.listModels(dir);
-    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
-      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
-    const s = await c.createSession({ directory: dir, agent: "plan", model: FREE_MODEL });
+    if (!models.some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
+    const s = await c.createSession({ directory: dir, agent: "plan", model: LIVE_MODEL });
     created.add(s.id);
     const paste = Array.from({ length: 40 }, (_, i) => `\tat frame ${i} ✓ ünï 🚀  `).join("\n") + "\n";
     const payload = buildPrompt(
@@ -389,23 +396,57 @@ describe("live OpenCode service", () => {
     );
     assert.equal(payload.text, `Reply OK. ${paste}`);
     await c.prompt(s.id, payload);
-    await c.interrupt(s.id).catch(() => false);
+    // OpenCode stores the prompt when it delivers it, a moment after accepting it; an
+    // interrupt before that drops it, so the stop waits for it (as Sidecar's Stop does).
     let stored: Array<{ type?: string; text?: string }> = [];
-    for (let i = 0; i < 30 && !stored.some((m) => m.type === "user"); i++) {
+    for (let i = 0; i < 50 && !stored.some((m) => m.type === "user"); i++) {
       stored = (await c.listMessages(s.id, 10)) as typeof stored;
-      if (!stored.some((m) => m.type === "user")) await new Promise((r) => setTimeout(r, 200));
+      if (!stored.some((m) => m.type === "user")) await new Promise((r) => setTimeout(r, 100));
     }
+    await c.interrupt(s.id).catch(() => false);
     assert.equal(stored.find((m) => m.type === "user")?.text, payload.text);
+  });
+
+  it("keeps a prompt stopped right after it was sent (Stop waits for OpenCode to deliver it)", async (t) => {
+    const c = live(t);
+    if (!c) return;
+    const models = await c.listModels(dir);
+    if (!models.some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
+    const ctl = new SessionController(
+      c,
+      new MemoryStore(),
+      { onEvents() {}, onTranscriptReset() {}, onStateChanged() {} },
+      { info() {}, warn() {}, error() {} },
+      () => ({ model: LIVE_MODEL_KEY, agent: "plan" }),
+    );
+    let opened!: () => void;
+    const ready = new Promise<void>((r) => (opened = r));
+    const sub = c.subscribe({ onEvent: (r) => ctl.handleRawEvent(r), onOpen: () => opened(), onClose() {} });
+    try {
+      await ready;
+      await ctl.setDirectory(dir);
+      // Without the wait, an interrupt this soon dropped the prompt nearly every time.
+      await ctl.send("Reply with the single word OK. Do not use any tools.", []);
+      const id = ctl.current?.id;
+      assert.ok(id);
+      created.add(id);
+      await ctl.stop();
+      const deadline = Date.now() + 20_000;
+      while (ctl.busy && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      assert.equal(await c.firstUserText(id), "Reply with the single word OK. Do not use any tools.");
+    } finally {
+      sub.dispose();
+      ctl.dispose();
+    }
   });
 
   it("asks aside in a fork the History never lists, then deletes it (one model call)", async (t) => {
     const c = live(t);
     if (!c) return;
     const models = await c.listModels(dir);
-    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
-      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
+    if (!models.some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
     // The main session has some history (a shell command, no model call) and the Build agent.
-    const main = await c.createSession({ directory: dir, agent: "build", model: FREE_MODEL });
+    const main = await c.createSession({ directory: dir, agent: "build", model: LIVE_MODEL });
     created.add(main.id);
     await c.runShell(main.id, "echo sidecar-aside");
     for (let i = 0; i < 60 && !(await c.listMessages(main.id, 5)).length; i++)
@@ -417,7 +458,7 @@ describe("live OpenCode service", () => {
       store,
       { onEvents: (e) => mainEvents.push(...e), onTranscriptReset() {}, onStateChanged() {} },
       { info() {}, warn() {}, error() {} },
-      () => ({ model: `${FREE_MODEL.providerID}/${FREE_MODEL.id}`, agent: "build" }),
+      () => ({ model: LIVE_MODEL_KEY, agent: "build" }),
     );
     const sub = c.subscribe({ onEvent: (r) => ctl.handleRawEvent(r), onOpen() {}, onClose() {} });
     try {
@@ -432,7 +473,7 @@ describe("live OpenCode service", () => {
       const copy = await c.getSession(fork);
       assert.equal(copy.forked, true);
       assert.equal(copy.agent, "plan", "the side thread cannot edit files");
-      assert.equal(copy.modelKey, "opencode/big-pickle");
+      assert.equal(copy.modelKey, LIVE_MODEL_KEY);
       // OpenCode lists the fork; Sidecar's History does not.
       assert.ok((await c.listSessions(dir, 50)).some((x) => x.id === fork));
       await ctl.refreshSessions();
@@ -467,6 +508,28 @@ describe("live OpenCode service", () => {
     }
   });
 
+  it("reads the account of a folder OpenCode has not loaded yet as it is once loaded", async (t) => {
+    const c = live(t);
+    if (!c) return;
+    // A cold folder lists no integrations at first, which read as signed out.
+    const fresh = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ocs-live-cold-")));
+    const ctl = new SessionController(
+      c,
+      new MemoryStore(),
+      { onEvents() {}, onTranscriptReset() {}, onStateChanged() {} },
+      { info() {}, warn() {}, error() {} },
+      () => ({ model: LIVE_MODEL_KEY, agent: "build" }),
+    );
+    try {
+      await ctl.setDirectory(fresh);
+      assert.deepEqual(ctl.account, await c.accountStatus(fresh));
+    } finally {
+      ctl.dispose();
+      await forgetLocations(endpoint, [fresh]);
+      fs.rmSync(fresh, { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
+
   it("reads usage limits, today's usage and a session's context as the usage menu shows them", async (t) => {
     const c = live(t);
     if (!c) return;
@@ -487,12 +550,18 @@ describe("live OpenCode service", () => {
     }
 
     // Today's usage in the folder's project, and over all time (OpenCode's own totals).
-    const all = await c.usageStats({ from: 0 });
-    const rawAll = (await raw("GET", "/api/experimental/session/stats?from=0&tools=none")).data as {
-      steps: number;
-      cost: number;
-      sessions: number;
-    };
+    // The live tests beside this one add steps and delete sessions: compare a moment when
+    // OpenCode's totals did not change between the two reads.
+    type Totals = { steps: number; cost: number; sessions: number };
+    const totals = async () =>
+      (await raw("GET", "/api/experimental/session/stats?from=0&tools=none")).data as Totals;
+    let all = await c.usageStats({ from: 0 });
+    let rawAll = await totals();
+    for (let i = 0; i < 20 && (all.steps !== rawAll.steps || all.sessions !== rawAll.sessions); i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      all = await c.usageStats({ from: 0 });
+      rawAll = await totals();
+    }
     assert.equal(all.steps, rawAll.steps);
     assert.equal(all.sessions, rawAll.sessions);
     assert.ok(Math.abs(all.cost - rawAll.cost) < 1e-9);
@@ -529,9 +598,8 @@ describe("live OpenCode service", () => {
     const c = live(t);
     if (!c) return;
     const models = await c.listModels(dir);
-    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
-      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
-    const s = await c.createSession({ directory: dir, agent: "plan", model: FREE_MODEL });
+    if (!models.some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
+    const s = await c.createSession({ directory: dir, agent: "plan", model: LIVE_MODEL });
     created.add(s.id);
     const { opened, finished, sub } = collect(
       c,
@@ -553,12 +621,13 @@ describe("live OpenCode service", () => {
       if (stored.some((m) => m.error?.type === "provider.free-limit"))
         return t.skip("the free model usage limit is reached for today");
     }
-    assert.ok(events.some((e) => e.type === "step.started" && e.modelKey === "opencode/big-pickle"));
+    assert.ok(events.some((e) => e.type === "step.started" && e.modelKey === LIVE_MODEL_KEY));
     const step = events.find((e) => e.type === "usage.step");
     assert.ok(step?.type === "usage.step", JSON.stringify(events).slice(0, 400));
-    assert.equal(step.modelKey, "opencode/big-pickle");
+    assert.equal(step.modelKey, LIVE_MODEL_KEY);
     assert.equal(step.agent, "plan");
-    assert.equal(step.cost, 0, "a free model reports a cost of 0");
+    if (LIVE_MODEL_FREE) assert.equal(step.cost, 0, "a free model reports a cost of 0");
+    else assert.ok((step.cost ?? 0) > 0, `a paid model reports what the step cost: ${step.cost}`);
     assert.ok(step.tokens.output > 0);
     // Stored history carries the same, so a reopened session shows the same footer.
     const replayed = historyToEvents(await c.listMessages(s.id, 50)).find((e) => e.type === "usage.step");
@@ -570,7 +639,7 @@ describe("live OpenCode service", () => {
     const tr = new Transcript();
     for (const e of historyToEvents(await c.listMessages(s.id, 50))) tr.apply(e);
     const meta = tr.items.find((i) => i.kind === "turn-meta");
-    assert.ok(meta?.kind === "turn-meta" && meta.models[0] === "opencode/big-pickle");
+    assert.ok(meta?.kind === "turn-meta" && meta.models[0] === LIVE_MODEL_KEY);
     const ctx = await c.sessionContext(s.id);
     assert.ok(ctx.some((m) => (m as { type?: string }).type === "assistant"));
   });
@@ -579,9 +648,8 @@ describe("live OpenCode service", () => {
     const c = live(t);
     if (!c) return;
     const models = await c.listModels(dir);
-    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
-      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
-    const s = await c.createSession({ directory: dir, agent: "plan", model: FREE_MODEL });
+    if (!models.some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
+    const s = await c.createSession({ directory: dir, agent: "plan", model: LIVE_MODEL });
     created.add(s.id);
     const text = "Reply with the single word OK. Do not use any tools.";
     const { opened, finished, sub } = collect(
@@ -594,7 +662,11 @@ describe("live OpenCode service", () => {
       const sent = await c.prompt(s.id, { text, files: [] });
       assert.match(sent.id, /^msg_/);
       const seen = await finished;
-      const idle = seen.flatMap((e) => e.events).find((e) => e.type === "session.idle");
+      // The stream carries every session's events, also those of the live tests beside this one.
+      const idle = seen
+        .filter((e) => e.sessionID === s.id)
+        .flatMap((e) => e.events)
+        .find((e) => e.type === "session.idle");
       if (idle?.type === "session.idle" && idle.outcome === "failed") {
         // The account's daily allowance of free model use is not the client's fault.
         const stored = (await c.listMessages(s.id, 10)) as Array<{ error?: { type?: string } }>;
@@ -614,7 +686,7 @@ describe("live OpenCode service", () => {
       JSON.stringify(replay).slice(0, 400),
     );
     const after = await c.getSession(s.id);
-    assert.equal(after.modelKey, "opencode/big-pickle");
+    assert.equal(after.modelKey, LIVE_MODEL_KEY);
     assert.equal(after.outcome, "succeeded");
   });
 
@@ -623,9 +695,9 @@ describe("live OpenCode service", () => {
    * the real event stream. Returns the background session's own envelopes too.
    */
   async function watching(c: HttpOpenCodeClient) {
-    const open = await c.createSession({ directory: dir, agent: "build", model: FREE_MODEL });
+    const open = await c.createSession({ directory: dir, agent: "build", model: LIVE_MODEL });
     created.add(open.id);
-    const other = await c.createSession({ directory: dir, agent: "build", model: FREE_MODEL });
+    const other = await c.createSession({ directory: dir, agent: "build", model: LIVE_MODEL });
     created.add(other.id);
     const notices: TaskNotice[] = [];
     const ctl = new SessionController(
@@ -633,7 +705,7 @@ describe("live OpenCode service", () => {
       new MemoryStore(),
       { onEvents() {}, onTranscriptReset() {}, onStateChanged() {}, onTaskNotice: (n) => notices.push(n) },
       { info() {}, warn() {}, error() {} },
-      () => ({ model: `${FREE_MODEL.providerID}/${FREE_MODEL.id}`, agent: "build" }),
+      () => ({ model: LIVE_MODEL_KEY, agent: "build" }),
     );
     const normalizer = new EventNormalizer();
     const envelopes: NormalizedEnvelope[] = [];
@@ -667,8 +739,7 @@ describe("live OpenCode service", () => {
     const c = live(t);
     if (!c) return;
     const models = await c.listModels(dir);
-    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
-      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
+    if (!models.some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
     const w = await watching(c);
     try {
       // A `!command` makes no run: OpenCode answers once it is done and sends no execution events.
@@ -710,13 +781,17 @@ describe("live OpenCode service", () => {
     const c = live(t);
     if (!c) return;
     const models = await c.listModels(dir);
-    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
-      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
-    // A file outside the folder: reading it asks for the external-directory permission.
+    if (!models.some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
+    // A file outside the folder. OpenCode's Build agent allows reading it, so the session's
+    // own rules make reading it ask.
     const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ocs-live-out-")));
     fs.writeFileSync(path.join(outside, "secret-live.txt"), "x\n");
     const w = await watching(c);
     try {
+      await c.setSessionPermissions(w.other.id, [
+        { action: "read", resource: "*secret-live.txt", effect: "ask" },
+        { action: "external_directory", resource: path.join(outside, "*"), effect: "ask" },
+      ]);
       await c.prompt(w.other.id, {
         text: `Use the read tool to read ${path.join(outside, "secret-live.txt")} and reply with its contents.`,
         files: [],
@@ -728,7 +803,7 @@ describe("live OpenCode service", () => {
         const stored = (await c.listMessages(w.other.id, 10)) as Array<{ error?: { type?: string } }>;
         if (stored.some((m) => m.error?.type === "provider.free-limit"))
           return t.skip("the free model usage limit is reached for today");
-        return t.skip("the model did not use a tool that asks");
+        assert.fail(`the model did not use a tool that asks: ${JSON.stringify(stored).slice(0, 600)}`);
       }
       const env = asked()!;
       assert.equal(env.sessionID, w.other.id);
@@ -750,6 +825,7 @@ describe("live OpenCode service", () => {
       await c.interrupt(w.other.id).catch(() => false);
     } finally {
       w.dispose();
+      await forgetLocations(endpoint, [outside]);
       fs.rmSync(outside, { recursive: true, force: true, maxRetries: 3 });
     }
   });

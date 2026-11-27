@@ -12,7 +12,7 @@ import { buildCommitPrompt, cleanCommitMessage, splitGitDiff } from "../../src/c
 import { HttpOpenCodeClient, OpenCodeHttpError } from "../../src/opencode/client";
 import { discoverServer } from "../../src/opencode/service";
 
-const FREE_MODEL = { providerID: "opencode", id: "big-pickle" };
+import { LIVE_MODEL, LIVE_MODEL_KEY, NOT_OFFERED } from "./liveModel";
 
 let client: HttpOpenCodeClient | undefined;
 let skipReason = "";
@@ -57,8 +57,7 @@ describe("live: stateless generation (commit messages)", () => {
       await new Promise((r) => setTimeout(r, 500));
       models = await c.listModels(process.cwd());
     }
-    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
-      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
+    if (!models.some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
     const prompt = buildCommitPrompt({
       sections: splitGitDiff(
         "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# App\n+# App (beta)\n",
@@ -68,7 +67,7 @@ describe("live: stateless generation (commit messages)", () => {
     });
     let reply: string;
     try {
-      reply = await c.generateText(prompt, FREE_MODEL);
+      reply = await c.generateText(prompt, LIVE_MODEL);
     } catch (e) {
       // The shape Sidecar turns into "the model's usage limit is reached".
       if (e instanceof OpenCodeHttpError && e.reason === "rate_limit") {

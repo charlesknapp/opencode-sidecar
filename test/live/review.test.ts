@@ -23,12 +23,14 @@ import {
   toLines,
   undoEdit,
 } from "../../src/core/review";
-import { HttpOpenCodeClient } from "../../src/opencode/client";
+import { HttpOpenCodeClient, type Endpoint } from "../../src/opencode/client";
+import { forgetLocations } from "./locations";
 import { discoverServer } from "../../src/opencode/service";
 
-const FREE_MODEL = { providerID: "opencode", id: "big-pickle" };
+import { LIVE_MODEL, LIVE_MODEL_KEY, NOT_OFFERED } from "./liveModel";
 
 let client: HttpOpenCodeClient | undefined;
+let endpoint: Endpoint | undefined;
 let skipReason = "";
 let dir = "";
 const created = new Set<string>();
@@ -48,12 +50,14 @@ before(async () => {
     skipReason = "git is not installed";
     return;
   }
+  endpoint = outcome.endpoint;
   client = new HttpOpenCodeClient(outcome.endpoint);
   dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ocs-live-review-")));
 });
 
 after(async () => {
   for (const id of created) await client?.deleteSession(id).catch(() => undefined);
+  await forgetLocations(endpoint, [dir]);
   if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -87,14 +91,13 @@ describe("live: the agent's changes for the review", () => {
       await new Promise((r) => setTimeout(r, 500));
       models = await c.listModels(dir);
     }
-    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
-      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
+    if (!models.some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
 
     // A change the user made before the session: part of the baseline, not the agent's.
     const baseline = ["LINE 1", ...lines(40).slice(1)];
     fs.writeFileSync(path.join(dir, "a.txt"), crlf(baseline));
 
-    const s = await c.createSession({ directory: dir, agent: "plan", model: FREE_MODEL });
+    const s = await c.createSession({ directory: dir, agent: "plan", model: LIVE_MODEL });
     created.add(s.id);
     let idles = 0;
     const turn = async () => {

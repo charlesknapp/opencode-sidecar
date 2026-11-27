@@ -26,6 +26,8 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { runTests } from "@vscode/test-electron";
+import { discoverExecutable } from "../../src/core/cliDiscovery";
+import { cliInvocation } from "../../src/opencode/service";
 
 const root = path.resolve(__dirname, "../../..");
 const vscodeExecutablePath =
@@ -68,6 +70,40 @@ async function activeSessionsIn(dir: string): Promise<string[]> {
     return out;
   } catch {
     return [];
+  }
+}
+
+/**
+ * Unloads OpenCode's locations for the run's temporary folders: OpenCode keeps every folder
+ * it was asked about loaded, and hundreds of deleted test folders slow the service down.
+ */
+async function forgetTestFolders(base: string): Promise<void> {
+  try {
+    const svc = JSON.parse(
+      fs.readFileSync(
+        path.join(
+          process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local", "state"),
+          "opencode",
+          "service.json",
+        ),
+        "utf8",
+      ),
+    );
+    const headers = { authorization: "Basic " + Buffer.from("opencode:" + svc.password).toString("base64") };
+    const loaded = (await (
+      await fetch(new URL("/api/debug/location", svc.url), { headers })
+    ).json()) as Array<{
+      directory?: string | null;
+    }>;
+    for (const { directory } of loaded) {
+      const rel = directory ? path.relative(base.toLowerCase(), directory.toLowerCase()) : "..";
+      if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
+      const url = new URL("/api/debug/location", svc.url);
+      url.searchParams.set("location[directory]", directory!);
+      await fetch(url, { method: "DELETE", headers }).catch(() => undefined);
+    }
+  } catch {
+    // Cleanup only.
   }
 }
 
@@ -214,11 +250,28 @@ async function startIsolatedOpenCode(
   );
   const port = await freePort();
   const log = fs.openSync(path.join(dir, "serve.log"), "w");
-  const proc = spawn(cli, ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
+  // npm's opencode.cmd on Windows runs through cmd.exe, as the extension runs it.
+  const run = cliInvocation(cli, ["serve", "--hostname", "127.0.0.1", "--port", String(port)]);
+  const proc = spawn(run.file, run.args, {
     cwd: path.join(dir, "home"),
+    windowsVerbatimArguments: run.verbatim,
+    windowsHide: true,
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: path.join(dir, "home"),
+      // Windows: the home folder and app data dirs are isolated too; cmd.exe and networking
+      // need the system folder.
+      ...(process.platform === "win32"
+        ? {
+            USERPROFILE: path.join(dir, "home"),
+            APPDATA: path.join(dir, "data"),
+            LOCALAPPDATA: path.join(dir, "cache"),
+            SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
+            ComSpec: process.env.ComSpec ?? "cmd.exe",
+            TEMP: os.tmpdir(),
+            TMP: os.tmpdir(),
+          }
+        : {}),
       XDG_CONFIG_HOME: path.join(dir, "config"),
       XDG_DATA_HOME: path.join(dir, "data"),
       XDG_STATE_HOME: path.join(dir, "state"),
@@ -243,9 +296,37 @@ async function startIsolatedOpenCode(
   return { url, dir, proc };
 }
 
+/** Stops an isolated server; on Windows with the processes cmd.exe started. */
+function stopIsolated(proc: ChildProcess): void {
+  if (process.platform === "win32" && proc.pid) {
+    try {
+      execFileSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+      return;
+    } catch {
+      // Already gone.
+    }
+  }
+  proc.kill();
+}
+
 /** Onboarding and easy-open scenarios (A–G). */
 async function onboardingScenarios(base: string, repo: string, summary: Record<string, unknown>) {
-  const cli = execFileSync("/bin/sh", ["-c", "command -v opencode"]).toString().trim();
+  // Found the way the extension finds it (PATH, then the usual install folders).
+  const found = discoverExecutable({
+    configuredPath: "",
+    pathEnv: process.env.PATH ?? "",
+    home: os.homedir(),
+    platform: process.platform,
+    isExecutable: (f) => {
+      try {
+        return fs.statSync(f).isFile();
+      } catch {
+        return false;
+      }
+    },
+  });
+  if (!found.found) throw new Error("the OpenCode CLI was not found");
+  const cli = found.path;
   const password = crypto.randomBytes(18).toString("base64url");
   secrets.push(password);
   const servers: IsolatedServer[] = [];
@@ -254,10 +335,11 @@ async function onboardingScenarios(base: string, repo: string, summary: Record<s
     // "free": a fresh OpenCode with its default free models and no account.
     const free = await startIsolatedOpenCode(cli, base, "free", password, {});
     servers.push(free);
-    // "bare": no account and no models (the built-in OpenCode provider disabled). OpenAI is
-    // disabled too, so a connected OpenAI key yields "connected but no models".
+    // "bare": no account and no models: only Anthropic is enabled (and not connected), so a
+    // connected OpenAI key yields "connected but no models". OpenCode 2.4 no longer offers a
+    // disabled provider's integration at all (404 IntegrationNotFoundError).
     const bare = await startIsolatedOpenCode(cli, base, "bare", password, {
-      disabled_providers: ["opencode", "openai"],
+      enabled_providers: ["anthropic"],
     });
     servers.push(bare);
     // Warm the free server's catalog for the fixture folder (a cold location briefly lists no models).
@@ -317,13 +399,16 @@ async function onboardingScenarios(base: string, repo: string, summary: Record<s
     summary["easy-open-reload"] = { ok: reload.ok, report: reload.report };
     if (!reload.ok) failed = true;
   } finally {
-    for (const s of servers) s.proc.kill();
+    for (const s of servers) stopIsolated(s.proc);
   }
   return failed;
 }
 
 /** Secrets that must never be persisted by the extension (scanned for at the end). */
 const secrets: string[] = [];
+
+/** Files the credential scan could not read (still locked by a process on Windows, say). */
+const unreadable = new Set<string>();
 
 /** Confirms the extension never persisted the OpenCode service password. */
 function scanForSecret(dir: string, secret: string, skip: (p: string) => boolean = () => false): string[] {
@@ -333,10 +418,15 @@ function scanForSecret(dir: string, secret: string, skip: (p: string) => boolean
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, entry.name);
       if (skip(p + (entry.isDirectory() ? "/" : ""))) continue;
-      if (entry.isDirectory()) walk(p);
-      else if (entry.isFile() && fs.statSync(p).size < 50 * 1024 * 1024) {
-        const buf = fs.readFileSync(p);
-        if (needles.some((n) => buf.includes(n))) hits.push(p);
+      try {
+        if (entry.isDirectory()) walk(p);
+        else if (entry.isFile() && fs.statSync(p).size < 50 * 1024 * 1024) {
+          const buf = fs.readFileSync(p);
+          if (needles.some((n) => buf.includes(n))) hits.push(p);
+        }
+      } catch {
+        // One unreadable file used to end the whole scan, reported as "skipped".
+        unreadable.add(p);
       }
     }
   };
@@ -399,21 +489,23 @@ async function main(): Promise<void> {
     "opencode",
     "service.json",
   );
+  let password: string | undefined;
   try {
-    const password = JSON.parse(fs.readFileSync(servicePath, "utf8")).password as string | undefined;
-    if (password) {
-      // The isolated servers' own data dirs legitimately hold their test keys; skip them.
-      const dirs = [base, ...userDataDirs];
-      const hits = [password, ...secrets].flatMap((secret) =>
-        dirs.flatMap((d) => scanForSecret(d, secret, (p) => /\/oc-(free|bare)\//.test(p))),
-      );
-      summary.credentialScan = { scanned: [base, ...userDataDirs], hits };
-      if (hits.length) failed = true;
-    }
+    password = JSON.parse(fs.readFileSync(servicePath, "utf8")).password as string | undefined;
   } catch {
     summary.credentialScan = "skipped (no service registration)";
   }
+  if (password) {
+    // The isolated servers' own data dirs legitimately hold their test keys; skip them.
+    const dirs = [base, ...userDataDirs];
+    const hits = [password, ...secrets].flatMap((secret) =>
+      dirs.flatMap((d) => scanForSecret(d, secret, (p) => /[\\/]oc-(free|bare)[\\/]/.test(p))),
+    );
+    summary.credentialScan = { scanned: [base, ...userDataDirs], hits, unreadable: [...unreadable] };
+    if (hits.length) failed = true;
+  }
 
+  await forgetTestFolders(base);
   const out = path.join(root, "out-test", "acceptance-summary.json");
   fs.writeFileSync(out, JSON.stringify(summary, null, 2));
   console.log(`\nAcceptance summary written to ${out}`);

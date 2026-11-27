@@ -8,9 +8,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { summarizeTask } from "../../src/core/currentTask";
-import { opencodeDirectory } from "../../src/opencode/client";
+import { statusBarText } from "../../src/core/onboarding";
+import { opencodeDirectory, sameDirectory } from "../../src/opencode/client";
 import { serviceFilePath } from "../../src/opencode/service";
-import type { TranscriptItem, UiEvent } from "../../src/shared/model";
+import type { OnboardingStage, TranscriptItem, UiEvent } from "../../src/shared/model";
 import type { WebviewMessage } from "../../src/shared/protocol";
 
 interface TestApi {
@@ -174,8 +175,10 @@ async function realRepo(api: TestApi): Promise<void> {
   );
   check(
     "Shell ran in the correct workspace",
-    !!gitStatus && (gitStatus.detail.cwd === null || gitStatus.detail.cwd === ws.active?.path),
-    String(gitStatus?.detail.cwd),
+    // OpenCode reports the folder with its own drive-letter case ("C:" where VS Code says "c:").
+    !!gitStatus &&
+      (gitStatus.detail.cwd === null || (!!ws.active && sameDirectory(gitStatus.detail.cwd, ws.active.path))),
+    `${gitStatus?.detail.cwd} (workspace ${ws.active?.path})`,
   );
   check(
     "Shell output mentions the branch",
@@ -223,7 +226,10 @@ async function realRepo(api: TestApi): Promise<void> {
     lastAssistantText(api).slice(0, 200).replace(/\n/g, " "),
   );
 
-  // Harmless permission: reading a file outside the workspace triggers OpenCode's external_directory "ask" rule.
+  // Harmless permission: reading a file outside the workspace. OpenCode 2.4 allows that by
+  // default, so the session is switched to Ask first, whose external_directory rule asks (the
+  // Plan agent keeps edits denied).
+  await api.handle({ type: "setApprovalMode", mode: "ask", scope: "session" });
   const outside = path.resolve(__dirname, "../../../package.json");
   const since = events.length;
   await api.handle({
@@ -262,6 +268,7 @@ async function realRepo(api: TestApi): Promise<void> {
     lastAssistantText(api).includes("opencode-sidecar"),
     lastAssistantText(api).slice(0, 120),
   );
+  await api.handle({ type: "setApprovalMode", mode: "default", scope: "session" });
 
   // Session continuation: reload from OpenCode's own history.
   await api.handle({ type: "refreshSessions" });
@@ -1728,9 +1735,14 @@ async function v02Fixture(api: TestApi): Promise<void> {
   check("Reopening a session does not replay notifications", shown.length === 1, JSON.stringify(shown));
 
   // --- model variant
-  const withVariant = (api.viewState().models ?? []).find(
-    (m) => m.providerID === MODEL.split("/")[0] && m.variants.includes("none"),
-  );
+  // The chosen model itself when it has the variant, so a run never goes to a model (maybe a
+  // paid one) nobody chose; another model of its provider only without ACCEPT_MODEL.
+  const offered = api.viewState().models ?? [];
+  const withVariant =
+    offered.find((m) => m.key === MODEL && m.variants.includes("none")) ??
+    (process.env.ACCEPT_MODEL
+      ? undefined
+      : offered.find((m) => m.providerID === MODEL.split("/")[0] && m.variants.includes("none")));
   if (withVariant) {
     await api.handle({ type: "selectModel", key: withVariant.key });
     await api.handle({ type: "selectVariant", variant: "none" });
@@ -2013,6 +2025,12 @@ async function waitStage(api: TestApi, want: string, timeoutMs = 60_000): Promis
       `${e.message}; now ${stage(api)} account=${JSON.stringify(c?.account)} models=${c?.models?.length} loading=${c?.catalogLoading} signIn=${api.signInState()}`,
     );
   });
+  // The Status Bar follows with the next state push (coalesced, a few milliseconds later).
+  await waitFor(
+    "the Status Bar",
+    () => api.statusBar().text.includes(statusBarText(want as OnboardingStage)),
+    2000,
+  ).catch(() => undefined);
 }
 
 /** Adds a key credential on an ISOLATED test server through OpenCode's own API (never the real service). */
@@ -2022,16 +2040,23 @@ async function connectTestKey(serverUrl: string, integration: string, key: strin
   const auth =
     "Basic " + Buffer.from("opencode:" + (process.env.OPENCODE_SERVER_PASSWORD ?? "")).toString("base64");
   const dir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
-  const res = await fetch(
-    `${serverUrl}/api/integration/${integration}/connect/key?location%5Bdirectory%5D=${encodeURIComponent(dir)}`,
-    {
-      method: "POST",
-      headers: { authorization: auth, "content-type": "application/json" },
-      body: JSON.stringify({ key }),
-    },
-  );
-  if (!res.ok)
-    throw new Error(`connect ${integration}: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+  // Right after a sign-in attempt OpenCode can briefly answer IntegrationNotFoundError for an
+  // integration it lists (seen on Windows; the same request a moment later succeeds).
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(
+      `${serverUrl}/api/integration/${integration}/connect/key?location%5Bdirectory%5D=${encodeURIComponent(dir)}`,
+      {
+        method: "POST",
+        headers: { authorization: auth, "content-type": "application/json" },
+        body: JSON.stringify({ key }),
+      },
+    );
+    if (res.ok) return;
+    const text = (await res.text()).slice(0, 200);
+    if (res.status !== 404 || attempt === 10)
+      throw new Error(`connect ${integration}: HTTP ${res.status} ${text}`);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
 }
 
 function terminalNamed(name: string): vscode.Terminal[] {
@@ -2215,6 +2240,7 @@ async function onbNoFolder(api: TestApi): Promise<void> {
     api.statusBar().text.includes("Sidecar"),
     api.statusBar().text,
   );
+  await waitFor("the view", () => api.viewVisible(), 10_000).catch(() => undefined);
   check("F. Focus Chat works without a folder", api.viewVisible());
 }
 
@@ -2225,6 +2251,8 @@ async function onbReady(api: TestApi): Promise<void> {
   const st = api.viewState();
   check("E. Existing configured user: no onboarding", st.onboarding.stage === "ready");
   check("E. No sign-in note for a signed-in user", st.onboarding.hint === null, String(st.onboarding.hint));
+  // The Status Bar follows the next state push.
+  await waitFor("status bar", () => api.statusBar().text.includes("Connected"), 5000).catch(() => undefined);
   check(
     "E. Status Bar: OpenCode: Connected",
     api.statusBar().text.includes("OpenCode: Connected"),
@@ -2236,7 +2264,7 @@ async function onbReady(api: TestApi): Promise<void> {
   const list = (await (
     await fetch(new URL("/api/integration", svc.url), { headers: { authorization: auth } })
   ).json()) as {
-    data: Array<{ connections: Array<{ label?: string; id?: string }> }>;
+    data: Array<{ name?: string; connections: Array<{ label?: string; id?: string }> }>;
   };
   const conns = list.data.flatMap((i) => i.connections);
   const ids = conns.map((c) => c.id).filter((x): x is string => !!x);
@@ -2247,16 +2275,26 @@ async function onbReady(api: TestApi): Promise<void> {
     ids.every((id) => !json.includes(id)),
     `${ids.length} checked`,
   );
-  // Provider display names come from OpenCode's provider list (shown in the model picker by design)
-  // and may contain an account label; outside of them, labels must not appear.
-  const withoutProviderNames = JSON.stringify({
-    ...st,
-    models: (st.models ?? []).map((m) => ({ ...m, providerName: "" })),
-  });
+  // Provider display names come from OpenCode (shown in the model picker and the Providers panel
+  // by design) and may contain an account label ("Personal / OpenCode"); a key's label is often
+  // just the provider's name; the usage menu names the workspace whose limits it shows ("Limits ·
+  // Personal"). Outside of those names, labels must not appear.
+  const names = new Set(
+    [
+      ...list.data.map((i) => i.name),
+      ...(st.models ?? []).map((m) => m.providerName),
+      st.quota?.workspace,
+    ].filter((x): x is string => !!x),
+  );
+  let withoutProviderNames = json;
+  // Longer names first: "Personal / DeepSeek" before "DeepSeek".
+  for (const n of [...names].sort((a, b) => b.length - a.length))
+    withoutProviderNames = withoutProviderNames.split(JSON.stringify(n).slice(1, -1)).join("");
+  const own = labels.filter((l) => !names.has(l));
   check(
     "Privacy: account labels are not in the view state (outside OpenCode's provider names)",
-    labels.every((l) => !withoutProviderNames.includes(l)),
-    `${labels.length} checked`,
+    own.every((l) => !withoutProviderNames.includes(l)),
+    `${own.length} checked`,
   );
   // Refresh keeps the user's selection.
   const other = st.models?.find((m) => m.key !== st.selectedModel);
@@ -2286,15 +2324,19 @@ async function easyOpen(api: TestApi, reload: boolean): Promise<void> {
     );
   }
   check(
-    "G. One Activity Bar container titled 'OpenCode' with one view",
+    "G. One Activity Bar container titled 'Sidecar for OpenCode' with one view",
     pj.contributes.viewsContainers.activitybar.length === 1 &&
-      pj.contributes.viewsContainers.activitybar[0].title === "OpenCode" &&
+      pj.contributes.viewsContainers.activitybar[0].title === "Sidecar for OpenCode" &&
       pj.contributes.views.opencodeSidecar.length === 1,
   );
   check(
     "G. Keyboard shortcut contributes the same command (Cmd+Alt+O on macOS)",
-    JSON.stringify(pj.contributes.keybindings) ===
-      JSON.stringify([{ command: "opencodeSidecar.focusChat", key: "cmd+alt+o", when: "isMac" }]),
+    // The review's Alt+] and Alt+[ are the only other shortcuts.
+    JSON.stringify(
+      (pj.contributes.keybindings as Array<{ command: string }>).filter(
+        (k) => k.command === "opencodeSidecar.focusChat",
+      ),
+    ) === JSON.stringify([{ command: "opencodeSidecar.focusChat", key: "cmd+alt+o", when: "isMac" }]),
   );
   // Status Bar click = the canonical command.
   await vscode.commands.executeCommand(String(api.statusBar().command));

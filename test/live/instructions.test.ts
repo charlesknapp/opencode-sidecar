@@ -17,12 +17,14 @@ import * as path from "node:path";
 import { after, before, describe, it, type TestContext } from "node:test";
 import { globalConfigDir } from "../../src/core/agents";
 import { appendBullet, instructionView, startAgentsFile } from "../../src/core/instructions";
-import { HttpOpenCodeClient, type EventSubscription } from "../../src/opencode/client";
+import { HttpOpenCodeClient, type Endpoint, type EventSubscription } from "../../src/opencode/client";
+import { forgetLocations } from "./locations";
 import { discoverServer } from "../../src/opencode/service";
 
-const FREE_MODEL = { providerID: "opencode", id: "big-pickle" };
+import { LIVE_MODEL, LIVE_MODEL_KEY, NOT_OFFERED } from "./liveModel";
 
 let client: HttpOpenCodeClient | undefined;
+let endpoint: Endpoint | undefined;
 let skipReason = "";
 let root = "";
 let sub: EventSubscription | undefined;
@@ -37,6 +39,7 @@ before(async () => {
     skipReason = `no live OpenCode service (${outcome.reason}: ${outcome.detail})`;
     return;
   }
+  endpoint = outcome.endpoint;
   client = new HttpOpenCodeClient(outcome.endpoint);
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ocs-live-instr-")));
   let opened!: () => void;
@@ -45,8 +48,9 @@ before(async () => {
   await open;
 });
 
-after(() => {
+after(async () => {
   sub?.dispose();
+  await forgetLocations(endpoint, [root]);
   if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -64,7 +68,7 @@ const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
  */
 async function instructionHash(c: HttpOpenCodeClient, dir: string): Promise<string | null> {
   await pause(2500);
-  const s = await c.createSession({ directory: dir, agent: "plan", model: FREE_MODEL });
+  const s = await c.createSession({ directory: dir, agent: "plan", model: LIVE_MODEL });
   try {
     await c.prompt(s.id, { text: "Reply with the single word OK. Do not use any tools.", files: [] });
     for (let i = 0; i < 60; i++) {
@@ -96,8 +100,7 @@ describe("live: project instructions", () => {
     write("repo/opencode.json", JSON.stringify({ instructions: ["extra.md"] }));
     // A folder OpenCode has not loaded yet briefly lists no models.
     for (let i = 0; i < 20 && (await c.listModels(ws)).length === 0; i++) await pause(500);
-    if (!(await c.listModels(ws)).some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
-      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
+    if (!(await c.listModels(ws)).some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
 
     // What Sidecar works out, from OpenCode's config documents and project.
     const sources = await c.configSources(ws);

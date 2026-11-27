@@ -21,6 +21,7 @@ import {
   type Endpoint,
 } from "../../src/opencode/client";
 import { cliVersion, discoverServer, parseRegistration, serviceFilePath } from "../../src/opencode/service";
+import { forgetLocations } from "./locations";
 import type { UiEvent } from "../../src/shared/model";
 import { MemoryStore } from "../mockClient";
 
@@ -51,6 +52,7 @@ const created = new Set<string>();
 
 after(async () => {
   for (const id of created) await client?.deleteSession(id).catch(() => undefined);
+  await forgetLocations(endpoint, [dir]);
   if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -230,10 +232,13 @@ describe("live: provider setup", () => {
         await new Promise((r) => setTimeout(r, 100));
       const card = events.find((e) => e.type === "error");
       assert.ok(card?.type === "error", "an error card");
-      assert.equal(card.title, "OpenCode does not offer this model right now.");
+      // The name OpenCode gives the provider (signed in to a workspace: "Workspace / OpenCode").
+      const name =
+        (await c.listModels(dir)).find((m) => m.providerID === "opencode")?.providerName ?? "OpenCode";
+      assert.equal(card.title, `${name} does not offer this model right now.`);
       assert.equal(card.detail, "Model unavailable: opencode/sidecar-no-such-model");
       assert.deepEqual(card.actions, ["changeModel", "reauth"]);
-      assert.deepEqual(card.provider, { id: "opencode", name: "OpenCode" });
+      assert.deepEqual(card.provider, { id: "opencode", name });
       assert.match(ctl.providerErrors.get("opencode") ?? "", /does not offer this model/);
       const view = await ctl.providersView();
       assert.equal(view.connected.find((r) => r.id === "opencode")?.state, "error");

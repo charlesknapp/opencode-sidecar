@@ -1,10 +1,10 @@
 // Live tests for the goal header against the real OpenCode service, in a temporary folder:
 // OpenCode's goal plugin's RPC (`POST /api/rpc/opencode.goal/get`) and its
 // `rpc.opencode.goal.changed` events, driven through the controller with OpenCode's own
-// `/goal` command. The goal's first turn is interrupted at once (so at most one tiny model
-// call runs, and at the free limit none answers), which stops the goal; then it is ended.
+// `/goal` command. The goal's first turn is stopped with Stop as soon as it runs (so at most one
+// tiny model call runs, and at the free limit none answers), which stops the goal; then it is ended.
 // The goal notices OpenCode stores are read back as Sidecar's goal rows. They skip without
-// a registered service or the free model.
+// a registered service or the model (OCS_LIVE_MODEL, see liveModel.ts).
 //
 //   npm run test:live
 
@@ -14,14 +14,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, describe, it, type TestContext } from "node:test";
 import { SessionController } from "../../src/core/sessionController";
-import { HttpOpenCodeClient, OpenCodeHttpError } from "../../src/opencode/client";
+import { HttpOpenCodeClient, OpenCodeHttpError, type Endpoint } from "../../src/opencode/client";
+import { forgetLocations } from "./locations";
 import { discoverServer } from "../../src/opencode/service";
 import type { UiEvent } from "../../src/shared/model";
 import { MemoryStore } from "../mockClient";
 
-const FREE_MODEL = { providerID: "opencode", id: "big-pickle" };
+import { LIVE_MODEL, LIVE_MODEL_KEY, NOT_OFFERED } from "./liveModel";
 
 let client: HttpOpenCodeClient | undefined;
+let endpoint: Endpoint | undefined;
 let skipReason = "";
 let dir = "";
 const created = new Set<string>();
@@ -35,6 +37,7 @@ before(async () => {
     skipReason = `no live OpenCode service (${outcome.reason}: ${outcome.detail})`;
     return;
   }
+  endpoint = outcome.endpoint;
   client = new HttpOpenCodeClient(outcome.endpoint);
   dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ocs-live-goal-")));
   for (let i = 0; i < 20 && (await client.listModels(dir)).length === 0; i++)
@@ -43,6 +46,7 @@ before(async () => {
 
 after(async () => {
   for (const id of created) await client?.deleteSession(id).catch(() => undefined);
+  await forgetLocations(endpoint, [dir]);
   if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -64,9 +68,8 @@ describe("live: goals", () => {
   it("reads a goal from OpenCode's goal plugin, follows its events, stops and ends it", async (t) => {
     const c = live(t);
     if (!c) return;
-    if (!(await c.listModels(dir)).some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
-      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
-    const s = await c.createSession({ directory: dir, agent: "plan", model: FREE_MODEL });
+    if (!(await c.listModels(dir)).some((m) => m.key === LIVE_MODEL_KEY)) return t.skip(NOT_OFFERED);
+    const s = await c.createSession({ directory: dir, agent: "plan", model: LIVE_MODEL });
     created.add(s.id);
     // The plugin's RPC can be briefly unavailable while the folder loads.
     let none: unknown = "unread";
@@ -84,7 +87,7 @@ describe("live: goals", () => {
       new MemoryStore(),
       { onEvents: (e) => events.push(...e), onTranscriptReset() {}, onStateChanged() {} },
       { info() {}, warn() {}, error() {} },
-      () => ({ model: `${FREE_MODEL.providerID}/${FREE_MODEL.id}`, agent: "plan" }),
+      () => ({ model: LIVE_MODEL_KEY, agent: "plan" }),
     );
     let opened!: () => void;
     const open = new Promise<void>((r) => (opened = r));
@@ -114,7 +117,10 @@ describe("live: goals", () => {
       assert.equal(set.objective, "Reply with the single word OK");
       assert.ok(set.status === "active" || set.status === "paused", String(set.status));
       assert.equal(set.maxRounds, 50);
-      await c.interrupt(s.id).catch(() => false);
+      // Stopped as the Stop button does, as soon as the run shows: Stop waits for OpenCode to
+      // deliver the goal's kickoff, which an interrupt before that drops (it is then never stored).
+      await until("the goal's run", () => ctl.busy || ctl.goalView()?.status !== "active");
+      await ctl.stop();
       // Interrupted (or failed at the free limit), the goal stops with OpenCode's reason.
       await until("the goal to stop", () => ctl.goalView()?.status !== "active");
       const stopped = ctl.goalView()!;

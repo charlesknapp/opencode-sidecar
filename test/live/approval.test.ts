@@ -13,6 +13,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, describe, it, type TestContext } from "node:test";
 import { HttpOpenCodeClient, OpenCodeHttpError, type Endpoint } from "../../src/opencode/client";
+import { forgetLocations } from "./locations";
 import { discoverServer } from "../../src/opencode/service";
 import { SessionController } from "../../src/core/sessionController";
 import {
@@ -56,6 +57,7 @@ after(async () => {
     for (const r of await client.listSavedPermissions(project).catch(() => []))
       await client.removeSavedPermission(r.id).catch(() => undefined);
   for (const id of created) await client?.deleteSession(id).catch(() => undefined);
+  await forgetLocations(endpoint, [dir]);
   if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
 });
 

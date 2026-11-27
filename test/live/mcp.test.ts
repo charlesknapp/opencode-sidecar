@@ -16,12 +16,14 @@ import * as path from "node:path";
 import { after, before, describe, it, type TestContext } from "node:test";
 import type { ConnectUi } from "../../src/core/providerConnect";
 import { SessionController } from "../../src/core/sessionController";
-import { HttpOpenCodeClient, OpenCodeHttpError } from "../../src/opencode/client";
+import { HttpOpenCodeClient, OpenCodeHttpError, type Endpoint } from "../../src/opencode/client";
+import { forgetLocations } from "./locations";
 import { discoverServer } from "../../src/opencode/service";
 import type { McpServerInfo } from "../../src/shared/model";
 import { MemoryStore } from "../mockClient";
 
 let client: HttpOpenCodeClient | undefined;
+let endpoint: Endpoint | undefined;
 let skipReason = "";
 let dir = "";
 let serverJs = "";
@@ -56,6 +58,7 @@ before(async () => {
     skipReason = `no live OpenCode service (${outcome.reason}: ${outcome.detail})`;
     return;
   }
+  endpoint = outcome.endpoint;
   client = new HttpOpenCodeClient(outcome.endpoint);
   dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ocs-live-mcp-")));
   serverJs = path.join(dir, "tiny-mcp.js");
@@ -65,6 +68,7 @@ before(async () => {
 after(async () => {
   for (const c of credentials) await client?.removeCredential(c).catch(() => undefined);
   for (const n of added) await client?.removeMcp(dir, n).catch(() => undefined);
+  await forgetLocations(endpoint, [dir]);
   if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -116,6 +120,7 @@ describe("live: MCP servers", () => {
     try {
       assert.deepEqual(await c.listMcpServers(other), []);
     } finally {
+      await forgetLocations(endpoint, [other]);
       fs.rmSync(other, { recursive: true, force: true });
     }
     const sources = await c.configSources(dir);
