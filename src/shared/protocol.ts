@@ -2,8 +2,10 @@
 // Webview -> host messages are untrusted input and are validated strictly by
 // `parseWebviewMessage` before the host acts on them.
 
+import { isRule, type PermissionRule } from "./approval";
 import type {
   AgentOption,
+  ApprovalView,
   AsideView,
   BookmarkView,
   BudgetLevel,
@@ -101,6 +103,8 @@ export interface ViewState {
   archivedSessions: SessionSummary[] | null;
   /** The session strip's tabs, most recent first (the open session among them). */
   strip: StripTab[];
+  /** The approval mode badge and the permission rules editor. */
+  approval: ApprovalView;
 }
 
 /** Official OpenCode pages the webview may ask the host to open (keys, never URLs). */
@@ -163,6 +167,22 @@ export type WebviewMessage =
   | { type: "insertCode"; text: string }
   | { type: "openCode"; text: string; lang: string }
   | { type: "removeSavedPermission"; id: string }
+  /** Change a saved "always allow" rule's action and pattern. */
+  | { type: "updateSavedPermission"; id: string; action: string; resource: string }
+  /**
+   * Switch the approval mode for the open session (or the next one), or with "folder" also
+   * for new sessions in the folder. `dontAskAgain`: stop confirming Auto.
+   */
+  | {
+      type: "setApprovalMode";
+      mode: "ask" | "balanced" | "auto" | "default";
+      scope: "session" | "folder";
+      dontAskAgain?: boolean;
+    }
+  /** Replace the open session's own rules (the ones after its mode's). */
+  | { type: "setSessionRules"; rules: PermissionRule[] }
+  /** Allow a request once and add allow rules for patterns like it ("Always allow … like this"). */
+  | { type: "allowLike"; requestId: string; patterns: string[]; scope: "session" | "folder" }
   /** A rewind staged in another client: restore the messages, or apply it. */
   | { type: "resolveRevert"; action: "restore" | "apply" }
   | { type: "stop" }
@@ -334,6 +354,20 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
     typeof m.lang === "string" &&
     m.lang.length <= 40,
   removeSavedPermission: (m) => isStr(m.id, 200),
+  updateSavedPermission: (m) =>
+    isStr(m.id, 200) && isRule({ action: m.action, resource: m.resource, effect: "allow" }),
+  setApprovalMode: (m) =>
+    (m.mode === "ask" || m.mode === "balanced" || m.mode === "auto" || m.mode === "default") &&
+    (m.scope === "session" || m.scope === "folder") &&
+    (m.dontAskAgain === undefined || typeof m.dontAskAgain === "boolean"),
+  setSessionRules: (m) => Array.isArray(m.rules) && m.rules.length <= 200 && m.rules.every(isRule),
+  allowLike: (m) =>
+    isStr(m.requestId) &&
+    Array.isArray(m.patterns) &&
+    m.patterns.length > 0 &&
+    m.patterns.length <= 20 &&
+    m.patterns.every((p) => typeof p === "string" && p.trim().length > 0 && p.length <= 2000) &&
+    (m.scope === "session" || m.scope === "folder"),
   resolveRevert: (m) => m.action === "restore" || m.action === "apply",
   stop: () => true,
   newSession: () => true,
@@ -419,6 +453,10 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   forkSession: ["messageID"],
   archiveSession: ["id", "archived"],
   removeSavedPermission: ["id"],
+  updateSavedPermission: ["id", "action", "resource"],
+  setApprovalMode: ["mode", "scope", "dontAskAgain"],
+  setSessionRules: ["rules"],
+  allowLike: ["requestId", "patterns", "scope"],
   deleteSession: ["id"],
   insertCode: ["text"],
   openCode: ["text", "lang"],

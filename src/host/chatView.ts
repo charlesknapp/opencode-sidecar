@@ -53,6 +53,8 @@ const HINT_KEY = "opencodeSidecar.placementHintDismissed";
 const BOOKMARKS_KEY = "opencodeSidecar.bookmarks";
 const MAX_BOOKMARKS = 200;
 const SIGN_IN_HINT_KEY = "opencodeSidecar.signInHintDismissed";
+/** Set once "Don't ask again" was chosen when switching to Auto. */
+const AUTO_CONFIRMED_KEY = "opencodeSidecar.autoModeConfirmed";
 const SIGN_IN_POLL_MS = 3000;
 const SIGN_IN_MAX_MS = 15 * 60_000;
 
@@ -322,6 +324,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       revert: c?.stagedRevert() ?? null,
       archivedSessions: c?.archivedSessions ?? null,
       strip: c?.stripView() ?? [],
+      approval: {
+        ...(c?.approvalView() ?? {
+          mode: "default",
+          folderMode: null,
+          modeRules: [],
+          rules: [],
+          actions: [],
+          session: false,
+          busy: false,
+        }),
+        confirmAuto: !this.context.globalState.get<boolean>(AUTO_CONFIRMED_KEY, false),
+      },
     };
   }
 
@@ -903,6 +917,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.log.warn(`Removing a saved permission failed: ${e instanceof Error ? e.message : String(e)}`);
         }
         return this.postSavedPermissions();
+      case "updateSavedPermission":
+        if (!c) return;
+        try {
+          await c.updateSavedPermission(msg.id, { action: msg.action, resource: msg.resource });
+        } catch (e) {
+          const why = e instanceof Error ? e.message : String(e);
+          this.log.warn(`Changing a saved permission failed: ${why}`);
+          void vscode.window.showWarningMessage(`OpenCode could not change the rule: ${why}`);
+        }
+        return this.postSavedPermissions();
+      case "setApprovalMode":
+        if (msg.dontAskAgain) await this.context.globalState.update(AUTO_CONFIRMED_KEY, true);
+        return c?.setApprovalMode(msg.mode, msg.scope);
+      case "setSessionRules":
+        return c?.setSessionRules(msg.rules);
+      case "allowLike":
+        return c?.allowLike(msg.requestId, msg.patterns, msg.scope);
       case "resolveRevert":
         return this.resolveRevert(msg.action);
       case "stop":

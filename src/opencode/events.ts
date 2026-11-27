@@ -3,6 +3,7 @@
 
 import { findSensitive } from "../core/sensitive";
 import { parseForm } from "../core/forms";
+import { parseRules } from "../shared/approval";
 import type { FormAnswer, PermissionRequest, RawError, TokenUsage, UiEvent } from "../shared/model";
 import { splitUserText } from "../shared/userText";
 
@@ -485,6 +486,9 @@ export class EventNormalizer {
           key ? [{ type: "session.selection", modelKey: key, variant: s(rec(data.model)?.variant) }] : [],
         );
       }
+      case "session.permissions":
+        // The whole list, from Sidecar, the TUI or another client.
+        return out([{ type: "session.permissions", rules: parseRules(data.permissions) }]);
       case "session.compaction.ended":
         return out([{ type: "notice", level: "info", text: "Conversation context was compacted." }]);
       case "session.skill.activated":

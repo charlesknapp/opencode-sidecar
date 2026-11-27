@@ -134,6 +134,16 @@ export function baseState(over: Partial<ViewState> = {}): ViewState {
     revert: null,
     archivedSessions: null,
     strip: [],
+    approval: {
+      mode: "default",
+      folderMode: null,
+      modeRules: [],
+      rules: [],
+      actions: ["edit", "read", "shell", "webfetch"],
+      session: true,
+      busy: false,
+      confirmAuto: true,
+    },
     ...over,
   };
 }
@@ -818,10 +828,10 @@ describe(
       ]);
     });
 
-    it("keeps the header to the title, Bookmarks, History and New session; renames in place", async () => {
+    it("keeps the header to the title, approval, Bookmarks, History and New session; renames in place", async () => {
       assert.deepEqual(
         await page.$$eval(".header button", (b) => b.map((x) => x.getAttribute("data-testid"))),
-        ["session-title", "bookmarks-button", "history-button", "new-session"],
+        ["session-title", "approval-badge", "bookmarks-button", "history-button", "new-session"],
       );
       await page.click('[data-testid="session-title"]');
       const field = '[data-testid="rename-input"]';
@@ -962,36 +972,366 @@ describe(
       assert.equal(await jump(), null);
     });
 
-    it("lists the folder's always-allowed actions and removes one after a confirmation", async () => {
-      await page.click('[data-testid="commands-button"]');
-      await page.click('[data-testid="saved-permissions"]');
+    const APPROVAL = baseState().approval;
+    const BALANCED_RULES = [
+      { action: "shell", resource: "*", effect: "ask" as const },
+      { action: "webfetch", resource: "*", effect: "ask" as const },
+    ];
+    const OWN_RULE = { action: "shell", resource: "npm test *", effect: "allow" as const };
+
+    it("shows the approval mode in the header, Auto in its own color, at every width", async () => {
+      const badge = '[data-testid="approval-badge"]';
+      assert.equal(await text(badge), "Default");
+      await host({ type: "state", state: baseState({ approval: { ...APPROVAL, mode: "balanced" } }) });
+      assert.equal(await text(badge), "Balanced");
+      assert.match(
+        String(await page.$eval(badge, (b) => b.getAttribute("data-tip"))),
+        /commands, web requests/,
+      );
+      const look = () =>
+        page.$eval(badge, (b) =>
+          [getComputedStyle(b).fontWeight, getComputedStyle(b).borderTopWidth].join(" "),
+        );
+      const balanced = await look();
+      await host({ type: "state", state: baseState({ approval: { ...APPROVAL, mode: "auto" } }) });
+      assert.equal(await text(badge), "Auto");
+      assert.equal(await page.$eval(badge, (b) => b.getAttribute("data-mode")), "auto");
+      assert.notEqual(await look(), balanced, "Auto stands out");
+      // Without a session it names the mode the next one starts in.
+      await host({
+        type: "state",
+        state: baseState({ currentSession: null, approval: { ...APPROVAL, mode: "ask", session: false } }),
+      });
+      assert.match(String(await page.$eval(badge, (b) => b.getAttribute("aria-label"))), /next session/);
+      // A request in the dock does not hide it, and it fits a narrow panel.
+      await host({ type: "transcript", items: [PERM()] });
+      for (const width of [300, 400, 520]) {
+        await page.setViewport({ width, height: 800 });
+        await new Promise((r) => setTimeout(r, 30));
+        const box = await page.$eval(badge, (b) => {
+          const r = b.getBoundingClientRect();
+          return { left: r.left, right: r.right, shown: r.width > 0 };
+        });
+        assert.ok(box.shown && box.left >= 0 && box.right <= width, `width ${width}`);
+        assert.ok(
+          await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+          `no sideways scroll at ${width}`,
+        );
+      }
+    });
+
+    it("switches the mode from the badge's menu, for the session or the folder", async () => {
+      await host({
+        type: "state",
+        state: baseState({ approval: { ...APPROVAL, mode: "ask", folderMode: "ask" } }),
+      });
+      await page.click('[data-testid="approval-badge"]');
+      const rows = await page.$$eval(
+        '[data-testid="menu"] .menu-list .menu-item[data-testid^="approval-"]',
+        (els) =>
+          els.map((e) => [
+            e.getAttribute("data-testid"),
+            e.getAttribute("aria-checked"),
+            e.querySelector(".menu-sub")?.textContent ?? "",
+          ]),
+      );
+      assert.deepEqual(
+        rows.map((r) => r.slice(0, 2)),
+        [
+          ["approval-ask", "true"],
+          ["approval-balanced", "false"],
+          ["approval-auto", "false"],
+          ["approval-default", "false"],
+          ["approval-rules", null],
+        ],
+      );
+      assert.match(String(rows[0][2]), /Asks before every edit/);
+      assert.match(String(rows[2][2]), /destructive commands are blocked/);
+      assert.match(await text('[data-testid="menu"]'), /Plan still never edits/);
+      await page.click('[data-testid="approval-balanced"]');
+      assert.deepEqual(await lastSent("setApprovalMode"), {
+        type: "setApprovalMode",
+        mode: "balanced",
+        scope: "session",
+      });
+      assert.equal(await page.$('[data-testid="menu"]'), null, "the menu closes");
+      // "This folder" from the slider, then by keyboard.
+      await page.click('[data-testid="approval-badge"]');
+      await page.click('[data-testid="approval-scope"] .sd[data-value="folder"]');
+      await page.focus('[data-testid="approval-default"]');
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("setApprovalMode"), {
+        type: "setApprovalMode",
+        mode: "default",
+        scope: "folder",
+      });
+      // Rules that match no mode say so.
+      await host({
+        type: "state",
+        state: baseState({ approval: { ...APPROVAL, mode: "custom", rules: [OWN_RULE] } }),
+      });
+      await page.click('[data-testid="approval-badge"]');
+      assert.match(await text('[data-testid="menu"]'), /match no mode/);
+      await page.keyboard.press("Escape");
+      assert.equal(
+        await page.evaluate(() => document.activeElement?.getAttribute("data-testid")),
+        "approval-badge",
+      );
+    });
+
+    it("asks once before Auto, with Don't ask again", async () => {
+      await page.click('[data-testid="approval-badge"]');
+      await page.click('[data-testid="approval-auto"]');
+      assert.match(
+        await text('[data-testid="dialog"]'),
+        /Switch to Auto\?[\s\S]*destructive commands stay blocked/,
+      );
+      assert.equal(
+        await page.evaluate(() => document.activeElement?.getAttribute("data-testid")),
+        "auto-confirm",
+      );
+      await page.click('[data-testid="dialog-cancel"]');
+      assert.equal(await lastSent("setApprovalMode"), undefined, "cancelled: nothing sent");
+      await page.click('[data-testid="approval-badge"]');
+      await page.click('[data-testid="approval-auto"]');
+      await page.click('[data-testid="auto-confirm"]');
+      assert.deepEqual(await lastSent("setApprovalMode"), {
+        type: "setApprovalMode",
+        mode: "auto",
+        scope: "session",
+      });
+      await page.click('[data-testid="approval-badge"]');
+      await page.click('[data-testid="approval-auto"]');
+      await page.click('[data-testid="auto-dont-ask"]');
+      assert.deepEqual(await lastSent("setApprovalMode"), {
+        type: "setApprovalMode",
+        mode: "auto",
+        scope: "session",
+        dontAskAgain: true,
+      });
+      // Once confirmed for good, Auto switches straight away.
+      await clearSent();
+      await host({ type: "state", state: baseState({ approval: { ...APPROVAL, confirmAuto: false } }) });
+      await page.click('[data-testid="approval-badge"]');
+      await page.click('[data-testid="approval-auto"]');
+      assert.equal(await page.$('[data-testid="dialog"]'), null);
+      assert.deepEqual(await lastSent("setApprovalMode"), {
+        type: "setApprovalMode",
+        mode: "auto",
+        scope: "session",
+      });
+    });
+
+    it("edits the session's rules: add, edit and delete, with the mode's rules read-only", async () => {
+      const withRules = (rules: (typeof OWN_RULE)[]) =>
+        baseState({ approval: { ...APPROVAL, mode: "balanced", modeRules: BALANCED_RULES, rules } });
+      await host({ type: "state", state: withRules([]) });
+      await page.click('[data-testid="approval-badge"]');
+      await page.click('[data-testid="approval-rules"]');
       assert.ok(await lastSent("loadSavedPermissions"));
-      assert.match(await text('[data-testid="menu"]'), /Loading…/);
+      const rows = (testid: string) =>
+        page.$$eval(`[data-testid="rules-editor"] [data-testid="${testid}"]`, (els) =>
+          els.map((e) => (e as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
+        );
+      assert.deepEqual(await rows("mode-rule"), [
+        "Ask shell * from Balanced",
+        "Ask webfetch * from Balanced",
+      ]);
+      assert.match(await text('[data-testid="rules-editor"]'), /No rules of your own yet/);
+      assert.equal(
+        await page.evaluate(() => document.activeElement?.getAttribute("data-testid")),
+        "rule-pattern",
+        "ready to type a pattern",
+      );
+      // An empty pattern is refused in place.
+      await page.click('[data-testid="rule-save"]');
+      assert.match(await text('[data-testid="rule-error"]'), /Type a pattern/);
+      assert.equal(await lastSent("setSessionRules"), undefined);
+      await page.type('[data-testid="rule-pattern"]', "npm test *");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("setSessionRules"), { type: "setSessionRules", rules: [OWN_RULE] });
+      assert.equal(
+        await page.$eval('[data-testid="rule-pattern"]', (i) => (i as HTMLInputElement).value),
+        "",
+      );
+      // OpenCode's answer comes back as state.
+      await host({ type: "state", state: withRules([OWN_RULE]) });
+      assert.deepEqual(await rows("session-rule"), ["Allow shell npm test * Edit Delete"]);
+      await page.click('[data-testid="rule-edit"]');
+      assert.equal(await text('[data-testid="rule-save"]'), "Save rule");
+      await page.$eval('[data-testid="rule-pattern"]', (i) => ((i as HTMLInputElement).value = ""));
+      await page.type('[data-testid="rule-pattern"]', "rm *");
+      await page.select('[data-testid="rule-effect"]', "deny");
+      await page.click('[data-testid="rule-save"]');
+      assert.deepEqual(await lastSent("setSessionRules"), {
+        type: "setSessionRules",
+        rules: [{ action: "shell", resource: "rm *", effect: "deny" }],
+      });
+      await page.click('[data-testid="rule-delete"]');
+      assert.deepEqual(await lastSent("setSessionRules"), { type: "setSessionRules", rules: [] });
+      // A custom action from the picker's list, typed.
+      await page.$eval('[data-testid="rule-action"]', (i) => ((i as HTMLInputElement).value = ""));
+      await page.type('[data-testid="rule-action"]', "webfetch");
+      await page.type('[data-testid="rule-pattern"]', "https://docs.example.com/*");
+      await page.click('[data-testid="rule-save"]');
+      assert.deepEqual(await lastSent("setSessionRules"), {
+        type: "setSessionRules",
+        rules: [OWN_RULE, { action: "webfetch", resource: "https://docs.example.com/*", effect: "allow" }],
+      });
+      assert.deepEqual(
+        await page.$$eval("#rule-actions option", (o) => o.map((x) => (x as HTMLOptionElement).value)),
+        APPROVAL.actions,
+      );
+      // Busy while OpenCode answers: no second change.
+      await host({
+        type: "state",
+        state: baseState({ approval: { ...APPROVAL, rules: [OWN_RULE], busy: true } }),
+      });
+      assert.equal(
+        await page.$eval('[data-testid="rule-delete"]', (b) => (b as HTMLButtonElement).disabled),
+        true,
+      );
+      await page.keyboard.press("Escape");
+      assert.equal(await page.$('[data-testid="rules-editor"]'), null, "Escape closes it");
+    });
+
+    it("lists the folder's always-allowed rules to edit or remove", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="permission-rules"]');
+      assert.match(await text('[data-testid="rules-editor"]'), /Loading…/);
       await host({
         type: "savedPermissions",
         items: [{ id: "ps_1", action: "bash", resource: "npm test *", created: Date.now() - 2 * 3600_000 }],
       });
       assert.deepEqual(
         await page.$$eval('[data-testid="saved-permission"]', (e) =>
-          e.map((x) => [
-            x.querySelector(".menu-label")?.textContent,
-            x.querySelector(".menu-sub")?.textContent,
-          ]),
+          e.map((x) => (x as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
         ),
-        [["npm test *", "bash · saved 2h ago · click to remove"]],
+        ["Allow bash npm test * 2h ago Edit Remove"],
       );
-      await clearSent();
-      await page.click('[data-testid="saved-permission"]');
+      await page.click('[data-testid="saved-edit"]');
+      assert.equal(
+        await page.evaluate(() => document.activeElement?.getAttribute("data-testid")),
+        "saved-pattern",
+      );
+      await page.$eval('[data-testid="saved-pattern"]', (i) => ((i as HTMLInputElement).value = ""));
+      await page.type('[data-testid="saved-pattern"]', "npm *");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("updateSavedPermission"), {
+        type: "updateSavedPermission",
+        id: "ps_1",
+        action: "bash",
+        resource: "npm *",
+      });
+      assert.match(await text('[data-testid="rules-editor"]'), /Loading…/, "until OpenCode lists them again");
+      await host({
+        type: "savedPermissions",
+        items: [{ id: "ps_1", action: "bash", resource: "npm *", created: 0 }],
+      });
       await page.click('[data-testid="saved-remove"]');
       assert.deepEqual(await lastSent("removeSavedPermission"), {
         type: "removeSavedPermission",
         id: "ps_1",
       });
       await host({ type: "savedPermissions", items: [] });
-      assert.match(await text('[data-testid="menu"]'), /Nothing is always allowed here/);
-      // Keeping it sends nothing; a failed list says so.
+      assert.match(await text('[data-testid="rules-editor"]'), /Nothing is always allowed here/);
       await host({ type: "savedPermissions", items: null, error: "OpenCode could not list them." });
-      assert.match(await text('[data-testid="menu"]'), /Couldn't load them: OpenCode could not list them\./);
+      assert.match(
+        await text('[data-testid="rules-editor"]'),
+        /Couldn't load them: OpenCode could not list them\./,
+      );
+      // Without a session there are no session rules to add yet.
+      await host({
+        type: "state",
+        state: baseState({ currentSession: null, approval: { ...APPROVAL, session: false } }),
+      });
+      assert.equal(await visible('[data-testid="rule-form"]'), false);
+      assert.match(await text('[data-testid="rules-editor"]'), /Start or open a session/);
+      await page.click('[data-testid="rules-close"]');
+      assert.equal(await page.$('[data-testid="rules-editor"]'), null);
+    });
+
+    it("always allows commands like this: a pattern to edit, for the session or the folder", async () => {
+      await host({ type: "transcript", items: [PERM({ resources: ["npm test -- --grep foo"] })] });
+      assert.deepEqual(
+        await page.$$eval(".opt-row", (r) => r.map((x) => (x as HTMLElement).innerText.replace(/\s+/g, " "))),
+        ["1 Yes", "2 Yes, always allow npm test *", "3 No"],
+        "the numbered answers stay as they were",
+      );
+      assert.equal(await text('[data-testid="perm-like"]'), "Always allow commands like this…");
+      await page.click('[data-testid="perm-like"]');
+      const pattern = '[data-testid="perm-like-pattern"]';
+      assert.equal(await page.$eval(pattern, (i) => (i as HTMLInputElement).value), "npm test *");
+      assert.equal(
+        await page.evaluate(() => document.activeElement?.getAttribute("data-testid")),
+        "perm-like-pattern",
+      );
+      assert.match(await text('[data-testid="perm-like-match"]'), /Covers this request/);
+      await page.$eval(pattern, (i) => ((i as HTMLInputElement).value = ""));
+      await page.type(pattern, "npm run *");
+      assert.match(await text('[data-testid="perm-like-match"]'), /Doesn't cover this request/);
+      await page.$eval(pattern, (i) => ((i as HTMLInputElement).value = ""));
+      await page.type(pattern, "npm test *");
+      // Digits typed into the pattern are not answers.
+      assert.equal(await lastSent("respondPermission"), undefined);
+      await page.click('[data-testid="perm-like-folder"]');
+      assert.equal(
+        await page.$eval('[data-testid="perm-like-folder"]', (b) => b.getAttribute("aria-pressed")),
+        "true",
+      );
+      assert.equal(
+        await page.$eval(pattern, (i) => (i as HTMLInputElement).value),
+        "npm test *",
+        "kept as typed",
+      );
+      await page.click('[data-testid="perm-like-save"]');
+      assert.deepEqual(await lastSent("allowLike"), {
+        type: "allowLike",
+        requestId: "p1",
+        patterns: ["npm test *"],
+        scope: "folder",
+      });
+    });
+
+    it("offers only this session when OpenCode has no folder rule, and keeps the sensitive-path warning", async () => {
+      await host({
+        type: "transcript",
+        items: [
+          {
+            ...PERM({ action: "read", resources: ["/w/my-app/config/.env"], canAlways: false, patterns: [] }),
+            sensitive: [".env — environment file (may contain secrets)"],
+          } as TranscriptItem,
+        ],
+      });
+      assert.match(await text('[data-testid="permission-dock"] .sensitive'), /Sensitive path[\s\S]*\.env/);
+      assert.equal(await text('[data-testid="perm-like"]'), "Always allow requests like this…");
+      await page.click('[data-testid="perm-like"]');
+      assert.equal(
+        await page.$eval('[data-testid="perm-like-pattern"]', (i) => (i as HTMLInputElement).value),
+        "/w/my-app/config/*",
+      );
+      assert.equal(
+        await page.$eval('[data-testid="perm-like-folder"]', (b) => (b as HTMLButtonElement).disabled),
+        true,
+      );
+      assert.ok(
+        await page.$('[data-testid="permission-dock"] .sensitive'),
+        "the warning stays while editing",
+      );
+      // Escape closes the editor, not the request.
+      await page.focus('[data-testid="perm-like-session"]');
+      await page.keyboard.press("Escape");
+      assert.equal(await page.$('[data-testid="perm-like-editor"]'), null);
+      assert.equal(await lastSent("respondPermission"), undefined);
+      await page.click('[data-testid="perm-like"]');
+      await page.focus('[data-testid="perm-like-pattern"]');
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("allowLike"), {
+        type: "allowLike",
+        requestId: "p1",
+        patterns: ["/w/my-app/config/*"],
+        scope: "session",
+      });
     });
 
     it("shows the Git branch beside the title, a detached HEAD's commit, and nothing without Git", async () => {

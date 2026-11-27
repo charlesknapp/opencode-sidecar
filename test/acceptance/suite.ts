@@ -416,6 +416,89 @@ async function pastedText(api: TestApi): Promise<void> {
   check("The model read the pasted text", /\b12\b/.test(lastAssistantText(api)), lastAssistantText(api));
   await askAside(api);
   await backgroundSessions(api);
+  await approvalModes(api);
+}
+
+// ============================================================ approval modes
+
+/**
+ * A mode changes whether a real shell tool call asks: in Ask the command waits in the
+ * dock ("Always allow commands like this" adds a session rule and lets it run); in Auto
+ * the same kind of command runs without asking. The session's rules are read back from
+ * OpenCode each time; the folder's mode and OpenCode's config are never touched.
+ */
+async function approvalModes(api: TestApi): Promise<void> {
+  const c = () => api.controller()!;
+  await api.handle({ type: "selectAgent", id: "build" });
+  await api.handle({ type: "newSession" });
+  await api.handle({ type: "setApprovalMode", mode: "ask", scope: "session" });
+  check("Ask is set for the next session", api.viewState().approval.mode === "ask");
+  let since = events.length;
+  const mark = items(api).length;
+  await api.handle({
+    type: "send",
+    text: "Run the shell command `node --version` exactly as written, then reply with its output.",
+  });
+  const asked = await waitFor(
+    "the shell command to ask",
+    () =>
+      events
+        .slice(since)
+        .find(
+          (e): e is Extract<UiEvent, { type: "permission.requested" }> => e.type === "permission.requested",
+        ) ?? (events.slice(since).some((e) => e.type === "session.idle") ? ("idle" as const) : undefined),
+    180_000,
+  );
+  if (asked === "idle") return check("Ask: a shell command waits for an answer", false, "it ran no command");
+  check(
+    "Ask: a shell command waits for an answer",
+    /shell|bash/.test(asked.request.action) && asked.request.resources.some((r) => /node --version/.test(r)),
+    `${asked.request.action}: ${asked.request.resources.join(", ")}`,
+  );
+  const sid = c().current!.id;
+  check("The session was created in Ask", api.viewState().approval.mode === "ask");
+  await api.handle({
+    type: "allowLike",
+    requestId: asked.request.id,
+    patterns: ["node --version *"],
+    scope: "session",
+  });
+  await waitIdle(api, since);
+  check(
+    "Always allow commands like this adds the rule and lets it run",
+    api.viewState().approval.rules.some((r) => r.resource === "node --version *" && r.effect === "allow") &&
+      toolsSince(api, mark).some((t) => t.category === "shell" && t.status === "completed"),
+    JSON.stringify(api.viewState().approval.rules),
+  );
+
+  await api.handle({ type: "setApprovalMode", mode: "auto", scope: "session" });
+  check(
+    "Auto is read back from OpenCode",
+    api.viewState().approval.mode === "auto" &&
+      (c().current?.permissions ?? []).some((r) => r.effect === "deny" && r.resource === "rm -rf *"),
+    JSON.stringify(c().current?.permissions),
+  );
+  since = events.length;
+  const mark2 = items(api).length;
+  await api.handle({
+    type: "send",
+    text: 'Run the shell command `node -e "console.log(6*7)"` exactly as written, then reply with its output.',
+  });
+  await waitIdle(api, since);
+  check(
+    "Auto: the shell command runs without asking",
+    !events.slice(since).some((e) => e.type === "permission.requested") &&
+      toolsSince(api, mark2).some((t) => t.category === "shell" && t.status === "completed"),
+    toolsSince(api, mark2)
+      .map((t) => `${t.title} ${t.status}`)
+      .join(" | "),
+  );
+  await api.handle({ type: "setApprovalMode", mode: "default", scope: "session" });
+  check(
+    "Default clears the mode's rules and keeps the user's",
+    api.viewState().approval.mode === "custom" && c().current?.id === sid,
+    api.viewState().approval.mode,
+  );
 }
 
 // ============================================================ ask aside

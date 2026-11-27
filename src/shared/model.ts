@@ -2,6 +2,8 @@
 // Nothing in here may reference OpenCode wire objects directly; the adapter in
 // src/opencode/ maps raw payloads onto these shapes.
 
+import type { ApprovalMode, ApprovalState, PermissionRule } from "./approval";
+
 export type ConnectionStatus =
   | { kind: "connecting" }
   | { kind: "connected"; version: string; url: string }
@@ -115,6 +117,8 @@ export interface SessionSummary {
    * cleared. `files` counts the files it restores.
    */
   revert?: { messageID: string; files: number } | null;
+  /** The session's own permission rules (OpenCode `permissions`), checked after the agent's. */
+  permissions?: PermissionRule[];
 }
 
 /** A session strip tab's state: waiting for you, working, finished or failed since you looked, or quiet. */
@@ -195,6 +199,26 @@ export interface SavedPermission {
   resource: string;
   /** When it was saved (epoch ms). */
   created: number;
+}
+
+/** The approval mode badge and the rules editor, read back from OpenCode. */
+export interface ApprovalView {
+  /** The open session's mode; without a session, the mode the next one starts in. */
+  mode: ApprovalState;
+  /** The mode new sessions in this folder start in (Sidecar's choice), if one was picked. */
+  folderMode: ApprovalMode | null;
+  /** The session's rules that come from the mode (read-only in the editor). */
+  modeRules: PermissionRule[];
+  /** The session's other rules, which the editor changes. */
+  rules: PermissionRule[];
+  /** Actions for the editor's picker: OpenCode's agents' and saved rules', and the usual ones. */
+  actions: string[];
+  /** A session is open (rules can be changed now, not only for the next session). */
+  session: boolean;
+  /** A change is being sent to OpenCode. */
+  busy: boolean;
+  /** Ask before switching to Auto (until "don't ask again"). */
+  confirmAuto: boolean;
 }
 
 /** An MCP server OpenCode is configured with for the folder, and how it is doing. */
@@ -654,6 +678,8 @@ export type UiEvent =
   | { type: "session.reverted" }
   /** The agent or model was chosen for the session (by any client). */
   | { type: "session.selection"; agent?: string; modelKey?: string; variant?: string | null }
+  /** The session's permission rules were replaced (by any client). */
+  | { type: "session.permissions"; rules: PermissionRule[] }
   /** `time`: when the step finished (epoch ms); stored for history, arrival time live. */
   | { type: "usage.step"; tokens: TokenUsage; modelKey: string | null; time?: number }
   | { type: "usage.session"; cost: number; tokens: TokenUsage }

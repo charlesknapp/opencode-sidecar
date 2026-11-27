@@ -8,6 +8,7 @@ import type {
   ServerInfo,
 } from "../src/opencode/client";
 import { OpenCodeHttpError } from "../src/opencode/client";
+import type { PermissionRule } from "../src/shared/approval";
 import type {
   AccountStatus,
   AgentOption,
@@ -189,6 +190,46 @@ export class MockClient implements OpenCodeClient {
     if (this.saved.length === before)
       throw new OpenCodeHttpError(404, "PermissionSavedNotFoundError", "not found");
   }
+  async updateSavedPermission(id: string, change: { action?: string; resource?: string }) {
+    this.record("updateSavedPermission", id, change);
+    const x = this.saved.find((r) => r.id === id);
+    if (!x) throw new OpenCodeHttpError(404, "PermissionSavedNotFoundError", "not found");
+    const action = change.action ?? x.action;
+    const resource = change.resource ?? x.resource;
+    // Like OpenCode: a project has each action and pattern once.
+    if (
+      this.saved.some(
+        (r) => r !== x && r.projectID === x.projectID && r.action === action && r.resource === resource,
+      )
+    )
+      throw new OpenCodeHttpError(409, "PermissionSavedConflictError", "conflict");
+    x.action = action;
+    x.resource = resource;
+    return { id: x.id, action, resource, created: x.created };
+  }
+  /** Fails `setSessionPermissions` when set. */
+  permissionsError: Error | null = null;
+  async setSessionPermissions(id: string, rules: PermissionRule[]) {
+    this.record("setSessionPermissions", id, rules);
+    if (this.permissionsError) throw this.permissionsError;
+    const s = this.sessions.find((x) => x.id === id);
+    if (!s) throw new OpenCodeHttpError(404, "NotFound", "Session not found");
+    s.permissions = rules.map((r) => ({ ...r }));
+  }
+  /** Agent permission rules by agent id, as `GET /api/agent` reports them. */
+  rules: Record<string, PermissionRule[]> = {
+    build: [{ action: "*", resource: "*", effect: "allow" }],
+    plan: [
+      { action: "*", resource: "*", effect: "allow" },
+      { action: "edit", resource: "*", effect: "deny" },
+    ],
+  };
+  async agentRules(directory: string) {
+    this.record("agentRules", directory);
+    return this.rules;
+  }
+  /** What an "always" reply saves (by request id), as OpenCode does from the request's save patterns. */
+  onAlways: ((requestId: string) => void) | null = null;
   async resolveRevert(id: string, action: "commit" | "clear") {
     this.record("resolveRevert", id, action);
     for (const x of this.sessions) if (x.id === id) x.revert = null;
@@ -224,6 +265,7 @@ export class MockClient implements OpenCodeClient {
     directory: string;
     agent?: string;
     model?: { providerID: string; id: string; variant?: string };
+    permissions?: PermissionRule[];
   }) {
     this.record("createSession", input);
     const s: SessionSummary = {
@@ -236,6 +278,7 @@ export class MockClient implements OpenCodeClient {
       outcome: null,
       variant: input.model?.variant ?? null,
       cost: 0,
+      ...(input.permissions ? { permissions: input.permissions.map((r) => ({ ...r })) } : {}),
     };
     this.sessions.unshift(s);
     return s;
@@ -301,6 +344,7 @@ export class MockClient implements OpenCodeClient {
     if (message) this.record("replyPermission", id, requestId, decision, message);
     else this.record("replyPermission", id, requestId, decision);
     if (this.replyError) throw this.replyError;
+    if (decision === "always") this.onAlways?.(requestId);
   }
   async sessionDiff(id: string, range?: { from?: string; to?: string; full?: boolean }) {
     this.record("sessionDiff", id, range);

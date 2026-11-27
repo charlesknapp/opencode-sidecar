@@ -20,6 +20,7 @@ import type {
   SkillOption,
 } from "../shared/model";
 import type { PromptPayload } from "../core/context";
+import { parseRules, type PermissionRule } from "../shared/approval";
 import { modelKey, toPermissionRequest } from "./events";
 import { SseParser } from "./sse";
 
@@ -104,12 +105,23 @@ export interface OpenCodeClient {
   /** "Always allow" rules OpenCode saved for a project. */
   listSavedPermissions(projectID: string): Promise<SavedPermission[]>;
   removeSavedPermission(id: string): Promise<void>;
+  /** Changes a saved rule's action or pattern (409 when the project already has that rule). */
+  updateSavedPermission(id: string, change: { action?: string; resource?: string }): Promise<SavedPermission>;
+  /** Replaces a session's own permission rules (checked after the agent's; inherited by new subagents). */
+  setSessionPermissions(id: string, rules: PermissionRule[]): Promise<void>;
+  /** Every agent's permission rules for a folder, by agent id (subagents included). */
+  agentRules(directory: string): Promise<Record<string, PermissionRule[]>>;
   /** Applies a staged rewind (`commit`) or restores the messages it hid (`clear`). */
   resolveRevert(id: string, action: "commit" | "clear"): Promise<void>;
   getSession(id: string): Promise<SessionSummary>;
   /** Sessions a session started as subagents (its direct children). */
   listChildSessions(id: string): Promise<SessionSummary[]>;
-  createSession(input: { directory: string; agent?: string; model?: ModelRef }): Promise<SessionSummary>;
+  createSession(input: {
+    directory: string;
+    agent?: string;
+    model?: ModelRef;
+    permissions?: PermissionRule[];
+  }): Promise<SessionSummary>;
   listMessages(id: string, max: number): Promise<unknown[]>;
   prompt(id: string, input: PromptInput): Promise<{ id: string }>;
   switchModel(id: string, model: ModelRef): Promise<void>;
@@ -186,6 +198,17 @@ export function sameDirectory(a: string | null, b: string | null): boolean {
   return a === b || (a !== null && b !== null && opencodeDirectory(a) === opencodeDirectory(b));
 }
 
+function toSaved(raw: unknown): SavedPermission | null {
+  const x = rec(raw);
+  if (typeof x.id !== "string") return null;
+  return {
+    id: x.id,
+    action: typeof x.action === "string" ? x.action : "",
+    resource: typeof x.resource === "string" ? x.resource : "",
+    created: typeof rec(x.time).created === "number" ? (rec(x.time).created as number) : 0,
+  };
+}
+
 /** An agent's or skill's first sentence, for one-line lists. */
 function firstSentence(v: unknown): string | undefined {
   return str(v)
@@ -202,6 +225,8 @@ export function toSessionSummary(raw: unknown): SessionSummary {
   const extra: Partial<SessionSummary> = {};
   if (d.fork && typeof d.fork === "object") extra.forked = true;
   if (typeof time.archived === "number") extra.archived = true;
+  // OpenCode leaves `permissions` out until a client sets some.
+  if (Array.isArray(d.permissions)) extra.permissions = parseRules(d.permissions);
   if (revertID)
     extra.revert = { messageID: revertID, files: Array.isArray(revert.files) ? revert.files.length : 0 };
   return {
@@ -512,10 +537,12 @@ export class HttpOpenCodeClient implements OpenCodeClient {
     directory: string;
     agent?: string;
     model?: ModelRef;
+    permissions?: PermissionRule[];
   }): Promise<SessionSummary> {
     const body: Rec = { location: { directory: opencodeDirectory(input.directory) } };
     if (input.agent) body.agent = input.agent;
     if (input.model) body.model = modelBody(input.model);
+    if (input.permissions?.length) body.permissions = input.permissions;
     const d = rec(await this.request("POST", "/api/session", { body }));
     return toSessionSummary(d.data);
   }
@@ -627,21 +654,42 @@ export class HttpOpenCodeClient implements OpenCodeClient {
     const list = Array.isArray(d.data) ? d.data : [];
     const out: SavedPermission[] = [];
     for (const raw of list) {
-      const x = rec(raw);
       // Only this project's rules, whatever the server returns.
-      if (typeof x.id !== "string" || x.projectID !== projectID) continue;
-      out.push({
-        id: x.id,
-        action: typeof x.action === "string" ? x.action : "",
-        resource: typeof x.resource === "string" ? x.resource : "",
-        created: typeof rec(x.time).created === "number" ? (rec(x.time).created as number) : 0,
-      });
+      const saved = rec(raw).projectID === projectID ? toSaved(raw) : null;
+      if (saved) out.push(saved);
     }
     return out.sort((a, b) => b.created - a.created);
   }
 
   async removeSavedPermission(id: string): Promise<void> {
     await this.request("DELETE", `/api/permission/saved/${encodeURIComponent(id)}`);
+  }
+
+  async updateSavedPermission(
+    id: string,
+    change: { action?: string; resource?: string },
+  ): Promise<SavedPermission> {
+    const d = rec(
+      await this.request("PATCH", `/api/permission/saved/${encodeURIComponent(id)}`, { body: change }),
+    );
+    const saved = toSaved(d.data);
+    if (!saved) throw new Error("Unexpected saved permission");
+    return saved;
+  }
+
+  async setSessionPermissions(id: string, rules: PermissionRule[]): Promise<void> {
+    // The whole list is replaced; `null` would leave it as it is.
+    await this.request("PATCH", `/api/session/${encodeURIComponent(id)}`, { body: { permissions: rules } });
+  }
+
+  async agentRules(directory: string): Promise<Record<string, PermissionRule[]>> {
+    const d = rec(await this.request("GET", "/api/agent", { query: this.loc(directory) }));
+    const out: Record<string, PermissionRule[]> = {};
+    for (const a of Array.isArray(d.data) ? d.data : []) {
+      const id = str(rec(a).id);
+      if (id) out[id] = parseRules(rec(a).permissions);
+    }
+    return out;
   }
 
   async resolveRevert(id: string, action: "commit" | "clear"): Promise<void> {

@@ -39,6 +39,7 @@ import type {
   CommandInfo,
   AccountStatus,
   AgentOption,
+  ApprovalView,
   AsideView,
   BudgetLevel,
   BudgetView,
@@ -62,6 +63,16 @@ import type {
   UsageInfo,
 } from "../shared/model";
 import { stampTime, Transcript } from "../shared/transcript";
+import {
+  APPROVAL_MODES,
+  classifyRules,
+  KNOWN_ACTIONS,
+  presetRules,
+  sameRule,
+  sameRules,
+  type ApprovalMode,
+  type PermissionRule,
+} from "../shared/approval";
 
 export interface KeyValueStore {
   get<T>(key: string): T | undefined;
@@ -257,6 +268,15 @@ export class SessionController {
   private stripSessions = new Map<string, SessionSummary | null>();
   /** Background sessions whose pending requests were read during their current run. */
   private scanned = new Set<string>();
+  /** Every agent's permission rules for the folder (approval modes are fitted to them); null until loaded. */
+  agentRules: Record<string, PermissionRule[]> | null = null;
+  /** The approval mode picked for the next session while none is open ("this session" scope). */
+  private nextMode: ApprovalMode | "default" | null = null;
+  /** The mode Sidecar last applied per session: on Plan, Ask and Balanced are the same rules. */
+  private modeHints = new Map<string, ApprovalMode>();
+  private approvalBusy = false;
+  /** Actions of the folder's saved rules, for the rule editor's picker. */
+  private savedActions: string[] = [];
 
   constructor(
     private readonly client: OpenCodeClient,
@@ -398,6 +418,9 @@ export class SessionController {
     this.watch.reset(this.store.get<StripEntry[]>(this.key("strip")));
     this.stripSessions.clear();
     this.scanned.clear();
+    this.agentRules = null;
+    this.nextMode = null;
+    this.savedActions = [];
     const remembered = this.store.get<BudgetLevel>(this.key("budget"));
     this.budget.setLevel(remembered ?? this.defaults().budgetLevel ?? "off");
     this.sink.onStateChanged();
@@ -415,7 +438,7 @@ export class SessionController {
       await this.openSession(rememberedSession);
   }
 
-  private key(kind: "model" | "agent" | "session" | "budget" | "strip"): string {
+  private key(kind: "model" | "agent" | "session" | "budget" | "strip" | "approval"): string {
     return `opencodeSidecar.${kind}:${this.directory ?? ""}`;
   }
 
@@ -460,13 +483,19 @@ export class SessionController {
         this.log.error("Loading agents failed", e);
         agents = null;
       }
-      const [commands, mentionAgents, skills] = await Promise.all([
+      const [commands, mentionAgents, skills, agentRules] = await Promise.all([
         this.client.listCommands(dir).catch((e: unknown) => {
           this.log.warn(`Loading commands failed: ${e instanceof Error ? e.message : String(e)}`);
           return [] as CommandInfo[];
         }),
         this.client.listSubagents(dir).catch(() => [] as AgentOption[]),
         this.client.listSkills(dir).catch(() => [] as SkillOption[]),
+        this.client.agentRules(dir).catch((e: unknown) => {
+          this.log.warn(
+            `Loading agent permission rules failed: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          return null;
+        }),
       ]);
       const account = await accountP;
       const picked = await this.pickDefaults(dir, models ?? [], agents ?? []);
@@ -482,6 +511,8 @@ export class SessionController {
       this.commands = commands;
       this.mentionAgents = mentionAgents;
       this.skills = skills;
+      // A folder OpenCode has not loaded yet lists no agents: keep what is known.
+      if (agentRules && Object.keys(agentRules).length) this.agentRules = agentRules;
       if (!commands.length) this.commandsTimer = setTimeout(() => void this.refreshCommands(1), 2000);
       this.account = account;
       this.catalogLoaded = true;
@@ -603,7 +634,15 @@ export class SessionController {
     const dir = this.directory;
     if (!dir) return [];
     const project = await this.client.projectId(dir);
-    return project ? this.client.listSavedPermissions(project) : [];
+    const list = project ? await this.client.listSavedPermissions(project) : [];
+    this.savedActions = [...new Set(list.map((r) => r.action).filter(Boolean))];
+    return list;
+  }
+
+  /** Changes a saved rule's action or pattern (OpenCode refuses one the folder already has). */
+  async updateSavedPermission(id: string, change: { action?: string; resource?: string }): Promise<void> {
+    await this.client.updateSavedPermission(id, change);
+    this.log.info(`Changed a saved permission (${id})`);
   }
 
   /** Stops always allowing a rule: OpenCode asks again next time. */
@@ -705,6 +744,7 @@ export class SessionController {
   /** Starts a fresh conversation. The OpenCode session is created lazily on first send. */
   async newSession(): Promise<void> {
     this.loadToken++;
+    this.nextMode = null;
     this.leaveSession();
     this.clearSession();
     if (this.directory) await this.store.update(this.key("session"), undefined);
@@ -1210,7 +1250,9 @@ export class SessionController {
         this.dropEcho(echo);
         this.log.error("Switching agent failed", e);
         this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not switch agent") }]);
+        return;
       }
+      await this.refitMode();
     }
   }
 
@@ -1261,11 +1303,18 @@ export class SessionController {
   /** The open session, created on first use (like the first prompt does). */
   private async ensureSession(): Promise<SessionSummary> {
     if (this.current) return this.current;
+    // The approval mode picked for it, or the folder's, is set as the session is created.
+    const mode = this.nextMode ?? this.folderMode();
+    const permissions =
+      mode && mode !== "default" ? presetRules(mode, this.rulesOf(this.selectedAgent)) : undefined;
     const created = await this.client.createSession({
       directory: this.directory!,
       agent: this.selectedAgent ?? undefined,
       model: this.modelRef(),
+      ...(permissions?.length ? { permissions } : {}),
     });
+    this.nextMode = null;
+    if (mode && mode !== "default") this.modeHints.set(created.id, mode);
     this.current = created;
     this.sessionCost = created.cost ?? 0;
     this.loadToken++;
@@ -1868,6 +1917,186 @@ export class SessionController {
     }
   }
 
+  // -------------------------------------------------------------- approval
+  //
+  // Approval modes are sets of session rules (see src/shared/approval.ts). OpenCode keeps
+  // them on the session; Sidecar reads them back after every change and follows
+  // `session.permissions`, so the badge shows what OpenCode will actually do. The folder
+  // scope is Sidecar's: the mode new sessions in the folder start in. OpenCode's config
+  // files are never written.
+
+  /** The mode new sessions in this folder start in, when one was picked for the folder. */
+  folderMode(): ApprovalMode | null {
+    const m = this.store.get<string>(this.key("approval"));
+    return APPROVAL_MODES.find((x) => x === m) ?? null;
+  }
+
+  private rulesOf(agent: string | null | undefined): PermissionRule[] | null {
+    return agent && this.agentRules ? (this.agentRules[agent] ?? null) : null;
+  }
+
+  /** The open session's rules split into its mode and the user's own rules. */
+  private classified() {
+    const rules = this.current?.permissions ?? [];
+    const agent = this.selectedAgent ?? this.current?.agent ?? null;
+    const prefer = (this.current && this.modeHints.get(this.current.id)) || this.folderMode();
+    return classifyRules(rules, [this.rulesOf(agent), ...Object.values(this.agentRules ?? {})], prefer);
+  }
+
+  approvalView(): Omit<ApprovalView, "confirmAuto"> {
+    const actions = new Set<string>(KNOWN_ACTIONS);
+    for (const rules of Object.values(this.agentRules ?? {}))
+      for (const r of rules) if (!/[*?]/.test(r.action)) actions.add(r.action);
+    for (const a of this.savedActions) actions.add(a);
+    const common = { folderMode: this.folderMode(), actions: [...actions].sort(), busy: this.approvalBusy };
+    if (!this.current) {
+      const mode = this.nextMode ?? this.folderMode() ?? "default";
+      const modeRules = mode === "default" ? [] : presetRules(mode, this.rulesOf(this.selectedAgent));
+      return { ...common, mode, modeRules, rules: [], session: false };
+    }
+    const c = this.classified();
+    return { ...common, mode: c.mode, modeRules: c.modeRules, rules: c.custom, session: true };
+  }
+
+  /**
+   * Switches the approval mode: the session's rules become the mode's (fitted to its
+   * agent) followed by the user's own. "folder" also makes it the folder's mode for new
+   * sessions. Without a session, the next one starts in it.
+   */
+  async setApprovalMode(mode: ApprovalMode | "default", scope: "session" | "folder"): Promise<void> {
+    if (!this.directory) return;
+    if (scope === "folder")
+      await this.store.update(this.key("approval"), mode === "default" ? undefined : mode);
+    if (!this.current) {
+      this.nextMode = scope === "folder" ? null : mode;
+      this.sink.onStateChanged();
+      return;
+    }
+    const custom = this.classified().custom;
+    const agent = this.selectedAgent ?? this.current.agent;
+    const rules = mode === "default" ? custom : [...presetRules(mode, this.rulesOf(agent)), ...custom];
+    if (mode === "default") this.modeHints.delete(this.current.id);
+    else this.modeHints.set(this.current.id, mode);
+    await this.writeRules(this.current.id, rules, `approval mode ${mode}`);
+  }
+
+  /** Replaces the open session's own rules (those after its mode's). */
+  async setSessionRules(rules: PermissionRule[]): Promise<void> {
+    if (!this.current) return;
+    await this.writeRules(this.current.id, [...this.classified().modeRules, ...rules], "session rules");
+  }
+
+  /** After an agent switch, fits the session's mode to the new agent (Plan keeps not editing). */
+  private async refitMode(): Promise<void> {
+    if (!this.current || !this.agentRules) return;
+    const c = this.classified();
+    if (c.mode === "default" || c.mode === "custom") return;
+    const next = [...presetRules(c.mode, this.rulesOf(this.selectedAgent)), ...c.custom];
+    if (!sameRules(next, this.current.permissions ?? []))
+      await this.writeRules(this.current.id, next, `approval mode ${c.mode} for ${this.selectedAgent}`);
+  }
+
+  /** Sends a session's rules and reads back what OpenCode stored. */
+  private async writeRules(sessionID: string, rules: PermissionRule[], what: string): Promise<boolean> {
+    this.approvalBusy = true;
+    this.sink.onStateChanged();
+    try {
+      await this.client.setSessionPermissions(sessionID, rules);
+      const stored = (await this.client.getSession(sessionID)).permissions ?? [];
+      if (this.current?.id === sessionID) this.current = { ...this.current, permissions: stored };
+      if (!sameRules(stored, rules)) this.log.warn(`OpenCode stored other rules than were sent (${what})`);
+      this.log.info(`Set ${what} on session ${sessionID} (${stored.length} rules)`);
+      return true;
+    } catch (e) {
+      this.log.error(`Setting ${what} failed`, e);
+      this.emit([
+        { type: "notice", level: "error", text: friendlyError(e, "Could not change the permission rules") },
+      ]);
+      return false;
+    } finally {
+      this.approvalBusy = false;
+      this.sink.onStateChanged();
+    }
+  }
+
+  /**
+   * "Always allow commands like this": allows the request once and adds allow rules for
+   * `patterns`. "session": on the asking session (and the open one, whose next subagents
+   * inherit them). "folder": OpenCode's "always" reply saves its own patterns for the
+   * folder, which are then changed to `patterns`.
+   */
+  async allowLike(requestId: string, patterns: string[], scope: "session" | "folder"): Promise<void> {
+    const item = this.transcript.get(`perm:${requestId}`);
+    if (!this.current || item?.kind !== "permission" || item.status !== "pending") return;
+    const r = item.request;
+    const wanted = [...new Set(patterns.map((p) => p.trim()).filter(Boolean))];
+    if (!wanted.length) return;
+    if (scope === "folder") return this.allowLikeInFolder(requestId, r, wanted);
+    const add = wanted.map((resource): PermissionRule => ({ action: r.action, resource, effect: "allow" }));
+    for (const id of new Set([r.sessionID, this.current.id])) {
+      const base =
+        id === this.current.id
+          ? (this.current.permissions ?? [])
+          : await this.client
+              .getSession(id)
+              .then((s) => s.permissions ?? [])
+              .catch(() => null);
+      if (base === null) continue;
+      const next = [...base, ...add.filter((a) => !base.some((b) => sameRule(a, b)))];
+      if (!(await this.writeRules(id, next, `allow rules for ${r.action}`))) return;
+    }
+    await this.respondPermission(requestId, "once");
+  }
+
+  private async allowLikeInFolder(
+    requestId: string,
+    r: Extract<TranscriptItem, { kind: "permission" }>["request"],
+    wanted: string[],
+  ): Promise<void> {
+    if (!r.canAlways || !this.directory) return;
+    let project: string | null;
+    let before = new Set<string>();
+    try {
+      project = await this.client.projectId(this.directory);
+      if (project) before = new Set((await this.client.listSavedPermissions(project)).map((x) => x.id));
+    } catch (e) {
+      this.log.error("Listing saved permissions failed", e);
+      project = null;
+    }
+    await this.respondPermission(requestId, "always");
+    const done = this.transcript.get(`perm:${requestId}`);
+    if (!project || done?.kind !== "permission" || done.status !== "always") return;
+    try {
+      const added = (await this.client.listSavedPermissions(project)).filter(
+        (x) => !before.has(x.id) && x.action === r.action,
+      );
+      // OpenCode saves one rule per save pattern; each takes the pattern typed for it, in order.
+      const order = r.patterns ?? [];
+      added.sort((a, b) => order.indexOf(a.resource) - order.indexOf(b.resource));
+      for (let i = 0; i < added.length && i < wanted.length; i++) {
+        if (added[i].resource === wanted[i]) continue;
+        try {
+          await this.client.updateSavedPermission(added[i].id, { resource: wanted[i] });
+        } catch (e) {
+          // The folder already allows that pattern: the narrower copy is not needed.
+          if (e instanceof OpenCodeHttpError && e.status === 409)
+            await this.client.removeSavedPermission(added[i].id);
+          else throw e;
+        }
+      }
+      this.log.info(`Saved ${Math.min(added.length, wanted.length)} folder rule(s) for ${r.action}`);
+    } catch (e) {
+      this.log.error("Changing the saved rule failed", e);
+      this.emit([
+        {
+          type: "notice",
+          level: "error",
+          text: friendlyError(e, "Allowed always, but could not change the saved pattern"),
+        },
+      ]);
+    }
+  }
+
   // ------------------------------------------------------------------ forms
 
   /** Validates and submits an answer to an OpenCode form/question. Returns an error message on failure. */
@@ -2183,12 +2412,20 @@ export class SessionController {
       case "session.selection":
         // Follow an agent or model chosen in another client (the TUI, another window).
         if (this.current && this.staleEcho(this.current.id, ev)) break;
-        if (ev.agent && this.agents?.some((a) => a.id === ev.agent)) this.selectedAgent = ev.agent;
+        if (ev.agent && this.agents?.some((a) => a.id === ev.agent)) {
+          const changed = this.selectedAgent !== ev.agent;
+          this.selectedAgent = ev.agent;
+          if (changed && !replay) void this.refitMode();
+        }
         if (ev.modelKey && this.models?.some((m) => m.key === ev.modelKey)) {
           this.selectedModel = ev.modelKey;
           const variants = this.models.find((m) => m.key === ev.modelKey)?.variants ?? [];
           this.selectedVariant = ev.variant && variants.includes(ev.variant) ? ev.variant : null;
         }
+        break;
+      case "session.permissions":
+        // Rules set by Sidecar, the TUI or another client: the badge follows them.
+        if (this.current) this.current = { ...this.current, permissions: ev.rules };
         break;
       case "user.message":
         if (this.firstUserText === null) this.firstUserText = ev.text;

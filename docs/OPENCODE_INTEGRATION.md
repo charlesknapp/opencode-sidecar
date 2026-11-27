@@ -42,9 +42,12 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | Staged rewind ✓              | `DELETE /api/session/{id}/revert` (Restore) or `POST …/revert/commit` (Apply)                                         |
 | Compact                      | `POST /api/session/{id}/compact` `{}`                                                                                 |
 | Shell (`!command`) ✓         | `POST /api/session/{id}/shell` `{ command }`                                                                          |
-| Permissions                  | `GET …/permission` ✓, `POST …/permission/{requestID}/reply` `{ decision, message? }`                                  |
+| Permissions ✓                | `GET …/permission`, `POST …/permission/{requestID}/reply` `{ decision, message? }`                                    |
 | Folder's project ✓           | `GET /api/location?location[directory]=` (its `project.id`; `C:\` and `c:\` are different projects)                   |
-| Always-allowed rules         | `GET /api/permission/saved?projectID=` ✓, `DELETE /api/permission/saved/{id}` (from OpenCode's API description)       |
+| Always-allowed rules ✓       | `GET /api/permission/saved?projectID=`, `PATCH /api/permission/saved/{id}` `{ action?, resource? }`, `DELETE …/{id}`  |
+| Session rules ✓              | `PATCH /api/session/{id}` `{ permissions }` (the whole list), read back with `GET /api/session/{id}`                  |
+| Agents' rules ✓              | `GET /api/agent` (each agent's `permissions`, subagents included)                                                     |
+| New session in a mode ✓      | `POST /api/session` `{ location, agent, model, permissions }`                                                         |
 | Questions (forms)            | `GET …/form`, `POST …/form/{formID}/reply` `{ answer }`, `DELETE …/form/{formID}`                                     |
 | Pending (steer/queue) items  | `GET …/inbox`, `DELETE …/inbox/{inboxID}`, `PATCH …/inbox/{inboxID}` `{ delivery }` (from OpenCode's API description) |
 | Agent-only changes           | `GET …/diff?from=…&to=…` without `context`, for full-file patches                                                     |
@@ -76,6 +79,7 @@ The stream is global, so the controller filters by `sessionID`.
 | `session.shell.started/ended` ✓                                                    | `!command` as a Shell row                              |
 | `session.synthetic` with `metadata.source: "subagent"`                             | a subagent's report, handed back to its parent         |
 | `permission.asked/replied`, `form.created/replied/cancelled`                       | the permission and question docks                      |
+| `session.permissions` ✓                                                            | the approval badge and the session's rules             |
 | `session.step.started/ended/failed`, `session.usage.updated`                       | context, cost, steps, Budget Guard, cache estimate     |
 | `session.revert.staged/committed/cleared` ✓                                        | reload the open session; a staged rewind shows its bar |
 | `session.agent.selected`, `session.model.selected`                                 | follow an agent or model chosen in another client      |
@@ -86,6 +90,31 @@ The stream is global, so the controller filters by `sessionID`.
 | `integration.updated`, `provider.updated`, `model.updated`, `models-dev.refreshed` | reload models, agents and account state (debounced)    |
 
 Stored history replays `user`, `assistant` (text, thinking, tool parts), `shell`, `synthetic`, `compaction` and `idle` messages through the same model, with OpenCode's stored times.
+
+## Permissions and approval modes
+
+How OpenCode 2.4 decides, checked against the live service (and its build):
+
+- A rule is `{ action, resource, effect }` with `effect` `allow`, `ask` or `deny` (`Permission.Rule`). A request names an `action` (`shell`, `edit`, `read`, `glob`, `grep`, `external_directory`, `webfetch`, `websearch`, `subagent`, `skill`, …) and its `resources` (a command, a path, a URL), plus `save`, the patterns an _always_ reply would save.
+- The rules checked are the **agent's** (`GET /api/agent`) followed by the **session's** `permissions`. The last rule that matches wins; no match means _ask_; one denied resource denies the request. If the result is _ask_, the folder's **saved** rules (allow only) can still allow it.
+- Patterns are globs: `*` any text, `?` one character, a trailing ` *` also matches nothing (`npm test *` matches `npm test`), case-insensitive, with `\` read as `/`. Actions match the same way, so an agent's `{ action: "*", resource: "*" }` covers every action.
+- Build allows everything except reading `.env` files (ask) and the browser (deny); Plan also denies `edit` except its plan files. So by default OpenCode asks for very little.
+- `PATCH /api/session/{id}` `{ permissions }` replaces the session's list (`[]` clears it; `null` leaves it as it is); an unknown effect is a `400`. Every change emits `session.permissions` with the whole list, whichever client made it. A subagent's session copies its parent's list when it is created (later changes to the parent do not reach it).
+- Saved rules have no create endpoint: OpenCode saves the request's `save` patterns when it is answered `always`. `PATCH /api/permission/saved/{id}` changes a rule's `action` or `resource`; a rule the project already has is a `409`.
+- The config's `permissions` (global `~/.config/opencode` or a folder's `opencode.json`) cannot be changed through the API: `PATCH /api/experimental/config` only accepts `shell`, and `GET /api/config` lists the config documents. Sidecar never writes config files.
+- `POST /api/session/{id}/permission` `{ action, resources, agent?, save? }` evaluates a request without a tool (and opens it when the answer is _ask_). The live tests use it to check what each mode makes OpenCode decide, without a model.
+
+So the least invasive place for each kind of rule:
+
+| Rule                                  | Where                                                                                                             |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| An approval mode for a session        | The session's `permissions`, as the first rules                                                                   |
+| A mode for the folder                 | Sidecar's workspace state; new sessions Sidecar creates in the folder get the mode's rules in `POST /api/session` |
+| The user's own rules for a session    | The session's `permissions`, after the mode's                                                                     |
+| _Always allow like this_ for a folder | OpenCode's saved rules: an `always` reply, then `PATCH` its pattern to the one typed (a duplicate is removed)     |
+| Anything global                       | Not changed: OpenCode's config stays the user's                                                                   |
+
+A mode's rules are fitted to the session's agent (`src/shared/approval.ts`): for each action the mode sets a catch-all (`edit * ask`, `shell * allow`, …), but an action the agent denies outright gets no rule (Plan keeps not editing), one the agent already treats the same way gets none either, and otherwise the agent's own exceptions for that action are repeated after the catch-all (Build's `.env` asks stay in Auto). Auto adds `deny` rules for destructive commands after its allows. On an agent switch (in Sidecar or another client) Sidecar fits the mode to the new agent. The badge reads the list back after each change and on `session.permissions`: the mode whose rules the list starts with, and the user's rules after them; a list that starts with no mode is _Custom_, an empty one _Default_. The TUI's own "auto accept" setting answers requests in the TUI and is not visible to other clients.
 
 ## Side questions
 

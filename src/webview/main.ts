@@ -22,6 +22,15 @@ import type {
   TodoEntry,
   TranscriptItem,
 } from "../shared/model";
+import {
+  APPROVAL_MODES,
+  generalizePattern,
+  globMatch,
+  MODE_LABELS,
+  MODE_LINES,
+  type ApprovalMode,
+  type RuleEffect,
+} from "../shared/approval";
 import type { HostMessage, OfficialLink, ViewState, WebviewMessage } from "../shared/protocol";
 import { Transcript } from "../shared/transcript";
 import { translate, type StringKey } from "./i18n";
@@ -2308,10 +2317,10 @@ function commandsMenu(): MenuEntry[] {
       testid: "mcp-servers",
       disabled: state?.connection.kind !== "connected",
     }),
-    item("Always-allowed actions…", () => openSavedPermissions(), {
+    item("Permission rules…", () => openRulesEditor(), {
       icon: "allowed",
-      sub: "Rules saved when you chose Yes, always allow",
-      testid: "saved-permissions",
+      sub: "What the agent may do without asking, here and in this session",
+      testid: "permission-rules",
       disabled: state?.connection.kind !== "connected",
     }),
     item("Sidecar settings…", () => send({ type: "openSettings" }), {
@@ -2365,67 +2374,437 @@ function mcpServersMenu(): MenuEntry[] {
   return out;
 }
 
-// ------------------------------------------------- always-allowed actions
+// ------------------------------------------------------- approval and rules
 //
-// The rules OpenCode saved when "Yes, always allow" was chosen, for the open folder.
-// Removing one makes OpenCode ask again next time.
+// The approval badge in the header shows the open session's mode as OpenCode reports it
+// and opens a menu to switch. The rules editor lists the session's rules (its mode's,
+// read-only, then the user's own) and the folder's "always allow" rules OpenCode saved.
 
 /** undefined while loading; null when OpenCode could not list them. */
 let savedPerms: SavedPermission[] | null | undefined;
 let savedError = "";
-let reopenSaved = false;
+/** Where a mode picked in the menu applies: the open session, or also new ones in the folder. */
+let approvalScope: "session" | "folder" = "session";
 
-function openSavedPermissions(): void {
-  savedPerms = undefined;
-  showSavedPermissions();
-  send({ type: "loadSavedPermissions" });
+const approvalBtn = h("button", {
+  className: "p-approval",
+  "aria-haspopup": "menu",
+  "data-testid": "approval-badge",
+  onclick: () => openApprovalMenu(),
+});
+
+function paintApproval(s: ViewState): void {
+  const ap = s.approval;
+  approvalBtn.dataset.mode = ap.mode;
+  approvalBtn.disabled = s.connection.kind !== "connected";
+  approvalBtn.classList.toggle("busy", ap.busy);
+  approvalBtn.replaceChildren(icon("allowed"), h("span", { className: "pa-label" }, MODE_LABELS[ap.mode]));
+  const what = ap.mode === "default" || ap.mode === "custom" ? "" : ` · ${MODE_LINES[ap.mode]}`;
+  const tip = `Approval: ${MODE_LABELS[ap.mode]}${ap.session ? "" : " (next session)"}${what}`;
+  approvalBtn.dataset.tip = tip;
+  approvalBtn.setAttribute("aria-label", `${tip} Change`);
 }
 
-function showSavedPermissions(): void {
-  // Redrawn in place: closed first, so openMenu doesn't take it for a second click on /.
-  closeMenu();
-  openMenu(slashBtn, savedPermissionsMenu(), {
-    width: "box",
-    title: "Always allowed in this folder",
-    maxHeight: 320,
-  });
-  if (openMenuState) openMenuState.el.dataset.view = "saved-permissions";
-}
-
-function savedPermissionsMenu(): MenuEntry[] {
-  if (savedPerms === undefined) return [note("Loading…")];
-  if (savedPerms === null) return [note(`Couldn't load them: ${savedError || "OpenCode did not answer."}`)];
-  if (!savedPerms.length)
-    return [
-      note(
-        "Nothing is always allowed here. Choosing “Yes, always allow” on a request adds a rule; it shows up here so you can remove it.",
+function openApprovalMenu(): void {
+  openMenu(approvalBtn, approvalMenu(), {
+    width: 340,
+    align: "end",
+    title: state?.approval.session === false ? "Approval for the next session" : "Approval",
+    maxHeight: 360,
+    footer: [
+      slider(
+        "Apply to",
+        [
+          { value: "session", label: "This session" },
+          { value: "folder", label: "This folder" },
+        ],
+        approvalScope,
+        (v) => {
+          approvalScope = v === "folder" ? "folder" : "session";
+        },
+        "approval-scope",
       ),
-    ];
-  return [
-    ...savedPerms.map((r) =>
-      item(r.resource || "(anything)", () => void confirmRemoveSaved(r), {
-        sub: `${r.action}${r.created ? ` · saved ${relativeTime(r.created)}` : ""} · click to remove`,
-        testid: "saved-permission",
-      }),
-    ),
-    note("OpenCode answers matching requests with Yes without asking. Remove a rule to be asked again."),
-  ];
-}
-
-async function confirmRemoveSaved(r: SavedPermission): Promise<void> {
-  const pick = await confirmDialog({
-    title: "Stop always allowing this?",
-    body: `${r.action}: ${r.resource || "(anything)"}. OpenCode will ask before doing this again.`,
-    choices: [
-      { value: "remove", label: "Stop always allowing", danger: true, testid: "saved-remove" },
-      { value: "keep", label: "Keep it", testid: "saved-keep" },
     ],
   });
-  if (pick !== "remove") return showSavedPermissions();
-  reopenSaved = true;
+}
+
+function approvalMenu(): MenuEntry[] {
+  const ap = state?.approval;
+  if (!ap) return [];
+  const out: MenuEntry[] = [];
+  for (const m of [...APPROVAL_MODES, "default" as const])
+    out.push(
+      item(MODE_LABELS[m], () => void pickMode(m), {
+        sub: MODE_LINES[m],
+        checked: ap.mode === m,
+        detail: ap.folderMode === m ? "folder" : undefined,
+        disabled: ap.busy,
+        testid: `approval-${m}`,
+      }),
+    );
+  if (ap.mode === "custom")
+    out.push(note("This session's rules match no mode. Picking one keeps your own rules after it."));
+  out.push(
+    note("An agent's own blocks stay: Plan still never edits. This folder: new sessions start in the mode."),
+    sep(),
+    item("Permission rules…", () => openRulesEditor(), {
+      icon: "allowed",
+      sub: "The session's rules and the folder's always-allowed ones",
+      testid: "approval-rules",
+    }),
+  );
+  return out;
+}
+
+async function pickMode(mode: ApprovalMode | "default"): Promise<void> {
+  const ap = state?.approval;
+  if (!ap) return;
+  let dontAskAgain = false;
+  if (mode === "auto" && ap.confirmAuto && ap.mode !== "auto") {
+    const pick = await confirmDialog({
+      title: "Switch to Auto?",
+      body: "The agent edits files, runs commands and fetches pages without asking. rm -rf, force pushes and other destructive commands stay blocked, and the Auto badge stays in the header.",
+      choices: [
+        { value: "always", label: "Switch, and don't ask again", testid: "auto-dont-ask" },
+        { value: "auto", label: "Switch to Auto", testid: "auto-confirm" },
+      ],
+    });
+    if (!pick) return;
+    dontAskAgain = pick === "always";
+  }
+  send(
+    dontAskAgain
+      ? { type: "setApprovalMode", mode, scope: approvalScope, dontAskAgain }
+      : { type: "setApprovalMode", mode, scope: approvalScope },
+  );
+}
+
+const EFFECT_LABELS: Record<RuleEffect, string> = { allow: "Allow", ask: "Ask", deny: "Deny" };
+
+let rulesEditor: { el: HTMLElement; paint: () => void; before: HTMLElement | null } | null = null;
+/** The session rule being edited (its index in the session's own rules), or null to add one. */
+let ruleEditing: number | null = null;
+/** The saved rule being edited, with its fields as typed. */
+let savedEditing: { id: string; action: string; resource: string } | null = null;
+
+function ruleRow(
+  r: { action: string; resource: string; effect: RuleEffect },
+  testid: string,
+  tail: Array<Node | null>,
+): HTMLElement {
+  return h(
+    "li",
+    { className: "rule", "data-testid": testid },
+    h("span", { className: `rule-effect e-${r.effect}` }, EFFECT_LABELS[r.effect]),
+    h("code", { className: "rule-action" }, r.action),
+    h("code", { className: "rule-pattern", dir: "ltr" }, r.resource),
+    ...nonNull(tail),
+  );
+}
+
+const smallBtn = (label: string, testid: string, onclick: () => void, disabled = false) =>
+  h("button", { className: "btn subtle small", "data-testid": testid, disabled, onclick }, label);
+
+function openRulesEditor(): void {
+  if (rulesEditor) return;
+  closePopovers();
   savedPerms = undefined;
-  send({ type: "removeSavedPermission", id: r.id });
-  showSavedPermissions();
+  ruleEditing = null;
+  savedEditing = null;
+  send({ type: "loadSavedPermissions" });
+  const before = document.activeElement as HTMLElement | null;
+  // The add/edit form is built once, so typing survives updates of the lists around it.
+  const actionIn = h("input", {
+    className: "rule-in",
+    type: "text",
+    list: "rule-actions",
+    "aria-label": "Action",
+    placeholder: "shell",
+    "data-testid": "rule-action",
+  }) as HTMLInputElement;
+  const actionList = h("datalist", { id: "rule-actions" });
+  const patternIn = h("input", {
+    className: "rule-in grow",
+    type: "text",
+    dir: "ltr",
+    "aria-label": "Pattern",
+    placeholder: "npm test *",
+    "data-testid": "rule-pattern",
+  }) as HTMLInputElement;
+  const effectIn = h(
+    "select",
+    { className: "rule-in", "aria-label": "Effect", "data-testid": "rule-effect" },
+    ...(["allow", "ask", "deny"] as const).map((e) => h("option", { value: e }, EFFECT_LABELS[e])),
+  ) as HTMLSelectElement;
+  const formError = h("div", { className: "rule-error", role: "alert", "data-testid": "rule-error" });
+  const saveBtn = h("button", { className: "btn", "data-testid": "rule-save" }, "Add rule");
+  const cancelBtn = h(
+    "button",
+    { className: "btn subtle", "data-testid": "rule-cancel", hidden: true },
+    "Cancel",
+  );
+  const resetForm = () => {
+    ruleEditing = null;
+    actionIn.value = "shell";
+    patternIn.value = "";
+    effectIn.value = "allow";
+    formError.textContent = "";
+  };
+  resetForm();
+  const submit = () => {
+    const ap = state?.approval;
+    if (!ap?.session) return;
+    const r = { action: actionIn.value.trim(), resource: patternIn.value.trim(), effect: effectIn.value };
+    if (!/^[\w.*?:-]{1,100}$/.test(r.action)) {
+      formError.textContent = "Pick an action, such as shell or edit.";
+      return actionIn.focus();
+    }
+    if (!r.resource) {
+      formError.textContent = "Type a pattern; * matches anything.";
+      return patternIn.focus();
+    }
+    const rule = r as { action: string; resource: string; effect: RuleEffect };
+    const rules = [...ap.rules];
+    if (ruleEditing !== null && ruleEditing < rules.length) rules[ruleEditing] = rule;
+    else rules.push(rule);
+    send({ type: "setSessionRules", rules });
+    resetForm();
+    paint();
+  };
+  saveBtn.addEventListener("click", submit);
+  cancelBtn.addEventListener("click", () => {
+    resetForm();
+    paint();
+  });
+  for (const f of [actionIn, patternIn])
+    f.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submit();
+      }
+    });
+  const form = h(
+    "div",
+    { className: "rule-form", "data-testid": "rule-form" },
+    actionIn,
+    actionList,
+    patternIn,
+    effectIn,
+    saveBtn,
+    cancelBtn,
+  );
+  const sessionList = h("ul", { className: "rules-list", "data-testid": "session-rules" });
+  const sessionNote = h("p", { className: "rules-note" });
+  const savedList = h("ul", { className: "rules-list", "data-testid": "saved-rules" });
+  const savedNote = h("p", { className: "rules-note" });
+  const close = () => {
+    rulesEditor = null;
+    document.removeEventListener("keydown", onKey, true);
+    backdrop.remove();
+    if (before?.isConnected) before.focus();
+  };
+  const doneBtn = h("button", { className: "btn", "data-testid": "rules-close", onclick: close }, "Done");
+  const dialog = h(
+    "div",
+    {
+      className: "modal rules-editor",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "rules-title",
+      "data-testid": "rules-editor",
+      tabindex: "-1",
+    },
+    h("h2", { id: "rules-title" }, "Permission rules"),
+    h(
+      "p",
+      { className: "rules-note" },
+      "OpenCode checks the agent's rules, then the session's; the last one that matches decides. * matches anything.",
+    ),
+    h("h3", {}, "This session"),
+    sessionList,
+    sessionNote,
+    form,
+    formError,
+    h("h3", {}, "This folder: always allowed"),
+    savedList,
+    savedNote,
+    h("div", { className: "modal-foot" }, doneBtn),
+  );
+  const backdrop = h(
+    "div",
+    {
+      className: "modal-backdrop",
+      onmousedown: (e: Event) => {
+        if (e.target === backdrop) close();
+      },
+    },
+    dialog,
+  );
+  // On the document: a list redrawn under the focus must not leave Escape and Tab unheard.
+  const onKey = (e: KeyboardEvent) => {
+    if (dialogOpen) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (savedEditing || ruleEditing !== null) {
+        savedEditing = null;
+        resetForm();
+        paint();
+      } else close();
+    } else if (e.key === "Tab") {
+      // Focus stays inside while it is open.
+      const f = Array.from(dialog.querySelectorAll<HTMLElement>("button, input, select")).filter(
+        (x) => !(x as HTMLButtonElement).disabled && !x.hidden,
+      );
+      const i = f.indexOf(document.activeElement as HTMLElement);
+      e.preventDefault();
+      f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length]?.focus();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+
+  function paint(): void {
+    const ap = state?.approval;
+    if (!ap) return;
+    // A redrawn row's button had the focus: it goes to the same button of the new row.
+    const had = document.activeElement as HTMLElement | null;
+    const hadList = had && (sessionList.contains(had) || savedList.contains(had)) ? had : null;
+    const hadKey = hadList
+      ? [
+          hadList.dataset.testid,
+          Array.from(dialog.querySelectorAll(`[data-testid="${hadList.dataset.testid}"]`)).indexOf(hadList),
+        ]
+      : null;
+    queueMicrotask(() => {
+      const now = document.activeElement;
+      if (!hadKey || hadList?.isConnected || (now && now !== document.body && dialog.contains(now))) return;
+      const same = dialog.querySelectorAll<HTMLElement>(`[data-testid="${hadKey[0]}"]`)[hadKey[1] as number];
+      (same && !(same as HTMLButtonElement).disabled ? same : dialog).focus();
+    });
+    actionList.replaceChildren(...ap.actions.map((a) => h("option", { value: a })));
+    const busy = ap.busy;
+    const label = MODE_LABELS[ap.mode];
+    const editRow = (i: number) => () => {
+      const r = ap.rules[i];
+      ruleEditing = i;
+      actionIn.value = r.action;
+      patternIn.value = r.resource;
+      effectIn.value = r.effect;
+      formError.textContent = "";
+      paint();
+      patternIn.focus();
+    };
+    sessionList.replaceChildren(
+      ...ap.modeRules.map((r) =>
+        ruleRow(r, "mode-rule", [h("span", { className: "rule-from" }, `from ${label}`)]),
+      ),
+      ...ap.rules.map((r, i) =>
+        ruleRow(r, "session-rule", [
+          smallBtn("Edit", "rule-edit", editRow(i), busy || !ap.session),
+          smallBtn(
+            "Delete",
+            "rule-delete",
+            () => {
+              if (ruleEditing === i) resetForm();
+              send({ type: "setSessionRules", rules: ap.rules.filter((_, j) => j !== i) });
+            },
+            busy || !ap.session,
+          ),
+        ]),
+      ),
+    );
+    sessionNote.textContent = !ap.session
+      ? "Start or open a session to give it rules of its own; the next session starts with these."
+      : ap.rules.length
+        ? ""
+        : "No rules of your own yet. Add one below; it applies after the mode's.";
+    form.hidden = !ap.session;
+    saveBtn.textContent = ruleEditing === null ? "Add rule" : "Save rule";
+    cancelBtn.hidden = ruleEditing === null;
+    saveBtn.disabled = busy;
+    if (savedPerms === undefined) {
+      savedList.replaceChildren();
+      savedNote.textContent = "Loading…";
+    } else if (savedPerms === null) {
+      savedList.replaceChildren();
+      savedNote.textContent = `Couldn't load them: ${savedError || "OpenCode did not answer."}`;
+    } else {
+      const list = savedPerms;
+      savedList.replaceChildren(
+        ...list.map((r) => {
+          if (savedEditing?.id === r.id) {
+            const ed = savedEditing;
+            const a = h("input", {
+              className: "rule-in",
+              type: "text",
+              list: "rule-actions",
+              "aria-label": "Action",
+              "data-testid": "saved-action",
+            }) as HTMLInputElement;
+            const p = h("input", {
+              className: "rule-in grow",
+              type: "text",
+              dir: "ltr",
+              "aria-label": "Pattern",
+              "data-testid": "saved-pattern",
+            }) as HTMLInputElement;
+            a.value = ed.action;
+            p.value = ed.resource;
+            a.addEventListener("input", () => (ed.action = a.value));
+            p.addEventListener("input", () => (ed.resource = p.value));
+            const save = () => {
+              const action = a.value.trim();
+              const resource = p.value.trim();
+              if (!/^[\w.*?:-]{1,100}$/.test(action) || !resource) return;
+              savedEditing = null;
+              savedPerms = undefined;
+              send({ type: "updateSavedPermission", id: r.id, action, resource });
+              paint();
+            };
+            p.addEventListener("keydown", (e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                save();
+              }
+            });
+            return h(
+              "li",
+              { className: "rule editing", "data-testid": "saved-permission" },
+              h("span", { className: "rule-effect e-allow" }, "Allow"),
+              a,
+              p,
+              smallBtn("Save", "saved-save", save),
+              smallBtn("Cancel", "saved-cancel", () => {
+                savedEditing = null;
+                paint();
+              }),
+            );
+          }
+          return ruleRow({ ...r, effect: "allow" }, "saved-permission", [
+            r.created ? h("span", { className: "rule-from" }, relativeTime(r.created)) : null,
+            smallBtn("Edit", "saved-edit", () => {
+              savedEditing = { id: r.id, action: r.action, resource: r.resource };
+              paint();
+              savedList.querySelector<HTMLInputElement>('[data-testid="saved-pattern"]')?.focus();
+            }),
+            smallBtn("Remove", "saved-remove", () => {
+              savedPerms = undefined;
+              send({ type: "removeSavedPermission", id: r.id });
+              paint();
+            }),
+          ]);
+        }),
+      );
+      savedNote.textContent = list.length
+        ? "OpenCode allows matching requests in this folder without asking. Removing one makes it ask again."
+        : "Nothing is always allowed here. Yes, always allow on a request adds a rule here.";
+    }
+  }
+
+  document.body.append(backdrop);
+  rulesEditor = { el: backdrop, paint, before };
+  paint();
+  (form.hidden ? doneBtn : patternIn).focus();
 }
 
 function modelMenuOptions(): MenuOptions {
@@ -2953,10 +3332,12 @@ function renderHeader(s: ViewState) {
         h("span", {}, branch),
       )
     : null;
+  paintApproval(s);
   headerEl.replaceChildren(
     titleEl,
     branchEl ?? "",
     h("span", { className: "grow" }),
+    approvalBtn,
     h(
       "div",
       { className: "p-icons" },
@@ -4738,6 +5119,136 @@ function dockHead(children: Array<Node | null>, count: number, trailing: Node | 
   );
 }
 
+/** "Always allow … like this" per request, while open: the patterns as typed and where they apply. */
+const dockLike = new Map<string, { patterns: string[]; scope: "session" | "folder" }>();
+
+/**
+ * "Always allow commands like this…": a pattern made from the request (`npm test *` for
+ * `npm test -- --grep foo`) to edit before saving, for this session or the folder, so
+ * near-identical requests stop asking. The request itself is allowed once.
+ */
+function likeEditor(r: PermItem["request"], sending: boolean): HTMLElement {
+  const shell = /(bash|shell|command|exec)/i.test(r.action);
+  const open = dockLike.get(r.id);
+  const toggle = h(
+    "button",
+    {
+      className: "like-link",
+      "data-key": "perm:like",
+      "data-testid": "perm-like",
+      "aria-expanded": String(!!open),
+      disabled: sending,
+      onclick: () => {
+        if (open) dockLike.delete(r.id);
+        else
+          dockLike.set(r.id, {
+            patterns: [...new Set(r.resources.slice(0, 5).map((x) => generalizePattern(r.action, x)))],
+            scope: "session",
+          });
+        renderDock(true);
+        if (!open) dockEl.querySelector<HTMLElement>('[data-testid="perm-like-pattern"]')?.focus();
+      },
+    },
+    shell ? "Always allow commands like this…" : "Always allow requests like this…",
+  );
+  if (!open) return h("div", { className: "like" }, toggle);
+  const save = () => {
+    const patterns = open.patterns.map((p) => p.trim()).filter(Boolean);
+    if (!patterns.length || sending) return;
+    dockLike.delete(r.id);
+    send({ type: "allowLike", requestId: r.id, patterns, scope: open.scope });
+  };
+  const match = h("div", { className: "like-match", "data-testid": "perm-like-match" });
+  const paintMatch = () => {
+    const covers = r.resources.every((x) => open.patterns.some((p) => p.trim() && globMatch(x, p.trim())));
+    match.textContent = covers
+      ? "Covers this request and others like it."
+      : "Doesn't cover this request; it is still allowed once.";
+    match.classList.toggle("warn", !covers);
+  };
+  const inputs = open.patterns.map((p, i) => {
+    const field = h("input", {
+      className: "tell like-in",
+      type: "text",
+      dir: "ltr",
+      "aria-label": "Pattern to always allow (* matches anything)",
+      "data-key": `perm:like:${i}`,
+      "data-testid": "perm-like-pattern",
+      disabled: sending,
+    }) as HTMLInputElement;
+    field.value = p;
+    field.addEventListener("input", () => {
+      open.patterns[i] = field.value;
+      paintMatch();
+    });
+    field.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        save();
+      }
+    });
+    return field;
+  });
+  paintMatch();
+  const scopeBtn = (scope: "session" | "folder", label: string, tip: string, disabled = false) =>
+    h(
+      "button",
+      {
+        className: "seg-btn" + (open.scope === scope ? " on" : ""),
+        "aria-pressed": String(open.scope === scope),
+        "data-key": `perm:like:${scope}`,
+        "data-testid": `perm-like-${scope}`,
+        "data-tip": tip,
+        disabled: disabled || sending,
+        onclick: () => {
+          open.scope = scope;
+          renderDock(true);
+        },
+      },
+      label,
+    );
+  return h(
+    "div",
+    { className: "like open", "data-testid": "perm-like-editor" },
+    toggle,
+    ...inputs,
+    match,
+    h(
+      "div",
+      { className: "like-row" },
+      h(
+        "span",
+        { className: "seg-group", role: "group", "aria-label": "Allow it for" },
+        scopeBtn("session", "This session", "Until this session ends; its new subagents too"),
+        scopeBtn(
+          "folder",
+          "This folder",
+          r.canAlways
+            ? "Saved by OpenCode for the folder, like Yes, always allow"
+            : "OpenCode offers no folder rule for this request",
+          !r.canAlways,
+        ),
+      ),
+      h("span", { className: "grow" }),
+      h(
+        "button",
+        { className: "btn subtle small", "data-testid": "perm-like-cancel", onclick: () => toggle.click() },
+        "Cancel",
+      ),
+      h(
+        "button",
+        {
+          className: "btn small",
+          "data-key": "perm:like:save",
+          "data-testid": "perm-like-save",
+          onclick: save,
+        },
+        "Allow",
+      ),
+    ),
+  );
+}
+
 function permissionDock(item: PermItem, count: number): HTMLElement {
   const r = item.request;
   const sending = item.status === "sending";
@@ -4809,6 +5320,7 @@ function permissionDock(item: PermItem, count: number): HTMLElement {
         ),
       ),
     );
+    parts.push(likeEditor(r, sending));
     const tell = h("input", {
       className: "tell",
       type: "text",
@@ -4828,6 +5340,16 @@ function permissionDock(item: PermItem, count: number): HTMLElement {
     });
     parts.push(tell, h("div", { className: "esc" }, sending ? "Sending…" : "Esc to cancel"));
     const keys = (e: KeyboardEvent) => {
+      // The pattern editor's own buttons: Escape closes it, digits are not answers there.
+      if (e.target instanceof HTMLElement && e.target.closest(".like.open")) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          dockLike.delete(r.id);
+          renderDock(true);
+          dockEl.querySelector<HTMLElement>('[data-testid="perm-like"]')?.focus();
+        }
+        return;
+      }
       if (e.target instanceof HTMLInputElement) {
         if (e.key === "Escape") {
           e.preventDefault();
@@ -5211,7 +5733,7 @@ function renderDock(force = false): void {
     dockCollapsed,
     req?.kind === "form"
       ? [formDrafts.get(req.form.id), formErrors.get(req.form.id), dockTab.get(req.form.id)]
-      : null,
+      : [!!dockLike.get(req?.id ?? ""), dockLike.get(req?.id ?? "")?.scope],
     state?.subagents.map((v) => [v.sessionID, v.agent, v.title]),
     state?.locale,
   ]);
@@ -6767,6 +7289,7 @@ let lastBusy: boolean | null = null;
 function render() {
   if (!state) return;
   renderHeader(state);
+  rulesEditor?.paint();
   renderStrip(state);
   renderSessions(state);
   renderBookmarks(state);
@@ -6912,10 +7435,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     case "savedPermissions":
       savedPerms = msg.items;
       savedError = msg.error ?? "";
-      if (reopenSaved || openMenuState?.el.dataset.view === "saved-permissions") {
-        reopenSaved = false;
-        showSavedPermissions();
-      }
+      rulesEditor?.paint();
       break;
     case "mentionResults":
       if (mention?.requestId === msg.requestId) {
