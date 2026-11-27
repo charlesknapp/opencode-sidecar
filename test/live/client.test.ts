@@ -1,7 +1,7 @@
 // Live tests: HttpOpenCodeClient against the real local OpenCode service, found the way the
 // extension finds it (discoverServer). They skip when no service is registered or it does not
 // answer, so CI stays green. Every session they create lives in a fresh temporary folder and
-// is deleted afterwards. Only the prompt test calls a model (a free one, with a tiny prompt).
+// is deleted afterwards. Only the prompt tests call a model (a free one, with a tiny prompt).
 //
 //   npm run test:live
 
@@ -19,6 +19,7 @@ import {
 } from "../../src/opencode/client";
 import { EventNormalizer, historyToEvents, type NormalizedEnvelope } from "../../src/opencode/events";
 import { discoverServer } from "../../src/opencode/service";
+import { buildPrompt } from "../../src/core/context";
 import type { SessionSummary } from "../../src/shared/model";
 
 /** Free model used by the one test that needs a reply. */
@@ -363,6 +364,32 @@ describe("live OpenCode service", () => {
       c.getSession("ses_sidecarlivetestmissing"),
       (e) => e instanceof OpenCodeHttpError && e.status >= 400 && e.status < 500 && !!e.message,
     );
+  });
+
+  it("stores a prompt with a large paste exactly as built (stopped before any reply)", async (t) => {
+    const c = live(t);
+    if (!c) return;
+    const models = await c.listModels(dir);
+    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
+      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
+    const s = await c.createSession({ directory: dir, agent: "plan", model: FREE_MODEL });
+    created.add(s.id);
+    const paste = Array.from({ length: 40 }, (_, i) => `\tat frame ${i} ✓ ünï 🚀  `).join("\n") + "\n";
+    const payload = buildPrompt(
+      "  Reply OK. [Pasted text #1]  ",
+      [],
+      [],
+      [{ token: "[Pasted text #1]", text: paste }],
+    );
+    assert.equal(payload.text, `Reply OK. ${paste}`);
+    await c.prompt(s.id, payload);
+    await c.interrupt(s.id).catch(() => false);
+    let stored: Array<{ type?: string; text?: string }> = [];
+    for (let i = 0; i < 30 && !stored.some((m) => m.type === "user"); i++) {
+      stored = (await c.listMessages(s.id, 10)) as typeof stored;
+      if (!stored.some((m) => m.type === "user")) await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal(stored.find((m) => m.type === "user")?.text, payload.text);
   });
 
   it("prompts a free model and replays the reply (one model call)", async (t) => {

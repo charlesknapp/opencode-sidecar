@@ -388,6 +388,31 @@ async function fixture(api: TestApi): Promise<void> {
   );
   check("UI no longer busy after stop", api.viewState().busy === false && api.viewState().stopping === false);
   await v02Fixture(api);
+  await pastedText(api);
+}
+
+// ============================================================ pasted text
+
+/** A large paste sent as a chip reaches OpenCode exactly, where its token was. */
+async function pastedText(api: TestApi): Promise<void> {
+  await api.handle({ type: "newSession" });
+  const paste = Array.from({ length: 12 }, (_, i) => `\tline ${i + 1} ✓  `).join("\n") + "\n";
+  const since = events.length;
+  await api.handle({
+    type: "send",
+    text: "How many lines does this text have? Reply with the number only. [Pasted text #1]",
+    pastes: [{ token: "[Pasted text #1]", text: paste }],
+  });
+  await waitIdle(api, since);
+  const sid = api.controller()?.current?.id;
+  const stored = sid ? await storedMessages(sid) : [];
+  const user = stored.find((m) => m.type === "user");
+  check(
+    "Pasted text reaches OpenCode exactly, in its place",
+    user?.text === `How many lines does this text have? Reply with the number only. ${paste}`,
+    JSON.stringify(user?.text).slice(0, 120),
+  );
+  check("The model read the pasted text", /\b12\b/.test(lastAssistantText(api)), lastAssistantText(api));
 }
 
 // ========================================================= controls and budget

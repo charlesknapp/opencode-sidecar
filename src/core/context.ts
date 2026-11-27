@@ -96,22 +96,76 @@ export function formatSelection(a: Extract<ContextAttachment, { kind: "selection
   return `Selected code from \`${a.relPath}\` (${range}):\n${fence}${lang}\n${body}${fence}`;
 }
 
+/** A large paste held as a chip in the message box; `token` marks its place in the text. */
+export interface PastedText {
+  token: string;
+  text: string;
+}
+
+/**
+ * Puts each paste's text where its token is (the first free occurrence), exactly as
+ * pasted. Mention spans found in the text with the tokens are moved to match. A token
+ * the user deleted is not found and its paste is dropped, as with mentions.
+ */
+export function expandPastes<M extends { span: MentionSpan }>(
+  text: string,
+  pastes: readonly PastedText[],
+  found: readonly M[] = [],
+): { text: string; mentions: M[] } {
+  const taken: Array<[number, number]> = found.map((m) => [m.span.start, m.span.end]);
+  const at: Array<{ start: number; end: number; text: string }> = [];
+  for (const p of pastes) {
+    if (!p.token) continue;
+    for (let from = 0; ;) {
+      const i = text.indexOf(p.token, from);
+      if (i < 0) break;
+      const end = i + p.token.length;
+      if (!taken.some(([s, e]) => i < e && end > s)) {
+        taken.push([i, end]);
+        at.push({ start: i, end, text: p.text });
+        break;
+      }
+      from = i + 1;
+    }
+  }
+  if (!at.length) return { text, mentions: [...found] };
+  at.sort((a, b) => a.start - b.start);
+  let out = "";
+  let last = 0;
+  for (const r of at) {
+    out += text.slice(last, r.start) + r.text;
+    last = r.end;
+  }
+  out += text.slice(last);
+  // Text before a mention grew or shrank by each paste in front of it.
+  const shift = (pos: number) =>
+    at.reduce((d, r) => (r.end <= pos ? d + r.text.length - (r.end - r.start) : d), 0);
+  const mentions = found.map((m) => {
+    const d = shift(m.span.start);
+    return { ...m, span: { ...m.span, start: m.span.start + d, end: m.span.end + d } };
+  });
+  return { text: out, mentions };
+}
+
 /**
  * Builds OpenCode's prompt input. Files, folders and images become file attachments
  * (OpenCode reads `file://` URIs itself and takes `data:` images inline); selections
  * are added to the text; `@` mentions keep where their token sits in the text, as
- * OpenCode's own terminal UI sends them.
+ * OpenCode's own terminal UI sends them. Pastes are put in after the typed text is
+ * trimmed and its mentions are found, so their text is sent exactly as pasted.
  */
 export function buildPrompt(
   text: string,
   attachments: readonly ContextAttachment[],
   mentions: readonly ResolvedMention[] = [],
+  pastes: readonly PastedText[] = [],
 ): PromptPayload {
   const files: PromptPayload["files"] = [];
   const seen = new Set<string>();
   const snippets: string[] = [];
-  const typed = text.trim();
-  const found = locateMentions(typed, mentions);
+  const expanded = expandPastes(text.trim(), pastes, locateMentions(text.trim(), mentions));
+  const typed = expanded.text;
+  const found = expanded.mentions;
   for (const m of found) {
     if (m.kind !== "file" && m.kind !== "folder") continue;
     seen.add(m.absPath);

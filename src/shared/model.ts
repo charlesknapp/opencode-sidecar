@@ -213,6 +213,12 @@ export interface PromptMention {
   text: string;
 }
 
+/** A large paste shown as a chip; `token` (`[Pasted text #1]`) marks its place in the message. */
+export interface PromptPaste {
+  token: string;
+  text: string;
+}
+
 /** A suggestion in the `@` list. */
 export interface MentionCandidate {
   kind: PromptMention["kind"];

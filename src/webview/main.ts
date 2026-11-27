@@ -95,16 +95,38 @@ let bookmarksOpen = false;
 let subView: { id: string; transcript: Transcript } | null = null;
 let subagentSignature = "";
 
+/**
+ * Large pastes in this draft, shown as chips; `[Pasted text #n]` in the box marks each
+ * one's place. A chip whose token was deleted is kept (Ctrl+Z can bring the token
+ * back) but neither shown nor sent.
+ */
+interface Paste {
+  n: number;
+  text: string;
+}
+let pastes: Paste[] = [];
+/** Texts of pastes sent lately, newest first: a prompt shown again collapses them to chips. */
+let pasteMemory: string[] = [];
+
 const persisted = vscode.getState() as
-  { draft?: string; delivery?: InboxDelivery; mentions?: PromptMention[] } | undefined;
+  | {
+      draft?: string;
+      delivery?: InboxDelivery;
+      mentions?: PromptMention[];
+      pastes?: Paste[];
+      pasteMemory?: string[];
+    }
+  | undefined;
 if (persisted?.draft) draft = persisted.draft;
 if (persisted?.delivery === "queue") deliveryMode = "queue";
 if (Array.isArray(persisted?.mentions)) mentions = persisted.mentions;
+if (Array.isArray(persisted?.pastes)) pastes = persisted.pastes;
+if (Array.isArray(persisted?.pasteMemory)) pasteMemory = persisted.pasteMemory;
 
 const t = (key: StringKey) => translate(state?.locale ?? "en", key);
 
 function persist() {
-  vscode.setState({ draft, delivery: deliveryMode, mentions });
+  vscode.setState({ draft, delivery: deliveryMode, mentions, pastes, pasteMemory });
 }
 
 // ------------------------------------------------------------------- icons
@@ -176,6 +198,12 @@ const ICON_PATHS: Record<string, string[]> = {
     "M3.5 3h9a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z",
     "M2.5 11l3.5-3.5 3 3 2-2 2.5 2.5",
     "F:M10.8 5.2a1.1 1.1 0 1 1 0 2.2a1.1 1.1 0 1 1 0-2.2z",
+  ],
+  // Pasted text: a clipboard with lines of text.
+  paste: [
+    "M6 2.5h4v2H6z",
+    "M6 3.5H4.5a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h7a.5.5 0 0 0 .5-.5V4a.5.5 0 0 0-.5-.5H10",
+    "M6 7.5h4M6 9.5h4M6 11.5h2.5",
   ],
   agent: ["M8 2.5a2.5 2.5 0 1 1 0 5a2.5 2.5 0 1 1 0-5z", "M3 13.5c.5-2.6 2.5-4 5-4s4.5 1.4 5 4"],
   skill: ["M8.5 2L4 9h3.5L7 14l4.5-7H8z"],
@@ -426,7 +454,9 @@ const boxTools = h(
   modeBtn,
   sendBtn,
 );
-const boxEl = h("div", { className: "box" }, chipsEl, input, boxTools);
+/** The pasted text of the chip that was opened, read-only, under the chips. */
+const pasteViewEl = h("div", { className: "paste-view", "data-testid": "paste-view", hidden: true });
+const boxEl = h("div", { className: "box" }, chipsEl, pasteViewEl, input, boxTools);
 /** Permission and question docks replace the message box while a request waits. */
 const dockEl = h("div", { className: "dock-slot", hidden: true });
 composerEl.append(boxEl, dockEl);
@@ -486,6 +516,9 @@ modeBtn.addEventListener("click", () =>
 // while a recalled prompt is shown unedited. Editing it makes it the draft again.
 let historyPos = -1;
 let historyDraft = "";
+let historyDraftPastes: Paste[] = [];
+/** The recalled prompt as shown (its pastes collapsed to tokens), to tell it from an edit. */
+let historyShown = "";
 /** This session's prompts, newest first, without repeats. */
 function promptHistory(): string[] {
   const out: string[] = [];
@@ -497,13 +530,23 @@ function promptHistory(): string[] {
   return out;
 }
 function showHistory(pos: number, hist: string[]): void {
+  if (historyPos < 0 && pos >= 0) historyDraftPastes = pastes;
   historyPos = pos;
-  input.value = pos >= 0 ? hist[pos] : historyDraft;
+  if (pos >= 0) {
+    // A recalled prompt's large pastes come back as chips, not as a wall of text.
+    pastes = [];
+    input.value = adoptPastes(...collapsePastes(hist[pos]));
+    historyShown = input.value;
+  } else {
+    input.value = historyDraft;
+    pastes = historyDraftPastes;
+  }
   draft = input.value;
   persist();
   autosize();
   input.setSelectionRange(input.value.length, input.value.length);
   updateMention();
+  if (state) renderComposer(state);
 }
 /** Handles ↑/↓ for prompt history; true when the key was used. */
 function historyKey(e: KeyboardEvent): boolean {
@@ -511,7 +554,7 @@ function historyKey(e: KeyboardEvent): boolean {
     return false;
   if (subView || e.isComposing) return false;
   const hist = promptHistory();
-  const browsing = historyPos >= 0 && input.value === hist[historyPos];
+  const browsing = historyPos >= 0 && input.value === historyShown;
   if (!browsing && input.value !== "") return false;
   if (e.key === "ArrowUp") {
     if (historyPos + 1 >= hist.length) return browsing || hist.length > 0;
@@ -564,10 +607,209 @@ input.addEventListener("blur", () => closeMention());
 const IMAGE_TYPE = /^image\/(png|jpeg|gif|webp)$/;
 input.addEventListener("paste", (e) => {
   const files = Array.from(e.clipboardData?.files ?? []).filter((f) => IMAGE_TYPE.test(f.type));
-  if (!files.length) return;
+  if (files.length) {
+    e.preventDefault();
+    for (const f of files) void attachImageFile(f);
+    return;
+  }
+  // Large text becomes a chip; small pastes go into the box as usual.
+  const text = e.clipboardData?.getData("text/plain") ?? "";
+  if (!isLargePaste(text)) return;
   e.preventDefault();
-  for (const f of files) void attachImageFile(f);
+  addPaste(text);
 });
+
+// ------------------------------------------------------------ pasted text
+//
+// A paste of more than PASTE_LINES lines or PASTE_CHARS characters is held as a chip
+// ("Pasted text #1 · 120 lines · ~3.1k tokens") and a `[Pasted text #1]` token in the
+// box, which the host replaces with the text on send. Line endings become \n, as the
+// box itself does with pasted text; everything else is kept exactly.
+
+const PASTE_LINES = 8;
+const PASTE_CHARS = 800;
+/** Larger pastes go into the box as text (the host would refuse them as a chip). */
+const PASTE_MAX = 500_000;
+const PASTE_TOKEN = /\[Pasted text #(\d{1,4})\]/g;
+const MEMORY_ENTRIES = 20;
+const MEMORY_CHARS = 1_000_000;
+
+const pasteToken = (n: number) => `[Pasted text #${n}]`;
+const normalizeNewlines = (text: string) => text.replace(/\r\n?/g, "\n");
+/** The paste whose text is shown under the chips. */
+let pasteOpen: number | null = null;
+/** The last message sent with pastes, so one the host hands back gets its chips again. */
+let lastSentPastes: { text: string; pastes: Paste[] } | null = null;
+
+function lineCount(text: string): number {
+  return (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
+}
+
+function isLargePaste(text: string): boolean {
+  const clean = normalizeNewlines(text);
+  return clean.length <= PASTE_MAX && (clean.length > PASTE_CHARS || lineCount(clean) > PASTE_LINES);
+}
+
+/** "120 lines · ~3.1k tokens" (about four characters a token). */
+function pasteSummary(text: string): string {
+  return `${plural(lineCount(text), "line")} · ~${formatTokens(Math.ceil(text.length / 4))} tokens`;
+}
+
+/** Pastes whose token is in the box, in the order they appear. */
+function livePastes(value = input.value): Paste[] {
+  return pastes
+    .filter((p) => value.includes(pasteToken(p.n)))
+    .sort((a, b) => value.indexOf(pasteToken(a.n)) - value.indexOf(pasteToken(b.n)));
+}
+
+const nextPasteN = () => pastes.reduce((n, p) => Math.max(n, p.n), 0) + 1;
+
+/** Takes pastes numbered for `text` into this draft, renumbered after the draft's own. */
+function adoptPastes(text: string, list: readonly Paste[]): string {
+  const map = new Map<number, number>();
+  let next = nextPasteN();
+  for (const p of list) {
+    map.set(p.n, next);
+    pastes.push({ n: next++, text: p.text });
+  }
+  return text.replace(PASTE_TOKEN, (tok, d: string) => {
+    const n = map.get(Number(d));
+    return n === undefined ? tok : pasteToken(n);
+  });
+}
+
+/**
+ * Where a remembered paste is in `text`. The chat shows prompts trimmed,
+ * so a paste that began or ended the message may have lost its outer whitespace.
+ */
+function findPaste(text: string, mem: string): { at: number; len: number } | null {
+  for (const core of new Set([mem, mem.trimEnd(), mem.trimStart(), mem.trim()])) {
+    if (core.length < PASTE_CHARS / 2 && lineCount(core) <= PASTE_LINES) continue;
+    const i = text.indexOf(core);
+    if (i >= 0) return { at: i, len: core.length };
+  }
+  return null;
+}
+
+const byLength = () => [...pasteMemory].sort((a, b) => b.length - a.length);
+
+/** Finds pastes sent lately in `text`, longest first, and puts tokens in their place. */
+function collapsePastes(text: string): [string, Paste[]] {
+  const list: Paste[] = [];
+  let out = text;
+  for (const mem of byLength()) {
+    const f = findPaste(out, mem);
+    if (!f) continue;
+    list.push({ n: list.length + 1, text: mem });
+    out = out.slice(0, f.at) + pasteToken(list.length) + out.slice(f.at + f.len);
+  }
+  return [out, list];
+}
+
+/** The box's text with each live token replaced by its paste (for commands and asides). */
+function expandPastes(text: string): string {
+  for (const p of livePastes(text)) {
+    const tok = pasteToken(p.n);
+    const i = text.indexOf(tok);
+    text = text.slice(0, i) + p.text + text.slice(i + tok.length);
+  }
+  return text;
+}
+
+/** Remembers sent pastes (newest first), within a bounded size. */
+function rememberPastes(texts: readonly string[]): void {
+  let total = 0;
+  pasteMemory = [...texts, ...pasteMemory.filter((m) => !texts.includes(m))].filter((m, i) => {
+    total += m.length;
+    return i < MEMORY_ENTRIES && total <= MEMORY_CHARS;
+  });
+}
+
+/** Holds `text` as a chip and types its token at the caret, keeping Undo working. */
+function addPaste(text: string): void {
+  const n = nextPasteN();
+  pastes.push({ n, text: normalizeNewlines(text) });
+  input.focus();
+  if (!document.execCommand("insertText", false, pasteToken(n))) {
+    input.setRangeText(pasteToken(n), input.selectionStart, input.selectionEnd, "end");
+    input.dispatchEvent(new Event("input"));
+  }
+}
+
+/** Replaces a chip's token in the box, with its text (Edit) or with nothing (×). */
+function replacePaste(n: number, inline: boolean): void {
+  const p = pastes.find((x) => x.n === n);
+  const tok = pasteToken(n);
+  const i = input.value.indexOf(tok);
+  pastes = pastes.filter((x) => x.n !== n);
+  if (pasteOpen === n) pasteOpen = null;
+  if (p && i >= 0) {
+    const text = inline ? p.text : "";
+    input.setRangeText(text, i, i + tok.length, "end");
+    input.focus();
+    input.setSelectionRange(i + text.length, i + text.length);
+  }
+  input.dispatchEvent(new Event("input"));
+}
+
+function pasteChip(p: Paste): HTMLElement {
+  const open = pasteOpen === p.n;
+  const label = `Pasted text #${p.n}`;
+  return h(
+    "span",
+    { className: "chip paste" + (open ? " open" : ""), "data-testid": "paste-chip" },
+    h(
+      "button",
+      {
+        className: "chip-open",
+        "aria-expanded": String(open),
+        "aria-label": `${open ? "Hide" : "Show"} ${label}, ${pasteSummary(p.text)}`,
+        "data-tip": open ? "Hide the pasted text" : "Show the pasted text",
+        "data-testid": "paste-open",
+        onclick: () => {
+          pasteOpen = open ? null : p.n;
+          if (state) renderComposer(state);
+        },
+      },
+      icon("paste"),
+      h("span", { className: "chip-label" }, label),
+      h("span", { className: "chip-detail" }, pasteSummary(p.text)),
+    ),
+    h(
+      "button",
+      {
+        className: "chip-x",
+        "aria-label": `Edit ${label} in the message`,
+        "data-tip": "Put the text in the message box to edit it",
+        "data-testid": "paste-edit",
+        onclick: () => replacePaste(p.n, true),
+      },
+      icon("pencil"),
+    ),
+    h(
+      "button",
+      {
+        className: "chip-x",
+        "aria-label": `Remove ${label}`,
+        "data-testid": "paste-remove",
+        onclick: () => replacePaste(p.n, false),
+      },
+      "×",
+    ),
+  );
+}
+
+function renderPasteView(live: readonly Paste[]): void {
+  const p = live.find((x) => x.n === pasteOpen);
+  pasteViewEl.hidden = !p || !!subView;
+  if (!p) {
+    pasteViewEl.replaceChildren();
+    return;
+  }
+  pasteViewEl.replaceChildren(
+    h("pre", { className: "paste-text", tabindex: "0", "aria-label": `Pasted text #${p.n}` }, p.text),
+  );
+}
 boxEl.addEventListener("dragover", (e) => {
   if (!Array.from(e.dataTransfer?.items ?? []).some((i) => i.kind === "file")) return;
   e.preventDefault();
@@ -647,7 +889,11 @@ function submit(flip = false) {
   const delivery = flip ? otherDelivery() : deliveryMode;
   const text = input.value;
   if (!text.trim()) return;
-  const cmd = /^\/([\w.:/-]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  const live = livePastes(text);
+  // Commands and shell lines take the pasted text in place; a prompt sends it beside the
+  // text, so the host can put it in after finding the mentions.
+  const full = expandPastes(text);
+  const cmd = /^\/([\w.:/-]+)(?:\s+([\s\S]*))?$/.exec(full.trim());
   const known = cmd && (state.commands ?? []).some((c) => c.name === cmd[1]);
   if (cmd && known)
     send(
@@ -656,8 +902,8 @@ function submit(flip = false) {
         : { type: "runCommand", name: cmd[1], text: cmd[2] ?? "" },
     );
   else if (cmd && cmd[1] === "compact" && !cmd[2]) send({ type: "compact" });
-  else if (text.startsWith("!") && text.slice(1).trim())
-    send({ type: "shellCommand", command: text.slice(1).trim() });
+  else if (full.startsWith("!") && full.slice(1).trim())
+    send({ type: "shellCommand", command: full.slice(1).trim() });
   else {
     const picked = mentions.filter((m) => text.includes(m.text));
     send({
@@ -665,12 +911,17 @@ function submit(flip = false) {
       text,
       ...(state.busy ? { delivery } : {}),
       ...(picked.length ? { mentions: picked } : {}),
+      ...(live.length ? { pastes: live.map((p) => ({ token: pasteToken(p.n), text: p.text })) } : {}),
     });
+    lastSentPastes = live.length ? { text, pastes: live } : null;
   }
+  if (live.length) rememberPastes(live.map((p) => p.text));
   input.value = "";
   draft = "";
   historyPos = -1;
   mentions = [];
+  pastes = [];
+  pasteOpen = null;
   closeMention();
   persist();
   autosize();
@@ -4994,7 +5245,7 @@ function renderPrompt(item: Extract<TranscriptItem, { kind: "user" }>): HTMLElem
           ),
         )
       : null,
-    h("div", { className: "btxt", dir: "auto" }, item.text),
+    h("div", { className: "btxt", dir: "auto" }, ...promptText(item)),
     subView
       ? null
       : h(
@@ -5027,6 +5278,55 @@ function renderPrompt(item: Extract<TranscriptItem, { kind: "user" }>): HTMLElem
   );
   if (open) bubble.setAttribute("aria-expanded", "true");
   return bubble;
+}
+
+/**
+ * A prompt's text, with the large pastes it was sent with (as far as this view remembers
+ * them) folded into chips that open in place.
+ */
+function promptText(item: Extract<TranscriptItem, { kind: "user" }>): Array<Node | string> {
+  const found: Array<{ start: number; end: number; text: string }> = [];
+  for (const mem of byLength()) {
+    const f = findPaste(item.text, mem);
+    if (!f || found.some((x) => f.at < x.end && f.at + f.len > x.start)) continue;
+    found.push({ start: f.at, end: f.at + f.len, text: item.text.slice(f.at, f.at + f.len) });
+  }
+  if (!found.length) return [item.text];
+  found.sort((a, b) => a.start - b.start);
+  const out: Array<Node | string> = [];
+  let last = 0;
+  found.forEach((f, k) => {
+    const key = `${item.id}:paste:${k}`;
+    const open = openDetails.has(key);
+    if (f.start > last) out.push(item.text.slice(last, f.start));
+    out.push(
+      h(
+        "button",
+        {
+          className: "chip paste-ref" + (open ? " open" : ""),
+          "aria-expanded": String(open),
+          "aria-label": `${open ? "Hide" : "Show"} the pasted text, ${pasteSummary(f.text)}`,
+          "data-testid": "prompt-paste",
+          onclick: () => {
+            if (open) openDetails.delete(key);
+            else {
+              openDetails.add(key);
+              // The bubble opens with it, so the text is not cut to two lines.
+              openDetails.add(`${item.id}:open`);
+            }
+            renderItemById(item.id);
+          },
+        },
+        icon("paste"),
+        h("span", { className: "chip-label" }, "Pasted text"),
+        h("span", { className: "chip-detail" }, pasteSummary(f.text)),
+      ),
+    );
+    if (open) out.push(h("pre", { className: "paste-text", tabindex: "0" }, f.text));
+    last = f.end;
+  });
+  if (last < item.text.length) out.push(item.text.slice(last));
+  return out;
 }
 
 const IMAGE_NAME = /\.(png|jpe?g|gif|webp)$/i;
@@ -6013,6 +6313,7 @@ function applyRevert(): void {
 // ---------------------------------------------------------------- message box
 
 function renderComposer(s: ViewState) {
+  const live = livePastes();
   chipsEl.replaceChildren(
     ...s.attachments.map((a) =>
       h(
@@ -6034,8 +6335,10 @@ function renderComposer(s: ViewState) {
         ),
       ),
     ),
+    ...live.map(pasteChip),
   );
-  chipsEl.hidden = s.attachments.length === 0 || !!subView;
+  chipsEl.hidden = (s.attachments.length === 0 && live.length === 0) || !!subView;
+  renderPasteView(live);
   // The message box works only when the chat is usable (connected, folder open, models available).
   // A subagent's conversation is read-only: messages always go to the main chat.
   const connected = s.connection.kind === "connected" && s.onboarding.stage === "ready" && !subView;
@@ -6329,13 +6632,22 @@ window.addEventListener("message", (e: MessageEvent) => {
       modelBtn.focus();
       if (!modelBtn.disabled) openMenu(modelBtn, modelMenu(), modelMenuOptions());
       break;
-    case "restoreInput":
-      input.value = input.value ? `${msg.text}\n${input.value}` : msg.text;
+    case "restoreInput": {
+      // A message the host handed back keeps its chips; text from the chat (a rewound or
+      // pending prompt) gets chips for the pastes it was sent with.
+      const back =
+        lastSentPastes?.text === msg.text
+          ? adoptPastes(msg.text, lastSentPastes.pastes)
+          : adoptPastes(...collapsePastes(msg.text));
+      lastSentPastes = null;
+      input.value = input.value ? `${back}\n${input.value}` : back;
       draft = input.value;
       persist();
       autosize();
       input.focus();
+      if (state) renderComposer(state);
       break;
+    }
     case "formError":
       formErrors.set(msg.formId, msg.error);
       renderDock(true);

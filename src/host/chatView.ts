@@ -815,7 +815,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           return;
         }
         const attachments = this.attachments;
-        const sent = await c.send(msg.text, attachments, msg.delivery, mentions);
+        const sent = await c.send(msg.text, attachments, msg.delivery, mentions, msg.pastes ?? []);
         if (sent) {
           this.attachments = [];
           this.postState();

@@ -4,7 +4,7 @@
 // APIs so it can be unit-tested.
 
 import { BudgetTracker, nextLevel, type BudgetSettings } from "./budget";
-import { buildPrompt, type PromptPayload, type ResolvedMention } from "./context";
+import { buildPrompt, type PastedText, type PromptPayload, type ResolvedMention } from "./context";
 import {
   CONTINUE_TEXT,
   deriveTaskFromHistory,
@@ -989,13 +989,14 @@ export class SessionController {
     attachments: readonly ContextAttachment[],
     delivery?: InboxDelivery,
     mentions: readonly ResolvedMention[] = [],
+    pastes: readonly PastedText[] = [],
   ): Promise<boolean> {
     if (!this.directory) {
       this.emit([{ type: "notice", level: "error", text: "Open a folder to start an OpenCode session." }]);
       return false;
     }
     if (this.busy && (!delivery || !this.current)) return false;
-    const payload = buildPrompt(text, attachments, mentions);
+    const payload = buildPrompt(text, attachments, mentions, pastes);
     if (!payload.text) {
       if (payload.files.length) {
         this.emit([

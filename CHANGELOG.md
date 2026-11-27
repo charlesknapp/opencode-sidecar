@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Long pastes become a chip.** Pasting more than 8 lines or 800 characters of text into the message box no longer floods it: you get **Pasted text #1 · 120 lines · ~3.1k tokens**, with `[Pasted text #1]` where you pasted. Open the chip to read the text, use the pencil to put it back in the box, or × to remove it. The text is sent exactly as pasted, in its place, also when you steer or queue; the prompt in the chat shows it folded, and ↑ brings it back as a chip. Short pastes and pasted images work as before.
 - **A model or variant you pick is no longer undone a moment later.** OpenCode confirms each model or agent switch with an event, and a late or out-of-order confirmation of an earlier switch could put the variant back to the model default. A reload of the open session that was still under way (for example after the connection to OpenCode came back) could also restore the session's old model. Your latest choice now wins, and goes to the session.
 
 ## 0.1.7 (2026-11-26)

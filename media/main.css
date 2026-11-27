@@ -2674,6 +2674,63 @@ kbd {
   color: var(--muted);
   font-size: 11px;
 }
+/* Pasted text: the chip opens its text under the chips (read-only); a pencil puts it back
+   in the box. In a prompt the chip sits in the text and opens in place. */
+.chip-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.chip.paste .chip-detail,
+.paste-ref .chip-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip.paste.open,
+.paste-ref.open {
+  border-color: var(--vscode-focusBorder);
+}
+.chip.paste .chip-x .i {
+  width: 12px;
+  height: 12px;
+}
+.paste-view {
+  border-bottom: 1px solid var(--rail);
+}
+.paste-text {
+  margin: 0;
+  padding: 6px 10px;
+  max-height: min(220px, 35vh);
+  overflow: auto;
+  scrollbar-width: thin;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--io-bg);
+}
+.paste-ref {
+  vertical-align: baseline;
+  margin: 0 1px;
+  padding-right: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  max-width: 100%;
+}
+.btxt .paste-text {
+  margin: 4px 0;
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
 .box.drop {
   border-style: dashed;
   border-color: var(--vscode-focusBorder);

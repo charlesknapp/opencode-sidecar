@@ -180,7 +180,7 @@ describe(
         htmlFile,
         `<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${css}"></head>
 <body><div id="app"></div>
-<script>window.__sent=[];window.acquireVsCodeApi=()=>({postMessage:(m)=>window.__sent.push(JSON.parse(JSON.stringify(m))),getState:()=>undefined,setState:()=>{}});</script>
+<script>window.__sent=[];window.acquireVsCodeApi=()=>({postMessage:(m)=>window.__sent.push(JSON.parse(JSON.stringify(m))),getState:()=>(window.name?JSON.parse(window.name):undefined),setState:(s)=>{window.name=JSON.stringify(s)}});</script>
 <script src="${js}"></script></body></html>`,
       );
       const puppeteer = (await import("puppeteer-core")).default;
@@ -3626,6 +3626,207 @@ describe(
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
       );
       assert.ok(overflow <= 0, `horizontal overflow ${overflow}px`);
+    });
+
+    // ------------------------------------------------------------ pasted text
+
+    /** Pastes `t` into the message box; true when the box let the browser insert it. */
+    const paste = (t: string) =>
+      page.evaluate((t) => {
+        const box = document.querySelector("textarea")!;
+        box.focus();
+        const dt = new DataTransfer();
+        dt.setData("text/plain", t);
+        const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
+        box.dispatchEvent(ev);
+        return !ev.defaultPrevented;
+      }, t);
+    const boxValue = () => page.$eval("textarea", (t) => (t as HTMLTextAreaElement).value);
+    /** 120 lines with CRLF line ends, tabs, trailing spaces and Unicode. */
+    const BIG = Array.from({ length: 120 }, (_, i) => `\tline ${i} ✓  `).join("\r\n") + "\r\n";
+    const BIG_LF = BIG.replace(/\r\n/g, "\n");
+
+    it("holds a large paste as a chip with its size and sends it exactly where it was pasted", async () => {
+      await page.focus("textarea");
+      await page.keyboard.type("Why does this fail? ");
+      assert.equal(await paste("one line"), true, "a small paste goes into the box");
+      assert.equal(await paste(BIG), false);
+      await page.keyboard.type(" thanks");
+      assert.equal(await boxValue(), "Why does this fail? [Pasted text #1] thanks");
+      assert.deepEqual((await text('[data-testid="paste-chip"]')).split("\n"), [
+        "Pasted text #1",
+        "120 lines · ~393 tokens",
+        "×",
+      ]);
+      // A long single line is a paste too.
+      await paste("x".repeat(801));
+      assert.equal(await page.$$eval('[data-testid="paste-chip"]', (c) => c.length), 2);
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("send"), {
+        type: "send",
+        text: "Why does this fail? [Pasted text #1] thanks[Pasted text #2]",
+        pastes: [
+          { token: "[Pasted text #1]", text: BIG_LF },
+          { token: "[Pasted text #2]", text: "x".repeat(801) },
+        ],
+      });
+      assert.equal(await boxValue(), "");
+      assert.equal(await page.$('[data-testid="paste-chip"]'), null);
+    });
+
+    it("opens a paste read-only, puts it back in the box with Edit, and removes it with ×", async () => {
+      await paste(BIG);
+      await page.click('[data-testid="paste-open"]');
+      assert.equal(await page.$eval('[data-testid="paste-view"]', (v) => (v as HTMLElement).hidden), false);
+      assert.equal(await page.$eval('[data-testid="paste-view"] pre', (p) => p.textContent), BIG_LF);
+      assert.equal(
+        await page.$eval('[data-testid="paste-open"]', (b) => b.getAttribute("aria-expanded")),
+        "true",
+      );
+      await page.click('[data-testid="paste-open"]');
+      assert.equal(await page.$eval('[data-testid="paste-view"]', (v) => (v as HTMLElement).hidden), true);
+      await page.click('[data-testid="paste-edit"]');
+      assert.equal(await boxValue(), BIG_LF);
+      assert.equal(await page.$('[data-testid="paste-chip"]'), null);
+      await page.$eval("textarea", (t) => ((t as HTMLTextAreaElement).value = ""));
+      await page.type("textarea", "a ");
+      await paste(BIG);
+      await page.click('[data-testid="paste-remove"]');
+      assert.equal(await boxValue(), "a ");
+      assert.equal(await page.$('[data-testid="paste-chip"]'), null);
+      await page.keyboard.type("b");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("send"), { type: "send", text: "a b" });
+    });
+
+    it("drops a paste whose token was deleted, and Undo brings it back", async () => {
+      await paste(BIG);
+      await page.keyboard.down("Shift");
+      for (let i = 0; i < 2; i++) await page.keyboard.press("ArrowLeft");
+      await page.keyboard.up("Shift");
+      await page.keyboard.press("Backspace");
+      assert.equal(await boxValue(), "[Pasted text #");
+      assert.equal(await page.$('[data-testid="paste-chip"]'), null);
+      await page.keyboard.down("Control");
+      await page.keyboard.press("z");
+      await page.keyboard.up("Control");
+      assert.equal(await boxValue(), "[Pasted text #1]");
+      assert.ok(await page.$('[data-testid="paste-chip"]'));
+    });
+
+    it("keeps chips when the view is reloaded", async () => {
+      await page.type("textarea", "see ");
+      await paste(BIG);
+      await page.reload();
+      await page.waitForFunction(() =>
+        (window as unknown as { __sent: Sent[] }).__sent.some((m) => m.type === "ready"),
+      );
+      await host({ type: "state", state: baseState() });
+      assert.equal(await boxValue(), "see [Pasted text #1]");
+      assert.ok(await page.$('[data-testid="paste-chip"]'));
+      await page.focus("textarea");
+      await page.keyboard.press("Enter");
+      const m = (await lastSent("send"))!;
+      assert.deepEqual(m.pastes, [{ token: "[Pasted text #1]", text: BIG_LF }]);
+    });
+
+    it("sends pastes as a steer while the agent works, and a message handed back keeps them", async () => {
+      await host({ type: "state", state: baseState({ busy: true }) });
+      await page.type("textarea", "also ");
+      await paste(BIG);
+      await page.keyboard.press("Enter");
+      const m = (await lastSent("send"))!;
+      assert.equal(m.delivery, "steer");
+      assert.deepEqual(m.pastes, [{ token: "[Pasted text #1]", text: BIG_LF }]);
+      // The host refused it (a mention it could not check): the box gets it back with its chip.
+      await host({ type: "restoreInput", text: "also [Pasted text #1]" });
+      assert.equal(await boxValue(), "also [Pasted text #1]");
+      assert.ok(await page.$('[data-testid="paste-chip"]'));
+      // A pending message put back for editing (its text from OpenCode) gets its chip too.
+      await page.$eval("textarea", (t) => ((t as HTMLTextAreaElement).value = ""));
+      await page.focus("textarea");
+      await page.keyboard.type(" ");
+      await page.keyboard.press("Backspace");
+      await host({ type: "restoreInput", text: `edit ${BIG_LF.trim()}` });
+      // Numbered after the chip the cleared box still keeps for Undo.
+      assert.equal(await boxValue(), "edit [Pasted text #2]");
+      await page.click('[data-testid="paste-open"]');
+      assert.equal(await page.$eval('[data-testid="paste-view"] pre', (p) => p.textContent), BIG_LF);
+    });
+
+    it("folds a sent paste into a chip in the prompt and in ↑ history", async () => {
+      await page.type("textarea", "check ");
+      await paste(BIG);
+      await page.keyboard.press("Enter");
+      // OpenCode echoes the prompt as sent (the chat trims it).
+      await host({ type: "transcript", items: [prompt("u1", `check ${BIG_LF}`.trim())] });
+      const chip = '[data-id="user:u1"] [data-testid="prompt-paste"]';
+      assert.equal(await text(chip), "Pasted text120 lines · ~392 tokens".replace("text", "text\n"));
+      assert.equal(await page.$('[data-id="user:u1"] .paste-text'), null);
+      await page.click(chip);
+      assert.equal(
+        await page.$eval('[data-id="user:u1"] .paste-text', (p) => p.textContent),
+        BIG_LF.trimEnd(),
+      );
+      assert.match(await page.$eval('[data-id="user:u1"] .bubble', (b) => b.className), /open/);
+      await page.click(chip);
+      assert.equal(await page.$('[data-id="user:u1"] .paste-text'), null);
+      // ↑ recalls the prompt with its chip, and sends the paste as it was first sent.
+      await page.focus("textarea");
+      await page.keyboard.press("ArrowUp");
+      assert.equal(await boxValue(), "check [Pasted text #1]");
+      assert.ok(await page.$('[data-testid="paste-chip"]'));
+      await page.keyboard.press("ArrowDown");
+      assert.equal(await boxValue(), "");
+      assert.equal(await page.$('[data-testid="paste-chip"]'), null);
+      await page.keyboard.press("ArrowUp");
+      await page.keyboard.press("Enter");
+      assert.deepEqual((await lastSent("send"))!.pastes, [{ token: "[Pasted text #1]", text: BIG_LF }]);
+    });
+
+    it("puts the text in for commands and shell lines, and leaves image paste alone", async () => {
+      await page.type("textarea", "/review ");
+      await paste(BIG);
+      await page.keyboard.press("Enter");
+      // A command takes its arguments trimmed, as when they are typed.
+      assert.deepEqual(await lastSent("runCommand"), {
+        type: "runCommand",
+        name: "review",
+        text: BIG_LF.trim(),
+      });
+      await page.click("textarea");
+      await page.evaluate(async () => {
+        const c = document.createElement("canvas");
+        c.width = 4;
+        c.height = 4;
+        const blob: Blob = await new Promise((r) => c.toBlob((b) => r(b!), "image/png"));
+        const dt = new DataTransfer();
+        dt.items.add(new File([blob], "shot.png", { type: "image/png" }));
+        dt.setData("text/plain", "x\n".repeat(50));
+        document
+          .querySelector("textarea")!
+          .dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+      });
+      await page.waitForFunction(() =>
+        (window as unknown as { __sent: Sent[] }).__sent.some((m) => m.type === "attachImage"),
+      );
+      assert.equal(await page.$('[data-testid="paste-chip"]'), null);
+    });
+
+    it("fits paste chips and the open paste in a 300px panel", async () => {
+      await page.setViewport({ width: 300, height: 700 });
+      await paste(BIG);
+      await paste("y".repeat(5000));
+      await page.click('[data-testid="paste-open"]');
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      assert.ok(overflow <= 0, `horizontal overflow ${overflow}px`);
+      const view = await page.$eval('[data-testid="paste-view"] pre', (p) => {
+        const r = p.getBoundingClientRect();
+        return { h: r.height, scroll: p.scrollHeight > p.clientHeight };
+      });
+      assert.ok(view.h <= 245 && view.scroll, JSON.stringify(view));
     });
   },
 );

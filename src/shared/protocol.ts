@@ -21,6 +21,7 @@ import type {
   PendingInboxItem,
   PermissionDecision,
   PromptMention,
+  PromptPaste,
   SessionSummary,
   SkillOption,
   SubagentView,
@@ -124,8 +125,17 @@ export type HostMessage =
 
 export type WebviewMessage =
   | { type: "ready" }
-  /** `mentions`: the `@` suggestions picked while typing; the host checks each one. */
-  | { type: "send"; text: string; delivery?: InboxDelivery; mentions?: PromptMention[] }
+  /**
+   * `mentions`: the `@` suggestions picked while typing; the host checks each one.
+   * `pastes`: large pastes held as chips, put in at their token by the host.
+   */
+  | {
+      type: "send";
+      text: string;
+      delivery?: InboxDelivery;
+      mentions?: PromptMention[];
+      pastes?: PromptPaste[];
+    }
   /** `@` suggestions for `query` (files and folders, subagents, skills). */
   | { type: "findMentions"; query: string; requestId: string }
   /** A pasted or dropped image as a base64 data: URI, with a small preview. */
@@ -252,6 +262,22 @@ const isMention = (v: unknown): boolean => {
     (m.text as string).startsWith("@")
   );
 };
+/** Large pastes: a few per message, each up to 500,000 characters, 2,000,000 in all. */
+const PASTE_TOKEN = /^\[Pasted text #\d{1,4}\]$/;
+const MAX_PASTE = 500_000;
+const arePastes = (v: unknown): boolean => {
+  if (!Array.isArray(v) || v.length > 20) return false;
+  let total = 0;
+  return v.every((p) => {
+    if (!p || typeof p !== "object" || Array.isArray(p)) return false;
+    const r = p as Record<string, unknown>;
+    if (!Object.keys(r).every((k) => k === "token" || k === "text")) return false;
+    if (typeof r.token !== "string" || !PASTE_TOKEN.test(r.token)) return false;
+    if (typeof r.text !== "string" || r.text.length === 0 || r.text.length > MAX_PASTE) return false;
+    total += r.text.length;
+    return total <= 2_000_000;
+  });
+};
 /** Pasted images: PNG, JPEG, GIF or WebP, base64, up to about 5 MB decoded. */
 const MAX_IMAGE_URI = 7_000_000;
 const isImageUri = (v: unknown, max: number): boolean =>
@@ -268,7 +294,8 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
     m.text.length <= MAX_TEXT &&
     (m.delivery === undefined || m.delivery === "steer" || m.delivery === "queue") &&
     (m.mentions === undefined ||
-      (Array.isArray(m.mentions) && m.mentions.length <= 50 && m.mentions.every(isMention))),
+      (Array.isArray(m.mentions) && m.mentions.length <= 50 && m.mentions.every(isMention))) &&
+    (m.pastes === undefined || arePastes(m.pastes)),
   findMentions: (m) => typeof m.query === "string" && m.query.length <= 500 && isStr(m.requestId, 64),
   attachImage: (m) =>
     isStr(m.name, 200) &&
@@ -366,7 +393,7 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
 };
 
 const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
-  send: ["text", "delivery", "mentions"],
+  send: ["text", "delivery", "mentions", "pastes"],
   findMentions: ["query", "requestId"],
   attachImage: ["name", "dataUrl", "thumb", "width", "height"],
   forkSession: ["messageID"],

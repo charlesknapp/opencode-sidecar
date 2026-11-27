@@ -55,6 +55,7 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 
 - **Files and folders** are `files: [{ uri, name, mention? }]` with `file://` URIs; OpenCode reads them itself (up to 20 MB; a folder is sent as a listing). An `@` mention adds `mention: { start, end, text }`, the token's place in the text.
 - **Images** are file entries too: a `file://` URI, or a base64 `data:image/…` URI that OpenCode stores inline (as its terminal UI does for pasted images). A model's `capabilities.input` lists `"image"` when it accepts them.
+- **Pasted text** held as a chip is part of `text`: the webview sends it beside the message with its `[Pasted text #n]` token, and the host puts it in at the token after trimming the typed text and finding the `@` mentions (whose offsets move past it), so it reaches OpenCode exactly as pasted. OpenCode stores prompt text byte for byte (checked live, CRLF included); Sidecar sends line endings as `\n`, as the message box does for anything pasted into it.
 - **Subagents** go in `agents: [{ name, mention }]` and **skills** in `skills: [{ id, mention }]`.
 
 ### Staged rewinds
