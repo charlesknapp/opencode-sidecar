@@ -159,7 +159,7 @@ async function runScenario(
         ACCEPT_EXPECT_NAME: path.basename(workspace),
         ACCEPT_REAL_FILE: process.env.ACCEPT_REAL_FILE ?? "",
         ACCEPT_REAL_LINES: process.env.ACCEPT_REAL_LINES ?? "20-27",
-        ACCEPT_MODEL: process.env.ACCEPT_MODEL ?? "opencode-go/kimi-k2.7-code",
+        ACCEPT_MODEL: process.env.ACCEPT_MODEL ?? "",
         ...opts.env,
       },
     });

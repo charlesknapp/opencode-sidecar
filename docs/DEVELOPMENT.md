@@ -19,10 +19,11 @@ Press **F5** (launch configuration "Run Extension" in `.vscode/launch.json`) to 
 | `npm run format:check`    | Prettier                                                                    |
 | `npm test`                | Unit tests (`node:test`), compiled to `out-test/`                           |
 | `npm run test:webview`    | The webview in headless Chrome (set `CHROME_PATH` when Chrome is not found) |
+| `npm run test:live`       | The HTTP client against the local OpenCode service (skips without one)      |
 | `npm run test:acceptance` | End-to-end scenarios in a real VS Code against the local OpenCode service   |
 | `npm run package`         | `dist-vsix/opencode-sidecar-<version>.vsix` (never publishes)               |
 
-CI (`.github/workflows/ci.yml`) runs all of these except the acceptance harness, on Linux, and uploads the VSIX as an artifact. Pushing a `v<version>` tag runs `.github/workflows/release.yml`, which repeats the checks, creates the GitHub release and publishes to the Visual Studio Marketplace and Open VSX (see `docs/marketplace/MARKETPLACE.md`).
+CI (`.github/workflows/ci.yml`) runs all of these except the live tests and the acceptance harness, on Linux, and uploads the VSIX as an artifact. Pushing a `v<version>` tag runs `.github/workflows/release.yml`, which repeats the checks, creates the GitHub release and publishes to the Visual Studio Marketplace and Open VSX (see `docs/marketplace/MARKETPLACE.md`).
 
 ## Unit tests
 
@@ -30,7 +31,17 @@ Pure modules are tested directly. Behaviour that would need a live server goes t
 
 ## Webview tests
 
-`test/webview/webview.test.ts` loads `dist/webview.js` and `media/main.css` into headless Chrome through `puppeteer-core`, with the VS Code API stubbed: it records what the webview posts and delivers host messages with `window.postMessage`. It covers the timeline and turns, pinned prompts, tool rows, subagents, the docks, the menus and tooltips, the message box (its column and fade, `@` mentions, pasted images), fork, archive, staged rewinds, bookmarks, onboarding, widths of 300, 400 and 520 px, high contrast and reduced motion, and a performance check (400 messages and 2,000 streamed deltas). It uses an installed Chrome and downloads no browser; point `CHROME_PATH` at another Chromium browser (for example Edge) if needed.
+`test/webview/webview.test.ts` loads `dist/webview.js` and `media/main.css` into headless Chrome through `puppeteer-core`, with the VS Code API stubbed: it records what the webview posts and delivers host messages with `window.postMessage`. It covers the timeline and turns, pinned prompts, tool rows, subagents, the docks, the menus and tooltips, the message box (its column and fade, `@` mentions, pasted images), fork, archive, staged rewinds, bookmarks, onboarding, widths of 300, 400 and 520 px, high contrast and reduced motion, and a performance check (400 messages and 2,000 streamed deltas). It uses an installed Chrome (on Windows, Chrome or else Edge) and downloads no browser; point `CHROME_PATH` at another Chromium browser if needed.
+
+## Live tests
+
+`test/live/*.test.ts` run `HttpOpenCodeClient` against the real local OpenCode service, found the way the extension finds it (`discoverServer`, from `service.json`). Every client call that does not touch your account is covered: server info, models, agents, skills, commands, file search, account state, MCP servers, the folder's project and saved rules, sessions (create, rename, archive, fork, rewind, delete, and on Windows both drive-letter forms), history, the pending lists, running state and the event stream. Each test asserts the parsed shapes the UI uses.
+
+They work in a new temporary folder and delete every session they create. One test sends a prompt, to the free `opencode/big-pickle` model (skipped when it is not offered); the others make no model calls. Without a registered service, or when it does not answer, every test is skipped with the reason, so the suite also passes on CI. The service password is never printed.
+
+```sh
+npm run test:live
+```
 
 ## Acceptance harness
 
@@ -41,6 +52,8 @@ npm run test:acceptance                       # fixture repository scenarios
 ACCEPT_REAL_REPO=/path/to/repo ACCEPT_REAL_FILE=src/a.ts ACCEPT_REAL_LINES=20-27 npm run test:acceptance
 ACCEPT_ONBOARDING=1 npm run test:acceptance   # also first-run scenarios (temporary OpenCode servers)
 ```
+
+The scenarios run on `opencode-go/kimi-k2.7-code` when OpenCode offers it, otherwise on the free `opencode/big-pickle`; `ACCEPT_MODEL=<provider/model>` picks another. Shell commands in the prompts work in bash, zsh and the Windows PowerShell that OpenCode uses on Windows; when the model does not run the command it is asked once more.
 
 The real-repository scenario is read-only: it uses OpenCode's `plan` agent, fingerprints the repository's Git state before and after, and fails if anything changed.
 
@@ -71,7 +84,7 @@ src/
   webview/       the chat view (plain TypeScript and DOM, no framework) and Markdown parser
 media/           CSS and icons (icon source in media/src/)
 scripts/         build, screenshots, hero and icon rendering
-test/            unit tests, webview tests, mock client, acceptance harness
+test/            unit tests, webview tests, live tests, mock client, acceptance harness
 docs/            architecture, development, OpenCode integration, Marketplace notes
 ```
 

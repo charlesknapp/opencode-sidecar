@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { summarizeTask } from "../../src/core/currentTask";
+import { serviceFilePath } from "../../src/opencode/service";
 import type { TranscriptItem, UiEvent } from "../../src/shared/model";
 import type { WebviewMessage } from "../../src/shared/protocol";
 
@@ -28,7 +29,13 @@ interface TestApi {
   focusPending(): boolean;
 }
 
-const MODEL = process.env.ACCEPT_MODEL ?? "opencode-go/kimi-k2.7-code";
+/**
+ * The model the scenarios run on: ACCEPT_MODEL when set (and then it must be offered),
+ * otherwise the first of these the service offers. `opencode/big-pickle` is free and
+ * offered without a subscription, so every machine with OpenCode has at least that.
+ */
+const PREFERRED_MODELS = ["opencode-go/kimi-k2.7-code", "opencode/big-pickle"];
+let MODEL = process.env.ACCEPT_MODEL || PREFERRED_MODELS[0];
 const results: Array<{ step: string; ok: boolean; detail: string }> = [];
 const events: UiEvent[] = [];
 /** Every OpenCode session this run created or used (for the read-only proof). */
@@ -102,6 +109,11 @@ async function common(api: TestApi): Promise<void> {
     (st.agents?.length ?? 0) > 0,
     (st.agents ?? []).map((a) => a.id).join(", "),
   );
+  if (!process.env.ACCEPT_MODEL) {
+    const offered = new Set((st.models ?? []).map((m) => m.key));
+    MODEL = PREFERRED_MODELS.find((k) => offered.has(k)) ?? MODEL;
+    console.log(`model: ${MODEL} (set ACCEPT_MODEL to choose another)`);
+  }
   await api.handle({ type: "selectModel", key: MODEL });
   // OpenCode's provider catalog can change briefly (e.g. while it refreshes models.dev);
   // if the requested model is not offered yet, reload the catalog and try again.
@@ -279,7 +291,7 @@ async function fixture(api: TestApi): Promise<void> {
   await api.handle({ type: "selectAgent", id: "build" });
   await api.handle({ type: "newSession" });
 
-  let mark = items(api).length;
+  const mark = items(api).length;
   const r = await sendAndWait(
     api,
     "Append a new line containing exactly the word world to the file a.txt using your edit tool. Do nothing else.",
@@ -321,7 +333,6 @@ async function fixture(api: TestApi): Promise<void> {
   );
 
   // Sensitive permission + deny.
-  mark = items(api).length;
   let since = events.length;
   await api.handle({
     type: "send",
@@ -344,26 +355,15 @@ async function fixture(api: TestApi): Promise<void> {
   check("Permission denied from the sidebar", denied?.kind === "permission" && denied.status === "reject");
 
   // Stop must cancel the real work.
-  since = events.length;
-  mark = items(api).length;
-  await api.handle({
-    type: "send",
-    text: "Run the shell command `sleep 120 && echo finished` and wait for it to complete. Do not do anything else.",
-  });
-  await waitFor(
-    "sleep to start",
-    () =>
-      toolsSince(api, mark).find(
-        (t) =>
-          t.category === "shell" &&
-          /sleep 120/.test(t.detail.command ?? "") &&
-          t.status === "running" &&
-          t.detail.cwd,
-      ),
-    180_000,
-  );
+  const long = waitCommand(120, "finished");
+  ({ since } = await sendShell(
+    api,
+    `Run the shell command \`${long.command}\` exactly as written and wait for it to complete. Do not do anything else.`,
+    long.pattern,
+    (t) => !!t.detail.cwd,
+  ));
   await new Promise((r) => setTimeout(r, 1500));
-  const running = psHas("sleep 120");
+  const running = psHas(long.pattern);
   const t0 = Date.now();
   await api.handle({ type: "stop" });
   const idle = await waitFor(
@@ -383,8 +383,8 @@ async function fixture(api: TestApi): Promise<void> {
   );
   check(
     "Cancelled process is gone",
-    running && !psHas("sleep 120"),
-    `before=${running} after=${psHas("sleep 120")}`,
+    running && !psHas(long.pattern),
+    `before=${running} after=${psHas(long.pattern)}`,
   );
   check("UI no longer busy after stop", api.viewState().busy === false && api.viewState().stopping === false);
   await v02Fixture(api);
@@ -519,23 +519,17 @@ async function v02RealRepo(api: TestApi): Promise<void> {
   );
   // Cancellation still works (read-only command).
   await api.handle({ type: "newSession" });
-  const since = events.length;
-  const mark = items(api).length;
-  await api.handle({
-    type: "send",
-    text: "Run the shell command `sleep 30` and wait for it to finish. Do not do anything else.",
-  });
-  await waitFor(
-    "sleep running",
-    () =>
-      toolsSince(api, mark).find((t) => /sleep 30/.test(t.detail.command ?? "") && t.status === "running"),
-    180_000,
+  const wait = waitCommand(30);
+  const { since } = await sendShell(
+    api,
+    `Run the shell command \`${wait.command}\` exactly as written and wait for it to finish. Do not do anything else.`,
+    wait.pattern,
   );
   await new Promise((r) => setTimeout(r, 1500));
   await api.handle({ type: "stop" });
   const idle = await waitIdle(api, since, 30_000);
   await new Promise((r) => setTimeout(r, 500));
-  check("Stop still cancels", idle.outcome === "interrupted" && !psHas("sleep 30"), idle.outcome);
+  check("Stop still cancels", idle.outcome === "interrupted" && !psHas(wait.pattern), idle.outcome);
 
   // Session titles: broken generated titles are never shown.
   await api.handle({ type: "refreshSessions" });
@@ -642,18 +636,11 @@ async function v02Fixture(api: TestApi): Promise<void> {
 
   // --- steering and queue (OpenCode inbox delivery)
   await api.handle({ type: "newSession" });
-  since = events.length;
-  const mark = items(api).length;
-  await api.handle({
-    type: "send",
-    text: "Run the shell command `sleep 12 && echo first` and wait for it, then reply DONE.",
-  });
-  await waitFor(
-    "sleep running",
-    () =>
-      toolsSince(api, mark).find((t) => /sleep 12/.test(t.detail.command ?? "") && t.status === "running"),
-    180_000,
-  );
+  const first = waitCommand(12, "first");
+  const sleepPrompt = `Run the shell command \`${first.command}\` exactly as written and wait for it, then reply DONE.`;
+  const sent = await sendShell(api, sleepPrompt, first.pattern);
+  since = sent.since;
+  const mark = sent.mark;
   await api.handle({
     type: "send",
     text: "Steering: after that command, also run `echo steered`.",
@@ -665,7 +652,6 @@ async function v02Fixture(api: TestApi): Promise<void> {
     delivery: "queue",
   });
   // Current Task: the running prompt, copied exactly.
-  const sleepPrompt = "Run the shell command `sleep 12 && echo first` and wait for it, then reply DONE.";
   const runningTask = api.controller()?.taskView();
   check(
     "Current Task shows the running prompt",
@@ -837,7 +823,8 @@ async function v02Fixture(api: TestApi): Promise<void> {
     return "Open Chat";
   });
   await vscode.commands.executeCommand("workbench.action.closeSidebar");
-  await new Promise((r) => setTimeout(r, 800));
+  // The view's visibility reaches the extension host asynchronously; a busy machine can take longer.
+  await waitFor("view hidden", () => !api.viewVisible() || undefined, 10_000).catch(() => undefined);
   const hiddenBefore = !api.viewVisible();
   await api.handle({ type: "newSession" });
   since = events.length;
@@ -850,11 +837,11 @@ async function v02Fixture(api: TestApi): Promise<void> {
       shown.length === 1 &&
       shown[0] === "✅ OpenCode task completed: Reply with the single word OK." &&
       api.viewVisible(),
-    JSON.stringify({ hiddenBefore, shown, visible: api.viewVisible() }),
+    JSON.stringify({ hiddenBefore, shown, visible: api.viewVisible(), focused: vscode.window.state.focused }),
   );
   await api.handle({ type: "newSession" });
   await api.handle({ type: "selectSession", id: sqSession! });
-  check("Reopening a session does not replay notifications", shown.length === 1);
+  check("Reopening a session does not replay notifications", shown.length === 1, JSON.stringify(shown));
 
   // --- model variant
   const withVariant = (api.viewState().models ?? []).find(
@@ -891,13 +878,7 @@ async function v02Fixture(api: TestApi): Promise<void> {
 
 /** Reads stored messages straight from OpenCode (independent of the extension). */
 async function storedMessages(sessionId: string): Promise<Array<Record<string, unknown>>> {
-  const home = process.env.HOME ?? "";
-  const svc = JSON.parse(
-    fs.readFileSync(
-      path.join(process.env.XDG_STATE_HOME ?? path.join(home, ".local", "state"), "opencode", "service.json"),
-      "utf8",
-    ),
-  );
+  const svc = JSON.parse(fs.readFileSync(serviceFilePath(), "utf8"));
   const headers = { authorization: "Basic " + Buffer.from("opencode:" + svc.password).toString("base64") };
   const out: Array<Record<string, unknown>> = [];
   let cursor: string | null = null;
@@ -926,10 +907,7 @@ async function realRepoTask(api: TestApi): Promise<void> {
   // 1. An existing, idle session.
   const active = new Set<string>();
   const svcActive = await (async () => {
-    const home = process.env.HOME ?? "";
-    const svc = JSON.parse(
-      fs.readFileSync(path.join(home, ".local", "state", "opencode", "service.json"), "utf8"),
-    );
+    const svc = JSON.parse(fs.readFileSync(serviceFilePath(), "utf8"));
     const headers = { authorization: "Basic " + Buffer.from("opencode:" + svc.password).toString("base64") };
     return (
       (await (await fetch(new URL("/api/session/active", svc.url), { headers })).json()) as {
@@ -963,18 +941,13 @@ async function realRepoTask(api: TestApi): Promise<void> {
   // 2. Steer and queue on a read-only run (plan agent).
   await api.handle({ type: "newSession" });
   check("New session shows no task", api.controller()?.taskView() === null);
-  let since = events.length;
-  const mark = items(api).length;
-  await api.handle({
-    type: "send",
-    text: "Run the shell command `sleep 15` and wait for it. Then reply DONE. Do not modify anything.",
-  });
-  await waitFor(
-    "sleep running",
-    () =>
-      toolsSince(api, mark).find((t) => /sleep 15/.test(t.detail.command ?? "") && t.status === "running"),
-    180_000,
+  const wait = waitCommand(15);
+  const sent = await sendShell(
+    api,
+    `Run the shell command \`${wait.command}\` exactly as written and wait for it. Then reply DONE. Do not modify anything.`,
+    wait.pattern,
   );
+  let since = sent.since;
   const taskId = api.controller()?.taskView()?.id;
   await api.handle({
     type: "send",
@@ -1047,12 +1020,78 @@ async function realRepoTask(api: TestApi): Promise<void> {
   check("This run's sessions made no file changes (snapshot diff)", changed.length === 0, changed.join(" "));
 }
 
-function psHas(needle: string): boolean {
+/**
+ * A shell command that waits `seconds`, then prints `word`, and the pattern that finds it in a
+ * tool call and in the process list. On Windows OpenCode runs commands in Windows PowerShell 5.1,
+ * which has no `&&` and runs `sleep` inside its own process, so the wait is a Node child process
+ * there (Node is on PATH wherever the harness runs), which also proves the whole tree is stopped.
+ */
+function waitCommand(seconds: number, word?: string): { command: string; pattern: RegExp } {
+  if (process.platform !== "win32")
+    return {
+      command: word ? `sleep ${seconds} && echo ${word}` : `sleep ${seconds}`,
+      pattern: new RegExp(`sleep ${seconds}\\b`),
+    };
+  const ms = seconds * 1000;
+  return {
+    command: `node -e "setTimeout(()=>console.log('${word ?? "done"}'),${ms})"`,
+    pattern: new RegExp(`setTimeout.*\\b${ms}\\b`),
+  };
+}
+
+/**
+ * Sends a prompt asking for a shell command and waits until it runs. The model is the flaky
+ * party here: when it finishes without running the command (or runs another), it is asked
+ * once more. Returns where the successful attempt's events and transcript items start.
+ */
+async function sendShell(
+  api: TestApi,
+  text: string,
+  pattern: RegExp,
+  also: (t: Extract<TranscriptItem, { kind: "tool" }>) => boolean = () => true,
+): Promise<{ since: number; mark: number }> {
+  for (let attempt = 1; ; attempt++) {
+    const since = events.length;
+    const mark = items(api).length;
+    await api.handle({ type: "send", text });
+    const started = await waitFor(
+      "the shell command to start",
+      () =>
+        toolsSince(api, mark).some(
+          (t) =>
+            t.category === "shell" &&
+            pattern.test(t.detail.command ?? "") &&
+            t.status === "running" &&
+            also(t),
+        ) || (events.slice(since).some((e) => e.type === "session.idle") ? "idle" : undefined),
+      180_000,
+    );
+    if (started === true) return { since, mark };
+    const ran = toolsSince(api, mark)
+      .map((t) => t.detail.command ?? t.title)
+      .join(" | ");
+    if (attempt === 2) throw new Error(`The model did not run the command (it ran: ${ran || "nothing"})`);
+    console.log(`The model did not run the command (it ran: ${ran || "nothing"}); asking again`);
+  }
+}
+
+/** Whether any running process's command line matches. */
+function psHas(pattern: RegExp): boolean {
   try {
-    return execFileSync("ps", ["-axo", "command"])
-      .toString()
-      .split("\n")
-      .some((l) => l.includes(needle) && !l.includes("ps -axo"));
+    const lines =
+      process.platform === "win32"
+        ? execFileSync(
+            "powershell.exe",
+            ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | % CommandLine"],
+            { windowsHide: true },
+          )
+            .toString()
+            .split(/\r?\n/)
+        : execFileSync("ps", ["-axo", "command"])
+            .toString()
+            .split("\n")
+            .filter((l) => !l.includes("ps -axo"));
+    return lines.some((l) => pattern.test(l));
   } catch {
     return false;
   }
@@ -1308,9 +1347,7 @@ async function onbReady(api: TestApi): Promise<void> {
     api.statusBar().text,
   );
   // Privacy: connection labels from OpenCode's integration list never reach the view state.
-  const svc = JSON.parse(
-    fs.readFileSync(path.join(process.env.HOME ?? "", ".local", "state", "opencode", "service.json"), "utf8"),
-  ) as { url: string; password: string };
+  const svc = JSON.parse(fs.readFileSync(serviceFilePath(), "utf8")) as { url: string; password: string };
   const auth = "Basic " + Buffer.from("opencode:" + svc.password).toString("base64");
   const list = (await (
     await fetch(new URL("/api/integration", svc.url), { headers: { authorization: auth } })

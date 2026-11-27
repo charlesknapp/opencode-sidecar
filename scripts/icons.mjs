@@ -11,6 +11,13 @@ const chrome = [
   process.env.CHROME_PATH,
   "/usr/bin/google-chrome",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  // Windows: Chrome installed for all users or per user, then Edge, which every Windows has.
+  ...["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+    .filter((v) => process.env[v])
+    .map((v) => path.join(process.env[v], "Google", "Chrome", "Application", "chrome.exe")),
+  ...["ProgramFiles(x86)", "ProgramFiles"]
+    .filter((v) => process.env[v])
+    .map((v) => path.join(process.env[v], "Microsoft", "Edge", "Application", "msedge.exe")),
 ].find((p) => p && fs.existsSync(p));
 const icon = fs.readFileSync(path.join(root, "media", "src", "icon.svg"), "utf8");
 const activity = fs.readFileSync(path.join(root, "media", "activity.svg"), "utf8");

@@ -19,6 +19,13 @@ const chrome = [
   process.env.CHROME_PATH,
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/usr/bin/google-chrome",
+  // Windows: Chrome installed for all users or per user, then Edge, which every Windows has.
+  ...["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+    .filter((v) => process.env[v])
+    .map((v) => path.join(process.env[v], "Google", "Chrome", "Application", "chrome.exe")),
+  ...["ProgramFiles(x86)", "ProgramFiles"]
+    .filter((v) => process.env[v])
+    .map((v) => path.join(process.env[v], "Microsoft", "Edge", "Application", "msedge.exe")),
 ].find((p) => p && fs.existsSync(p));
 const DARK = {
   "--vscode-foreground": "#cccccc",

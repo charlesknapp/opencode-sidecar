@@ -15,39 +15,39 @@ The password stays in memory and is only sent to that loopback URL. With `openco
 
 ## Endpoints
 
-Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode compares directories case-sensitively and its CLI records Windows drive letters in upper case, while VS Code reports them in lower case, so Sidecar upper-cases the drive letter (`c:\repo` → `C:\repo`). The session list also asks for the lower-case form, which older Sidecar versions recorded. ✓ marks calls checked against a live OpenCode service.
+Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode compares directories case-sensitively and its CLI records Windows drive letters in upper case, while VS Code reports them in lower case, so Sidecar upper-cases the drive letter (`c:\repo` → `C:\repo`). The session list also asks for the lower-case form, which older Sidecar versions recorded. ✓ marks calls checked against a live OpenCode service; `npm run test:live` (`test/live/`) repeats those checks.
 
-| Purpose                     | Endpoint                                                                                                              |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Health / version            | `GET /api/info`                                                                                                       |
-| Models, providers, default  | `GET /api/model`, `GET /api/provider`, `GET /api/model/default`                                                       |
-| Agents                      | `GET /api/agent` (primary, non-hidden; with OpenCode's descriptions)                                                  |
-| Commands ✓                  | `GET /api/command`; run one with `POST /api/session/{id}/command` `{ name, text, delivery? }`                         |
-| Account and provider state  | `GET /api/integration` (connection states only)                                                                       |
-| Subagents and skills ✓      | `GET /api/agent` (non-primary, for `@` mentions), `GET /api/skill`                                                    |
-| File search (`@`) ✓         | `GET /api/fs/find?query=&limit=` (ranked paths relative to the folder)                                                |
-| Sessions ✓                  | `GET /api/session?parentID=null&archived=false` (workspace list; `archived=true` for the Archived view)               |
-| Subagent sessions           | `GET /api/session?parentID=`, `GET/POST /api/session`                                                                 |
-| Rename ✓                    | `PATCH /api/session/{id}` `{ title }`                                                                                 |
-| Archive ✓                   | `PATCH /api/session/{id}` `{ archived: true \| false }`                                                               |
-| Delete                      | `DELETE /api/session/{id}` (from OpenCode's API description)                                                          |
-| MCP servers ✓               | `GET /api/mcp` (each server's `status`: connected, pending, disabled, failed or needs_auth, with `error`)             |
-| Fork ✓                      | `POST /api/session/{id}/fork` `{ before? }` (a non-empty session; the copy has `fork`, not `parentID`)                |
-| History ✓                   | `GET /api/session/{id}/message` (newest first, cursor paging)                                                         |
-| Prompt, steer, queue        | `POST /api/session/{id}/prompt` `{ text, files?, agents?, skills?, delivery? }`                                       |
-| Model and agent             | `POST /api/session/{id}/model` (with `variant`), `POST /api/session/{id}/agent`                                       |
-| Running state, stop         | `GET /api/session/active`, `POST /api/session/{id}/interrupt`                                                         |
-| Rewind ✓                    | `POST /api/session/{id}/revert/stage` `{ messageID, files }`, then `POST /api/session/{id}/revert/commit`             |
-| Staged rewind ✓             | `DELETE /api/session/{id}/revert` (Restore) or `POST …/revert/commit` (Apply)                                         |
-| Compact                     | `POST /api/session/{id}/compact` `{}`                                                                                 |
-| Shell (`!command`) ✓        | `POST /api/session/{id}/shell` `{ command }`                                                                          |
-| Permissions                 | `GET …/permission`, `POST …/permission/{requestID}/reply` `{ decision, message? }`                                    |
-| Folder's project ✓          | `GET /api/location?location[directory]=` (its `project.id`; `C:\` and `c:\` are different projects)                   |
-| Always-allowed rules        | `GET /api/permission/saved?projectID=` ✓, `DELETE /api/permission/saved/{id}` (from OpenCode's API description)       |
-| Questions (forms)           | `GET …/form`, `POST …/form/{formID}/reply` `{ answer }`, `DELETE …/form/{formID}`                                     |
-| Pending (steer/queue) items | `GET …/inbox`, `DELETE …/inbox/{inboxID}`, `PATCH …/inbox/{inboxID}` `{ delivery }` (from OpenCode's API description) |
-| Agent-only changes          | `GET …/diff?from=…&to=…` without `context`, for full-file patches                                                     |
-| Events                      | `GET /api/event` (Server-Sent Events, global for all locations)                                                       |
+| Purpose                      | Endpoint                                                                                                              |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Health / version ✓           | `GET /api/info`                                                                                                       |
+| Models, providers, default ✓ | `GET /api/model`, `GET /api/provider`, `GET /api/model/default`                                                       |
+| Agents ✓                     | `GET /api/agent` (primary, non-hidden; with OpenCode's descriptions)                                                  |
+| Commands ✓                   | `GET /api/command`; run one with `POST /api/session/{id}/command` `{ name, text, delivery? }`                         |
+| Account and provider state ✓ | `GET /api/integration` (connection states only)                                                                       |
+| Subagents and skills ✓       | `GET /api/agent` (non-primary, for `@` mentions), `GET /api/skill`                                                    |
+| File search (`@`) ✓          | `GET /api/fs/find?query=&limit=` (ranked paths relative to the folder)                                                |
+| Sessions ✓                   | `GET /api/session?parentID=null&archived=false` (workspace list; `archived=true` for the Archived view)               |
+| Subagent sessions ✓          | `GET /api/session?parentID=`, `GET/POST /api/session`                                                                 |
+| Rename ✓                     | `PATCH /api/session/{id}` `{ title }`                                                                                 |
+| Archive ✓                    | `PATCH /api/session/{id}` `{ archived: true \| false }`                                                               |
+| Delete ✓                     | `DELETE /api/session/{id}`                                                                                            |
+| MCP servers ✓                | `GET /api/mcp` (each server's `status`: connected, pending, disabled, failed or needs_auth, with `error`)             |
+| Fork ✓                       | `POST /api/session/{id}/fork` `{ before? }` (a non-empty session; the copy has `fork`, not `parentID`)                |
+| History ✓                    | `GET /api/session/{id}/message` (newest first, cursor paging)                                                         |
+| Prompt, steer, queue ✓       | `POST /api/session/{id}/prompt` `{ text, files?, agents?, skills?, delivery? }`                                       |
+| Model and agent ✓            | `POST /api/session/{id}/model` (with `variant`), `POST /api/session/{id}/agent`                                       |
+| Running state, stop ✓        | `GET /api/session/active`, `POST /api/session/{id}/interrupt`                                                         |
+| Rewind ✓                     | `POST /api/session/{id}/revert/stage` `{ messageID, files }`, then `POST /api/session/{id}/revert/commit`             |
+| Staged rewind ✓              | `DELETE /api/session/{id}/revert` (Restore) or `POST …/revert/commit` (Apply)                                         |
+| Compact                      | `POST /api/session/{id}/compact` `{}`                                                                                 |
+| Shell (`!command`) ✓         | `POST /api/session/{id}/shell` `{ command }`                                                                          |
+| Permissions                  | `GET …/permission`, `POST …/permission/{requestID}/reply` `{ decision, message? }`                                    |
+| Folder's project ✓           | `GET /api/location?location[directory]=` (its `project.id`; `C:\` and `c:\` are different projects)                   |
+| Always-allowed rules         | `GET /api/permission/saved?projectID=` ✓, `DELETE /api/permission/saved/{id}` (from OpenCode's API description)       |
+| Questions (forms)            | `GET …/form`, `POST …/form/{formID}/reply` `{ answer }`, `DELETE …/form/{formID}`                                     |
+| Pending (steer/queue) items  | `GET …/inbox`, `DELETE …/inbox/{inboxID}`, `PATCH …/inbox/{inboxID}` `{ delivery }` (from OpenCode's API description) |
+| Agent-only changes           | `GET …/diff?from=…&to=…` without `context`, for full-file patches                                                     |
+| Events ✓                     | `GET /api/event` (Server-Sent Events, global for all locations)                                                       |
 
 `decision` is `once`, `always` (only when the request carries `save` patterns, shown as "always allow `npm test *`") or `reject`; a rejection can carry `message`, which OpenCode hands to the agent as what to do instead. Model records can include provider headers or bodies; the adapter drops them on arrival because they can contain secrets. `GET /api/credential` is never called.
 
@@ -98,5 +98,7 @@ OpenCode runs a subagent (the `subagent` tool) in a child session: `session.crea
 ## Compatibility notes
 
 - A folder OpenCode has not loaded yet briefly answers with empty model and command lists. Sidecar retries the models once and the commands twice, and refreshes the commands when the / menu opens.
+- A session created or switched without a model variant records it as `default`.
+- A fork copies the history under new message ids, so a rewind in the fork names the fork's own message.
 - An agent's default model can differ from `GET /api/model/default`, so new sessions are created with an explicit model.
 - Rolling, weekly or monthly provider quotas are not exposed by OpenCode and are not shown. The prompt-cache clock is an estimate from the last step's time and the `cacheWarmMinutes` setting, shown only when that step reported cache tokens (`tokens.cache.read` or `tokens.cache.write` above zero).

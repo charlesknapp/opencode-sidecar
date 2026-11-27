@@ -15,6 +15,10 @@ import type { HostMessage, ViewState } from "../../src/shared/protocol";
 const ROOT = path.resolve(__dirname, "../../..");
 /** Directory holding dist/webview.js and media/main.css; override to test an unpacked VSIX. */
 const BUNDLE_ROOT = process.env.WEBVIEW_BUNDLE_ROOT ?? ROOT;
+/** The directories these environment variables name (Windows install roots); unset ones are skipped. */
+function envDirs(...vars: string[]): string[] {
+  return vars.map((v) => process.env[v]).filter((d): d is string => !!d);
+}
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -23,6 +27,13 @@ const CHROME_CANDIDATES = [
   "/usr/bin/google-chrome-stable",
   "/usr/bin/chromium",
   "/usr/bin/chromium-browser",
+  // Windows: Chrome installed for all users or per user, then Edge, which every Windows has.
+  ...envDirs("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA").map((d) =>
+    path.join(d, "Google", "Chrome", "Application", "chrome.exe"),
+  ),
+  ...envDirs("ProgramFiles(x86)", "ProgramFiles").map((d) =>
+    path.join(d, "Microsoft", "Edge", "Application", "msedge.exe"),
+  ),
 ].filter((p): p is string => !!p);
 const CHROME = CHROME_CANDIDATES.find((p) => fs.existsSync(p));
 
