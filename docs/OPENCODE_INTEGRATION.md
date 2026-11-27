@@ -40,6 +40,7 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | Rename ✓                     | `PATCH /api/session/{id}` `{ title }`                                                                                 |
 | Archive ✓                    | `PATCH /api/session/{id}` `{ archived: true \| false }`                                                               |
 | Delete ✓                     | `DELETE /api/session/{id}`                                                                                            |
+| Instruction files ✓          | `GET /api/location` (`project.directory`), `GET /api/config` (documents' `instructions` only); files read from disk   |
 | MCP servers ✓                | `GET /api/mcp` (each server's `status`: connected, pending, disabled, failed or needs_auth, with `error`)             |
 | MCP connect, disconnect ✓    | `POST /api/experimental/mcp/{name}/connect`, `…/disconnect` (for this OpenCode run; `404 McpServerNotFoundError`)     |
 | MCP for this run ✓           | `PUT /api/experimental/mcp/{name}` `{ config }`, `DELETE /api/experimental/mcp/{name}` (runtime only, per folder)     |
@@ -103,6 +104,16 @@ Checked against the live service (2.4.2), its documentation and its OpenAPI docu
 - **Picking up a change.** OpenCode watches the config folders: a new, changed or deleted file shows in `GET /api/agent` within a second or two and emits `agent.updated` with the folder's `location`. The first request for a folder OpenCode has not loaded lists only the built-in agents. Sidecar polls the list until it shows the change and only after 6 s calls `POST /api/location/reload`, which rebuilds every folder and cancels pending permissions and questions.
 - **Built-in agents** are those with no file: `build`, `plan`, `general`, `explore`, and the hidden `compaction`, `title` and `summary`. Build also allows OpenCode's `question` tool; a custom agent does not get that rule.
 - **Roo Code and Kilo Code** keep custom modes in `.roomodes` / `.kilocodemodes` (JSON or YAML, `customModes`) and globally in `<globalStorage>/rooveterinaryinc.roo-cline/settings/custom_modes.yaml` (older: `cline_custom_modes.json`) and `<globalStorage>/kilocode.kilo-code/settings/`, where `globalStorage` is `%APPDATA%\Code\User\globalStorage` on Windows (Insiders, Cursor and VSCodium beside it). Groups map to rules on top of OpenCode's defaults: no `read` → `read`, `glob`, `grep` denied; no `edit` → `edit` denied, `edit` with `fileRegex` → `edit * deny` then `allow` per glob (regular expressions that globs cannot express make every edit ask); no `command` → `shell` denied; `browser` → `webfetch` and `websearch` allowed (otherwise denied; OpenCode's own browser stays off). MCP tools are named per tool in OpenCode's rules, so the `mcp` group is not mapped.
+
+### Instruction files
+
+Which files OpenCode 2.4.2 builds a session's instructions from, from its documentation (opencode.ai/docs/rules), its build and live checks (`test/live/instructions.test.ts`): `session.instructions.updated` carries a hash per instruction part (`core/instructions` for the files, also `core/date`, `core/environment`, …) when a prompt starts, even when the step then fails at the free limit, and the hash changes exactly when a file OpenCode reads changes. `GET /api/experimental/session/{id}/instructions/entries` lists only entries added through the API, and `GET /api/session/{id}/context` has no system prompt, so the hash is the only live signal.
+
+- **Global:** `<global config>/AGENTS.md` (`~/.config/opencode`, also on Windows), or without it `~/.claude/CLAUDE.md`.
+- **Project:** only when the folder is inside OpenCode's project (`GET /api/location` → `project.directory`, the Git root or the folder). Every folder from the open one up to the home folder, both included (outside home: up to the project root), so an AGENTS.md above the Git root is read too: its `AGENTS.md`, or its `CLAUDE.md` when it has none. `.opencode/AGENTS.md` is not read. AGENTS.md files below the folder load as the agent reads files there.
+- **Config `instructions`:** after the AGENTS.md files, from every config document (`GET /api/config` lists them with `info.instructions`; Sidecar reads only that key, since documents can hold keys). Relative paths and globs are looked up from the folder to the project root, `~/` from home, absolute paths as written, `http(s)` URLs fetched when the config loads. A new entry is picked up without a reload.
+- OpenCode watches these files; a change applies to the next session after a second or two. `OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1` (set on the service) skips every CLAUDE.md, which Sidecar cannot see.
+- `/init` (`GET /api/command`: "guided AGENTS.md setup") is a command; Sidecar runs it like any other.
 
 ### MCP servers
 

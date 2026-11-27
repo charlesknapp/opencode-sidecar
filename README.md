@@ -20,36 +20,37 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 
 ## OpenCode coverage
 
-| OpenCode                                   | In Sidecar                                                                                          |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| Sessions                                   | History with search, rename, fork from any prompt, archive and restore, new session                 |
-| Several sessions at once                   | A strip of open sessions with their status; a notice when one you're not looking at needs you       |
-| Prompts and delivery                       | Send, **steer** the running task or **queue** the next message; switch, edit or remove pending ones |
-| Agents and models                          | Agent switch (Shift+Tab), models by provider, variants, defaults per workspace                      |
-| Custom agents                              | Create and edit agents (prompt, model, permissions) as OpenCode's Markdown files; import Roo modes  |
-| Providers                                  | Connect, re-authenticate or disconnect through OpenCode's sign-in, with each one's state            |
-| Setup check                                | One report: the opencode program, service, sign-in, models, providers and Windows PATH              |
-| MCP servers                                | Each server's state; Connect, Disconnect, Retry, sign in with OAuth, add one for this run, reload   |
-| Tools                                      | A timeline row per call: shell IN/OUT, reads, edits with diffs, writes, searches, and the rest      |
-| Subagents                                  | Live rows with prompt, activity, Stop and Open; their requests and reports come back to you         |
-| Permissions                                | Yes, Always allow (when offered), No, or No with an instruction for the agent                       |
-| Permission rules                           | Approval modes (Ask, Balanced, Auto) as session rules, a rules editor, "always allow like this"     |
-| Questions                                  | A tabbed form with options, an Other answer and descriptions                                        |
-| Commands and skills                        | The `/` palette with OpenCode's commands (yours too), `@skill` and `@agent` mentions                |
-| Context                                    | Files, folders and selections, `@` mentions found by OpenCode's search, pasted images and text      |
-| Problems                                   | **Fix with OpenCode** on errors and warnings; a file's or the whole folder's problems as one chip   |
-| Source Control                             | **Write commit message with OpenCode** for the staged changes, into the commit box (never commits)  |
-| Rewind                                     | Rewind with or without code, and Restore or Apply a rewind staged in another client                 |
-| Commands, shell, compaction                | Type `/` for OpenCode's commands, `!command`, `/compact`                                            |
-| Side questions                             | `/btw`: ask in a hidden fork while the agent works, then send the answer to the session or close it |
-| Goals                                      | `/goal`: the objective, then each round's reason and next step                                      |
-| Todos                                      | The agent's todo list as a checklist (OpenCode's experimental `todowrite` tool)                     |
-| Background jobs                            | A row when a background shell, image or video job finishes, with its result or file                 |
-| Usage                                      | Context, cost, steps, cache hits and a prompt-cache estimate                                        |
-| Costs and limits                           | Cost by model and agent, what fills the context, tokens a second, OpenCode Go and Console limits    |
-| Agent changes                              | Kept apart from your own edits, in VS Code's diff editor                                            |
-| Review                                     | **Keep** or **Undo** each agent change in the editor, remembered per session; stage the kept ones   |
-| Other clients (terminal UI, other windows) | Followed live: new sessions, renames, rewinds, agent and model choices                              |
+| OpenCode                                   | In Sidecar                                                                                               |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| Sessions                                   | History with search, rename, fork from any prompt, archive and restore, new session                      |
+| Several sessions at once                   | A strip of open sessions with their status; a notice when one you're not looking at needs you            |
+| Prompts and delivery                       | Send, **steer** the running task or **queue** the next message; switch, edit or remove pending ones      |
+| Agents and models                          | Agent switch (Shift+Tab), models by provider, variants, defaults per workspace                           |
+| Project instructions                       | Which AGENTS.md / CLAUDE.md files OpenCode reads here; create one, `/init`, **Remember this** on a reply |
+| Custom agents                              | Create and edit agents (prompt, model, permissions) as OpenCode's Markdown files; import Roo modes       |
+| Providers                                  | Connect, re-authenticate or disconnect through OpenCode's sign-in, with each one's state                 |
+| Setup check                                | One report: the opencode program, service, sign-in, models, providers and Windows PATH                   |
+| MCP servers                                | Each server's state; Connect, Disconnect, Retry, sign in with OAuth, add one for this run, reload        |
+| Tools                                      | A timeline row per call: shell IN/OUT, reads, edits with diffs, writes, searches, and the rest           |
+| Subagents                                  | Live rows with prompt, activity, Stop and Open; their requests and reports come back to you              |
+| Permissions                                | Yes, Always allow (when offered), No, or No with an instruction for the agent                            |
+| Permission rules                           | Approval modes (Ask, Balanced, Auto) as session rules, a rules editor, "always allow like this"          |
+| Questions                                  | A tabbed form with options, an Other answer and descriptions                                             |
+| Commands and skills                        | The `/` palette with OpenCode's commands (yours too), `@skill` and `@agent` mentions                     |
+| Context                                    | Files, folders and selections, `@` mentions found by OpenCode's search, pasted images and text           |
+| Problems                                   | **Fix with OpenCode** on errors and warnings; a file's or the whole folder's problems as one chip        |
+| Source Control                             | **Write commit message with OpenCode** for the staged changes, into the commit box (never commits)       |
+| Rewind                                     | Rewind with or without code, and Restore or Apply a rewind staged in another client                      |
+| Commands, shell, compaction                | Type `/` for OpenCode's commands, `!command`, `/compact`                                                 |
+| Side questions                             | `/btw`: ask in a hidden fork while the agent works, then send the answer to the session or close it      |
+| Goals                                      | `/goal`: the objective, then each round's reason and next step                                           |
+| Todos                                      | The agent's todo list as a checklist (OpenCode's experimental `todowrite` tool)                          |
+| Background jobs                            | A row when a background shell, image or video job finishes, with its result or file                      |
+| Usage                                      | Context, cost, steps, cache hits and a prompt-cache estimate                                             |
+| Costs and limits                           | Cost by model and agent, what fills the context, tokens a second, OpenCode Go and Console limits         |
+| Agent changes                              | Kept apart from your own edits, in VS Code's diff editor                                                 |
+| Review                                     | **Keep** or **Undo** each agent change in the editor, remembered per session; stage the kept ones        |
+| Other clients (terminal UI, other windows) | Followed live: new sessions, renames, rewinds, agent and model choices                                   |
 
 ## A tour
 
@@ -131,6 +132,7 @@ On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctr
 - **Code blocks.** Besides **Copy code**, a finished block can be **inserted at the cursor** of your editor (an ordinary edit, so Undo reverts it) or **opened in a new editor** in its language.
 - **Export.** **/ → Export to Markdown** (or the command) opens the session as a Markdown document: prompts, answers, tool calls with their commands, decisions and subagent reports, without thinking or long output.
 - **Branch.** The header shows the Git branch the agent works on (from VS Code's Git).
+- **Project instructions.** **/ → Project instructions…** (also in the Agents panel) lists the instruction files OpenCode reads for the folder: the global `~/.config/opencode/AGENTS.md` (or `~/.claude/CLAUDE.md` without it), each folder's `AGENTS.md` from this one up to your home folder (its `CLAUDE.md` when it has none), and the config's `instructions` entries, each marked read, not read or not created, with **Open**. **Create AGENTS.md** starts one at the project root from a short template; the global one is created only after asking; **Set up with /init** runs OpenCode's guided setup. **Remember this** under a reply takes the text you selected in it (or its first line), lets you edit it, shows the change to the project's `AGENTS.md` as a diff and adds it as one line once you confirm.
 - **MCP servers.** **/ → MCP servers…** opens a panel with the folder's MCP servers as OpenCode reports them: connected, connecting, disabled, failed with the reason, or needing a sign-in. **Disconnect**, **Connect** and **Retry** apply until OpenCode restarts; **Authenticate** runs OpenCode's OAuth sign-in for a remote server (the browser page OpenCode returns, then Sidecar waits until the server is connected). **Add a server for this OpenCode run** takes a name and a command line or an `http(s)://` URL and never touches OpenCode's config (a config reload or a restart drops it; **Remove** asks first). **Reload config** has OpenCode read its config and skills again. OpenCode does not report a server's tools, so the panel shows no tool count or context cost.
 - **Steer and queue.** While the agent works, a switch in the message box's footer chooses what Enter does: **steer** (the agent reads your message at its next step; blue) or **queue** (it is sent when the task ends; purple, and the box border follows). In a narrow panel the switch shows only the chosen mode, and a click flips it. **Alt+Enter** sends one message the other way. Messages not yet delivered are listed above the box, each with a button to switch it between steer and queue, **Edit** and **Remove**.
 - **Budget Guard** is a local per-task limit on cost and steps, set in the model menu. It warns at 80% and then stops the agent through OpenCode's own cancellation, offering **Continue once**, **Increase budget** or **Start new session**. It stops before the step that would go over the cost limit (judged by the task's average step), and never in the middle of an edit: a file being written is finished first ("Stopped after finishing src/a.ts"). Defaults: Small $0.10 / 20 steps, Medium $0.30 / 50, Large $1.00 / 120, Custom $0.50 / 80. If OpenCode reports no cost, only steps count.

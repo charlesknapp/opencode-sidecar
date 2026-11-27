@@ -14,6 +14,7 @@ import type {
   AsideTurn,
   AsideView,
   ImportPreview,
+  InstructionsView,
   McpServerInfo,
   ProvidersView,
   StripTab,
@@ -2817,6 +2818,182 @@ describe(
           };
         });
         assert.deepEqual(fit, { inside: true, scroll: true, rows: true, doc: true });
+      });
+
+    // ---------------------------------------------------- project instructions
+
+    const INSTRUCTIONS: InstructionsView = {
+      rows: [
+        {
+          path: "C:\\Users\\me\\.config\\opencode\\AGENTS.md",
+          label: "~/.config/opencode/AGENTS.md",
+          kind: "global",
+          state: "missing",
+        },
+        {
+          path: "C:\\Users\\me\\.claude\\CLAUDE.md",
+          label: "~/.claude/CLAUDE.md",
+          kind: "global",
+          state: "loaded",
+        },
+        { path: "C:\\repo\\CLAUDE.md", label: "CLAUDE.md", kind: "project", state: "loaded" },
+        { path: "C:\\repo\\AGENTS.md", label: "AGENTS.md", kind: "project", state: "missing" },
+        {
+          path: "C:\\repo\\docs\\rules.md",
+          label: "docs/rules.md",
+          kind: "config",
+          state: "loaded",
+          note: "From opencode.json",
+        },
+        {
+          path: ".cursor/rules/*.md",
+          label: ".cursor/rules/*.md",
+          kind: "config",
+          state: "pattern",
+          note: "From opencode.json",
+        },
+      ],
+      projectFile: "C:\\repo\\AGENTS.md",
+      projectExists: false,
+      rememberFile: "C:\\repo\\CLAUDE.md",
+      rememberLabel: "CLAUDE.md",
+      globalFile: "C:\\Users\\me\\.config\\opencode\\AGENTS.md",
+      globalExists: false,
+      notes: [],
+      canInit: true,
+    };
+    const instructionRows = () =>
+      page.$$eval('[data-testid="instructions-panel"] [data-testid="instruction-row"]', (els) =>
+        els.map((e) => (e as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
+      );
+
+    it("Project instructions lists the files OpenCode reads, grouped, with Open and Create", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await clearSent();
+      await page.click('[data-testid="project-instructions"]');
+      assert.deepEqual(await sent(), [{ type: "loadInstructions" }]);
+      assert.match(await text('[data-testid="instructions-panel"]'), /Loading…/);
+      await host({ type: "instructions", view: INSTRUCTIONS });
+      assert.deepEqual(await instructionRows(), [
+        "~/.config/opencode/AGENTS.md Not created Create…",
+        "~/.claude/CLAUDE.md Read Open",
+        "CLAUDE.md Read Open",
+        "AGENTS.md Not created Create AGENTS.md",
+        "docs/rules.md Read From opencode.json Open",
+        ".cursor/rules/*.md Pattern From opencode.json",
+      ]);
+      const headings = await page.$$eval('[data-testid="instructions-panel"] h3', (hs) =>
+        hs.map((x) => x.textContent),
+      );
+      assert.deepEqual(headings, ["Every project", "This project", "From OpenCode's config"]);
+      await clearSent();
+      await page.click('[data-path="C:\\\\repo\\\\CLAUDE.md"] [data-testid="instruction-open"]');
+      await page.click('[data-testid="instructions-create"]');
+      await page.click('[data-testid="instructions-create-global"]');
+      assert.deepEqual(await sent(), [
+        { type: "openInstruction", path: "C:\\repo\\CLAUDE.md" },
+        { type: "createInstructions", scope: "project" },
+        { type: "createInstructions", scope: "global" },
+      ]);
+      // /init runs OpenCode's guided setup in the session and closes the panel.
+      await clearSent();
+      await page.click('[data-testid="instructions-init"]');
+      assert.deepEqual(await sent(), [{ type: "runCommand", name: "init", text: "" }]);
+      assert.equal(await page.$('[data-testid="instructions-panel"]'), null);
+    });
+
+    it("Project instructions hides /init when OpenCode does not offer it, and says why it could not load", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="project-instructions"]');
+      await host({
+        type: "instructions",
+        view: { ...INSTRUCTIONS, canInit: false, notes: ["This folder is outside OpenCode's project."] },
+      });
+      assert.equal(
+        await page.$eval('[data-testid="instructions-init"]', (b) => (b as HTMLElement).hidden),
+        true,
+      );
+      assert.match(await text('[data-testid="instructions-panel"]'), /outside OpenCode's project/);
+      await host({ type: "instructions", view: null, error: "OpenCode could not say which files it reads." });
+      assert.match(
+        await text('[data-testid="instructions-panel"]'),
+        /Couldn't work them out: OpenCode could not say/,
+      );
+      // Focus stays inside with Tab; Escape closes.
+      await host({ type: "instructions", view: INSTRUCTIONS });
+      for (let i = 0; i < 12; i++) {
+        await page.keyboard.press("Tab");
+        assert.ok(
+          await page.evaluate(() => !!document.activeElement?.closest('[data-testid="instructions-panel"]')),
+        );
+      }
+      await page.keyboard.press("Escape");
+      assert.equal(await page.$('[data-testid="instructions-panel"]'), null);
+    });
+
+    it("the Agents panel opens Project instructions", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="agents"]');
+      await clearSent();
+      await page.click('[data-testid="agents-instructions"]');
+      assert.equal(await page.$('[data-testid="agents-panel"]'), null, "the Agents panel gives way");
+      assert.ok(await page.$('[data-testid="instructions-panel"]'));
+      assert.deepEqual(await sent(), [{ type: "loadInstructions" }]);
+      await page.keyboard.press("Escape");
+    });
+
+    it("Remember this sends the reply's selected text, or its first line", async () => {
+      await host({
+        type: "transcript",
+        items: [
+          {
+            kind: "assistant",
+            id: "text:r:0",
+            text: "## Testing\n\nRun `npm test` before every push.\nThe suite needs Node 22.",
+            streaming: false,
+          },
+        ],
+      });
+      await host({ type: "state", state: baseState({ busy: false }) });
+      await clearSent();
+      await page.click('[data-testid="remember"]');
+      assert.deepEqual(await sent(), [{ type: "remember", text: "Testing" }]);
+      await clearSent();
+      await page.evaluate(() => {
+        const p = Array.from(document.querySelectorAll(".msg.assistant .msg-body *")).find((e) =>
+          /Node 22/.test(e.textContent ?? ""),
+        )!;
+        const r = document.createRange();
+        r.selectNodeContents(p);
+        const sel = window.getSelection()!;
+        sel.removeAllRanges();
+        sel.addRange(r);
+      });
+      const selected = await page.evaluate(() => window.getSelection()!.toString().trim());
+      await page.click('[data-testid="remember"]');
+      assert.deepEqual(await sent(), [{ type: "remember", text: selected }]);
+      assert.match(selected, /Node 22/);
+      await page.evaluate(() => window.getSelection()!.removeAllRanges());
+    });
+
+    for (const width of [300, 520])
+      it(`Project instructions fits ${width} px without sideways scrolling`, async () => {
+        await page.setViewport({ width, height: 700 });
+        await page.click('[data-testid="commands-button"]');
+        await page.click('[data-testid="project-instructions"]');
+        await host({ type: "instructions", view: INSTRUCTIONS });
+        const fit = await page.$eval('[data-testid="instructions-panel"]', (el) => {
+          const r = el.getBoundingClientRect();
+          const rows = Array.from(el.querySelectorAll<HTMLElement>('[data-testid="instruction-row"]'));
+          return {
+            inside: r.left >= 0 && r.right <= window.innerWidth,
+            scroll: el.scrollWidth <= el.clientWidth + 1,
+            rows: rows.every((x) => x.scrollWidth <= x.clientWidth + 1),
+            doc: document.documentElement.scrollWidth <= window.innerWidth,
+          };
+        });
+        assert.deepEqual(fit, { inside: true, scroll: true, rows: true, doc: true });
+        await page.keyboard.press("Escape");
       });
 
     // ------------------------------------------------------------- MCP panel

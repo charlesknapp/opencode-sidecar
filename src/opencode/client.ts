@@ -179,6 +179,8 @@ export interface OpenCodeClient {
   removeMcp(directory: string, name: string): Promise<void>;
   /** OpenCode's project for a folder (the scope of its saved permissions). */
   projectId(directory: string): Promise<string | null>;
+  /** The project's folder (its Git root, or the folder itself), where AGENTS.md lives. */
+  projectDirectory(directory: string): Promise<string | null>;
   /** "Always allow" rules OpenCode saved for a project. */
   listSavedPermissions(projectID: string): Promise<SavedPermission[]>;
   removeSavedPermission(id: string): Promise<void>;
@@ -1019,6 +1021,12 @@ export class HttpOpenCodeClient implements OpenCodeClient {
     const d = rec(await this.request("GET", "/api/location", { query: this.loc(directory) }));
     const id = rec(d.project).id;
     return typeof id === "string" && id ? id : null;
+  }
+
+  async projectDirectory(directory: string): Promise<string | null> {
+    const d = rec(await this.request("GET", "/api/location", { query: this.loc(directory) }));
+    const dir = rec(d.project).directory;
+    return typeof dir === "string" && dir ? dir : null;
   }
 
   async listSavedPermissions(projectID: string): Promise<SavedPermission[]> {

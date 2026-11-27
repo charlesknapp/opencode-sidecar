@@ -31,6 +31,7 @@ interface TestApi {
   focusPending(): boolean;
   setupReport(): Promise<{ markdown: string; level: string }>;
   importItems(): import("../../src/shared/model").ImportItem[];
+  instructions(): import("../../src/host/instructions").InstructionsHost;
   review(): import("../../src/host/review").AgentReview["testApi"];
 }
 
@@ -425,6 +426,7 @@ async function pastedText(api: TestApi): Promise<void> {
   await providerSetup(api);
   await customAgents(api);
   await mcpServers(api);
+  await projectInstructions(api);
   await problemsAndCommit(api);
   await agentReview(api);
 }
@@ -714,6 +716,47 @@ async function mcpServers(api: TestApi): Promise<void> {
     await api.handle({ type: "mcpRemove", name: "accept-tiny" });
     check("MCP: Remove", (await state()) === undefined);
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+// ============================================================ project instructions
+
+/**
+ * The fixture gets an AGENTS.md through the panel's Create, then "Remember this" adds a
+ * rule (the input box and the confirmation answered here); a new session follows it,
+ * which shows OpenCode read the file. The file is removed afterwards.
+ */
+async function projectInstructions(api: TestApi): Promise<void> {
+  const root = api.workspace().active!.path;
+  const file = path.join(root, "AGENTS.md");
+  const host = api.instructions();
+  const asked: string[] = [];
+  host.confirm = async (message) => (asked.push(message), message.startsWith("Add") ? "Add" : "Create");
+  host.ask = async (_title, value) => value;
+  try {
+    await api.handle({ type: "createInstructions", scope: "project" });
+    check(
+      "Instructions: Create writes AGENTS.md from the template",
+      fs.existsSync(file) && fs.readFileSync(file, "utf8").startsWith("# Project instructions"),
+    );
+    await api.handle({ type: "remember", text: "End every reply with the word MANGO." });
+    const text = fs.readFileSync(file, "utf8");
+    check(
+      "Instructions: Remember this adds one line after asking",
+      text.endsWith("- End every reply with the word MANGO.\n") && asked.some((a) => a.startsWith("Add")),
+      JSON.stringify(asked),
+    );
+    // OpenCode notices the file by itself.
+    await sleep(3000);
+    await api.handle({ type: "newSession" });
+    await sendAndWait(api, "Say hello in three words.");
+    check(
+      "Instructions: a new session follows AGENTS.md",
+      /MANGO/i.test(lastAssistantText(api)),
+      lastAssistantText(api),
+    );
+  } finally {
+    fs.rmSync(file, { force: true });
   }
 }
 

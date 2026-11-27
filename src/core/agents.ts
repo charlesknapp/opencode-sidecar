@@ -65,16 +65,32 @@ export interface ConfigSources {
   directories: string[];
   /** Agents defined in config documents (`opencode.json`'s `agents`), by id, with the document. */
   documentAgents: Record<string, string>;
+  /** The documents' `instructions` entries, with the document; absent when there are none. */
+  instructions?: ConfigInstruction[];
 }
 
+/** An entry of a config document's `instructions`, and the document it came from. */
+export interface ConfigInstruction {
+  entry: string;
+  from: string;
+}
+
+/** Only the documents' `agents` ids and `instructions` are read: they can also hold provider keys. */
 export function parseConfigSources(raw: unknown): ConfigSources {
   const out: ConfigSources = { directories: [], documentAgents: {} };
+  const instructions: ConfigInstruction[] = [];
   for (const e of Array.isArray(raw) ? raw : []) {
     const r = rec(e);
     if (r.type === "directory" && str(r.path)) out.directories.push(str(r.path));
-    else if (r.type === "document")
-      for (const id of Object.keys(rec(rec(r.info).agents))) out.documentAgents[id] = str(r.path) || "config";
+    else if (r.type === "document") {
+      const from = str(r.path) || "config";
+      for (const id of Object.keys(rec(rec(r.info).agents))) out.documentAgents[id] = from;
+      const list = rec(r.info).instructions;
+      for (const entry of Array.isArray(list) ? list : [])
+        if (typeof entry === "string" && entry.trim()) instructions.push({ entry, from });
+    }
   }
+  if (instructions.length) out.instructions = instructions;
   return out;
 }
 

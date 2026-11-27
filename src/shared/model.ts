@@ -385,6 +385,34 @@ export interface McpServerInfo {
   runtime?: boolean;
 }
 
+/** An instruction file OpenCode reads (or would read) for the folder. */
+export interface InstructionRow {
+  /** Absolute path; for a URL or a pattern, as written. */
+  path: string;
+  /** Relative to the folder, `~/…`, or as written. */
+  label: string;
+  kind: "global" | "project" | "config";
+  /** `shadowed`: there, but not read (an AGENTS.md beside it wins). */
+  state: "loaded" | "missing" | "shadowed" | "pattern" | "url";
+  note?: string;
+}
+
+/** The Project instructions panel. */
+export interface InstructionsView {
+  rows: InstructionRow[];
+  /** The project's AGENTS.md (at OpenCode's project root), and whether it exists. */
+  projectFile: string;
+  projectExists: boolean;
+  /** Where "Remember this" adds a line: the project's AGENTS.md, or its CLAUDE.md while it has no AGENTS.md. */
+  rememberFile: string;
+  rememberLabel: string;
+  globalFile: string;
+  globalExists: boolean;
+  notes: string[];
+  /** OpenCode offers `/init` (a guided AGENTS.md setup) for the folder. */
+  canInit: boolean;
+}
+
 /** An MCP server added at runtime: a local command (argv) or a remote URL. */
 export type McpConfig = { type: "local"; command: string[] } | { type: "remote"; url: string };
 

@@ -23,6 +23,7 @@ import type {
   FormAnswer,
   ImportPreview,
   InboxDelivery,
+  InstructionsView,
   McpBusy,
   McpServerInfo,
   MentionCandidate,
@@ -157,6 +158,8 @@ export type HostMessage =
   | { type: "savedPermissions"; items: SavedPermission[] | null; error?: string }
   /** The folder's MCP servers; null with `error` when OpenCode could not list them. */
   | { type: "mcpServers"; items: McpServerInfo[] | null; error?: string; busy?: McpBusy | null }
+  /** The Project instructions panel; null with `error` when it could not be worked out. */
+  | { type: "instructions"; view: InstructionsView | null; error?: string }
   /** How adding an MCP server for this OpenCode run went (the panel's form). */
   | { type: "mcpAddResult"; ok: boolean; error?: string }
   /** Open the Providers panel (the Manage Providers command). */
@@ -215,6 +218,14 @@ export type WebviewMessage =
   | { type: "mcpRemove"; name: string }
   /** Have OpenCode reload its config from the MCP panel. */
   | { type: "reloadMcp" }
+  /** The Project instructions panel opened (or wants a fresh list). */
+  | { type: "loadInstructions" }
+  /** Open one of the instruction files the panel lists. */
+  | { type: "openInstruction"; path: string }
+  /** Create the project's AGENTS.md, or (after the host asks) the global one. */
+  | { type: "createInstructions"; scope: "project" | "global" }
+  /** "Remember this": add a line to the project's AGENTS.md (the host shows the change and asks). */
+  | { type: "remember"; text: string }
   /** The Providers panel opened (or wants a fresh list). */
   | { type: "loadProviders" }
   /** Connect a provider through OpenCode's sign-in (`id`: OpenCode's integration). */
@@ -493,6 +504,10 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   mcpAdd: (m) => isStr(m.name, 200) && isStr(m.target, 4000),
   mcpRemove: (m) => isStr(m.name, 200),
   reloadMcp: () => true,
+  loadInstructions: () => true,
+  openInstruction: (m) => isStr(m.path, 4096),
+  createInstructions: (m) => m.scope === "project" || m.scope === "global",
+  remember: (m) => typeof m.text === "string" && m.text.length <= 20_000,
   loadProviders: () => true,
   providerConnect: (m) => isProviderId(m.id),
   providerReauth: (m) => isProviderId(m.id),
@@ -634,6 +649,9 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   mcpAuth: ["name"],
   mcpAdd: ["name", "target"],
   mcpRemove: ["name"],
+  openInstruction: ["path"],
+  createInstructions: ["scope"],
+  remember: ["text"],
   providerConnect: ["id"],
   providerReauth: ["id"],
   providerDisconnect: ["id"],

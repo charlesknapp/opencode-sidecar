@@ -4152,6 +4152,11 @@ body.vscode-high-contrast-light .p-approval {
 .providers-panel .banner {
   margin: 0;
 }
+/* Project instructions: a file per row, its path in the editor font. */
+.instruction-path {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+}
 .providers-panel .banner:empty,
 .providers-panel .banner[hidden] {
   display: none;

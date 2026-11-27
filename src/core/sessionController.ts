@@ -913,6 +913,12 @@ export class SessionController {
     return this.client.configSources(this.directory);
   }
 
+  /** OpenCode's project folder for the open folder (where its AGENTS.md lives); null when unknown. */
+  async projectDirectory(): Promise<string | null> {
+    if (!this.directory) throw new Error("Open a folder first.");
+    return this.client.projectDirectory(this.directory).catch(() => null);
+  }
+
   /**
    * Waits for OpenCode's agent list to show a change to an agent file (`ready`). OpenCode
    * 2.4 watches its config folders (a `.opencode/agents` created later too) and lists a

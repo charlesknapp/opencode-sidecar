@@ -338,6 +338,12 @@ export class MockClient implements OpenCodeClient {
   /** "Always allow" rules by project; `projects` maps a folder to its project. */
   projects = new Map<string, string>();
   saved: Array<SavedPermission & { projectID: string }> = [];
+  /** Project folders by folder; the folder itself when not set. */
+  projectDirs = new Map<string, string>();
+  async projectDirectory(directory: string) {
+    this.record("projectDirectory", directory);
+    return this.projectDirs.get(directory) ?? directory;
+  }
   async projectId(directory: string) {
     this.record("projectId", directory);
     return this.projects.get(directory) ?? null;

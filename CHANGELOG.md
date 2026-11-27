@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Project instructions.** **/ → Project instructions…** and the Agents panel show which instruction files OpenCode reads for the folder (the global AGENTS.md or Claude's, each folder's AGENTS.md or CLAUDE.md up to your home folder, the config's `instructions`), worked out the way OpenCode 2.4.2 does, with what it skips (a CLAUDE.md beside an AGENTS.md). **Open** any of them, **Create AGENTS.md** from a short template (a global one only after asking), or **Set up with /init**.
+- **Remember this.** Under a reply, it adds the text you selected (or the reply's first line) to the project's AGENTS.md as one line: you edit it first, see the change as a diff and confirm. Line endings and a BOM are kept; while the project only has a CLAUDE.md, the line goes there, since a new AGENTS.md would make OpenCode stop reading it.
+
 - **MCP servers you can manage.** **/ → MCP servers…** is now a panel: each server's state (connected, connecting, disabled, failed with OpenCode's reason, needs sign-in), **Disconnect**, **Connect** and **Retry** for this OpenCode run, and **Authenticate** for a remote server that needs OAuth, which opens OpenCode's sign-in page, waits for it and reconnects the server. It follows OpenCode's MCP events, so a server connecting or failing in another client shows too.
 - **Add an MCP server for this run.** A name and a command line (quotes and Windows paths work) or an `http(s)://` URL add a server through OpenCode's runtime API, labelled _added for this OpenCode run_; OpenCode's config is never changed, and a reload or restart drops it. **Remove** asks first.
 - **Reload config from the MCP panel**, the Providers panel's reload with its retries, after editing `opencode.json`, MCP servers or skills.

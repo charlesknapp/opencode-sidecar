@@ -23,6 +23,8 @@ import type {
   FormField,
   ImportPreview,
   InboxDelivery,
+  InstructionRow,
+  InstructionsView,
   McpBusy,
   McpServerInfo,
   MentionCandidate,
@@ -165,6 +167,8 @@ function persist() {
 const ICON_PATHS: Record<string, string[]> = {
   rewind: ["M3 4v3.5h3.5", "M3.4 7.4A5 5 0 1 1 4.5 11.5"],
   bookmark: ["M4.5 2.5h7v11L8 11l-3.5 2.5z"],
+  notes: ["M3.5 2.5h9v11h-9z", "M5.5 5.5h5", "M5.5 8h5", "M5.5 10.5h3"],
+  goal: ["M13.5 8a5.5 5.5 0 1 1-11 0a5.5 5.5 0 1 1 11 0", "M10.5 8a2.5 2.5 0 1 1-5 0a2.5 2.5 0 1 1 5 0"],
   history: ["M13.8 8a5.8 5.8 0 1 1-11.6 0a5.8 5.8 0 1 1 11.6 0", "M8 5v3l2 1.3"],
   clock: ["M13.8 8a5.8 5.8 0 1 1-11.6 0a5.8 5.8 0 1 1 11.6 0", "M8 5v3l2 1.3"],
   // The / palette: a slash in a rounded square, on the same grid and stroke as the others.
@@ -2498,6 +2502,12 @@ function commandsMenu(): MenuEntry[] {
       testid: "permission-rules",
       disabled: state?.connection.kind !== "connected",
     }),
+    item("Project instructions…", () => openInstructions(), {
+      icon: "notes",
+      sub: "The AGENTS.md files OpenCode reads here; create one or run /init",
+      testid: "project-instructions",
+      disabled: state?.connection.kind !== "connected",
+    }),
     item("Agents…", () => openAgents(), {
       icon: "agent",
       sub: "Create, edit or import agents with their own prompt, model and permissions",
@@ -2522,6 +2532,203 @@ function commandsMenu(): MenuEntry[] {
     }),
   );
   return out;
+}
+
+// ---------------------------------------------------- project instructions
+//
+// The Project instructions panel: the instruction files OpenCode reads for the folder
+// (global, the project's AGENTS.md or CLAUDE.md, the config's `instructions`), with Open,
+// Create and OpenCode's /init. The host reads and writes the files and asks before it
+// creates one outside the folder.
+
+/** undefined while loading; null when the host could not work them out. */
+let instructionsView: InstructionsView | null | undefined;
+let instructionsError = "";
+let instructionsPanel: { paint: () => void } | null = null;
+
+const INSTRUCTION_STATES: Record<InstructionRow["state"], string> = {
+  loaded: "Read",
+  missing: "Not created",
+  shadowed: "Not read",
+  pattern: "Pattern",
+  url: "URL",
+};
+const INSTRUCTION_KINDS: Array<{ kind: InstructionRow["kind"]; title: string }> = [
+  { kind: "global", title: "Every project" },
+  { kind: "project", title: "This project" },
+  { kind: "config", title: "From OpenCode's config" },
+];
+
+function openInstructions(): void {
+  if (instructionsPanel) {
+    send({ type: "loadInstructions" });
+    return;
+  }
+  closePopovers();
+  instructionsView = undefined;
+  send({ type: "loadInstructions" });
+  const before = document.activeElement as HTMLElement | null;
+  const body = h("div", { className: "instructions-body", "data-testid": "instructions-list" });
+  const close = () => {
+    instructionsPanel = null;
+    document.removeEventListener("keydown", onKey, true);
+    backdrop.remove();
+    if (before?.isConnected) before.focus();
+  };
+  const initBtn = h(
+    "button",
+    {
+      className: "btn subtle",
+      "data-testid": "instructions-init",
+      "data-tip": "OpenCode's guided setup: the agent looks at the project and writes AGENTS.md",
+      onclick: () => {
+        send({ type: "runCommand", name: "init", text: "" });
+        close();
+      },
+    },
+    "Set up with /init",
+  ) as HTMLButtonElement;
+  const doneBtn = h(
+    "button",
+    { className: "btn", "data-testid": "instructions-close", onclick: close },
+    "Done",
+  );
+  const dialog = h(
+    "div",
+    {
+      className: "modal rules-editor providers-panel instructions-panel",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "instructions-title",
+      "data-testid": "instructions-panel",
+      tabindex: "-1",
+    },
+    h("h2", { id: "instructions-title" }, "Project instructions"),
+    h(
+      "p",
+      { className: "rules-note" },
+      "OpenCode adds these files to every session in this folder. Use “Remember this” on a reply to add a line.",
+    ),
+    body,
+    h("div", { className: "modal-foot providers-foot" }, initBtn, doneBtn),
+  );
+  const backdrop = h(
+    "div",
+    {
+      className: "modal-backdrop",
+      onmousedown: (e: Event) => {
+        if (e.target === backdrop) close();
+      },
+    },
+    dialog,
+  );
+  const onKey = (e: KeyboardEvent) => {
+    if (dialogOpen) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    } else if (e.key === "Tab") {
+      const f = Array.from(dialog.querySelectorAll<HTMLElement>("button")).filter(
+        (x) => !(x as HTMLButtonElement).disabled && !x.hidden,
+      );
+      const i = f.indexOf(document.activeElement as HTMLElement);
+      e.preventDefault();
+      f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length]?.focus();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+
+  function row(r: InstructionRow, v: InstructionsView): HTMLElement {
+    const actions: HTMLElement[] = [];
+    if (r.state === "loaded" || r.state === "shadowed")
+      actions.push(
+        smallBtn("Open", "instruction-open", () => send({ type: "openInstruction", path: r.path })),
+      );
+    else if (r.state === "missing" && r.path === v.projectFile)
+      actions.push(
+        smallBtn("Create AGENTS.md", "instructions-create", () =>
+          send({ type: "createInstructions", scope: "project" }),
+        ),
+      );
+    else if (r.state === "missing" && r.path === v.globalFile)
+      actions.push(
+        smallBtn("Create…", "instructions-create-global", () =>
+          send({ type: "createInstructions", scope: "global" }),
+        ),
+      );
+    return h(
+      "li",
+      {
+        className: `rule provider instruction s-${r.state}`,
+        "data-testid": "instruction-row",
+        "data-path": r.path,
+      },
+      h(
+        "div",
+        { className: "provider-head" },
+        h("span", { className: "provider-name instruction-path", dir: "ltr" }, r.label),
+        h(
+          "span",
+          {
+            className: `provider-state ${r.state === "loaded" ? "s-connected" : "s-muted"}`,
+            "data-testid": "instruction-state",
+          },
+          INSTRUCTION_STATES[r.state],
+        ),
+      ),
+      r.note ? h("div", { className: "provider-meta" }, r.note) : null,
+      actions.length ? h("div", { className: "provider-actions" }, ...actions) : null,
+    );
+  }
+
+  function paint(): void {
+    const v = instructionsView;
+    initBtn.hidden = !v?.canInit;
+    if (!v) {
+      body.replaceChildren(
+        h(
+          "p",
+          { className: "rules-note" },
+          v === undefined
+            ? "Loading…"
+            : `Couldn't work them out: ${instructionsError || "OpenCode did not answer."}`,
+        ),
+      );
+      return;
+    }
+    const parts: HTMLElement[] = [];
+    for (const { kind, title } of INSTRUCTION_KINDS) {
+      const rows = v.rows.filter((r) => r.kind === kind);
+      if (!rows.length) continue;
+      parts.push(h("h3", {}, title), h("ul", { className: "rules-list" }, ...rows.map((r) => row(r, v))));
+    }
+    for (const n of v.notes) parts.push(h("p", { className: "rules-note" }, n));
+    body.replaceChildren(...parts);
+  }
+
+  document.body.append(backdrop);
+  instructionsPanel = { paint };
+  paint();
+  doneBtn.focus();
+}
+
+/**
+ * "Remember this" on a reply: the text selected in it, or else its first line, goes to
+ * the host, which asks for the line to add to the project's AGENTS.md and shows the change.
+ */
+function rememberFrom(item: Extract<TranscriptItem, { kind: "assistant" }>, el: HTMLElement | null): void {
+  const sel = window.getSelection();
+  const inside =
+    sel && !sel.isCollapsed && el && sel.anchorNode && el.contains(sel.anchorNode)
+      ? sel.toString().trim()
+      : "";
+  const first =
+    item.text
+      .split("\n")
+      .map((l) => l.replace(/^[#>*\-\s`]+/, "").trim())
+      .find(Boolean) ?? "";
+  send({ type: "remember", text: (inside || first).slice(0, 2000) });
 }
 
 // ----------------------------------------------------------- MCP servers
@@ -3364,7 +3571,7 @@ function openProviders(): void {
     const had = document.activeElement as HTMLElement | null;
     const key =
       had && (connectedList.contains(had) || availableList.contains(had))
-        ? `${had.closest<HTMLElement>("[data-id]")?.dataset.id ?? ""} ${had.dataset.testid ?? ""}`
+        ? `${had.closest<HTMLElement>(".msg.assistant")?.dataset.id ?? ""} ${had.dataset.testid ?? ""}`
         : null;
     const busy = v?.busy ?? null;
     status.hidden = !busy;
@@ -3663,7 +3870,7 @@ function openAgents(o: { import?: boolean } = {}): void {
     const had = document.activeElement as HTMLElement | null;
     const key =
       had && body.contains(had)
-        ? `${had.closest<HTMLElement>("[data-id]")?.dataset.id ?? ""} ${had.dataset.testid ?? ""}`
+        ? `${had.closest<HTMLElement>(".msg.assistant")?.dataset.id ?? ""} ${had.dataset.testid ?? ""}`
         : null;
     const list = h("ul", { className: "rules-list", "data-testid": "agents-list" });
     const note = h("p", { className: "rules-note", "data-testid": "agents-note" });
@@ -3725,6 +3932,19 @@ function openAgents(o: { import?: boolean } = {}): void {
           onclick: () => showImport(),
         },
         "Import modes…",
+      ),
+      h(
+        "button",
+        {
+          className: "btn subtle",
+          "data-testid": "agents-instructions",
+          "data-tip": "The AGENTS.md files OpenCode reads for this folder",
+          onclick: () => {
+            close();
+            openInstructions();
+          },
+        },
+        "Project instructions…",
       ),
       h("button", { className: "btn", "data-testid": "agents-close", onclick: close }, "Done"),
     );
@@ -7881,6 +8101,18 @@ function answerActions(item: Extract<TranscriptItem, { kind: "assistant" }>): HT
       },
       icon("bookmark"),
     ),
+    h(
+      "button",
+      {
+        className: "ico act",
+        title: "Remember this in AGENTS.md (the selected text, or the first line)",
+        "aria-label": "Remember this in AGENTS.md",
+        "data-testid": "remember",
+        onclick: (e: Event) =>
+          rememberFrom(item, (e.currentTarget as HTMLElement).closest<HTMLElement>(".msg.assistant")),
+      },
+      icon("notes"),
+    ),
     fb === "failed" ? h("span", { className: "copy-error small", role: "alert" }, t("copyFailed")) : null,
   );
 }
@@ -9176,6 +9408,11 @@ window.addEventListener("message", (e: MessageEvent) => {
       mcpError = msg.error ?? "";
       mcpBusy = msg.busy ?? null;
       mcpPanel?.paint();
+      break;
+    case "instructions":
+      instructionsView = msg.view;
+      instructionsError = msg.error ?? "";
+      instructionsPanel?.paint();
       break;
     case "mcpAddResult":
       mcpPanel?.added(msg.ok, msg.error);

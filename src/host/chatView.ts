@@ -65,6 +65,7 @@ import { getGitApi, type GitAPI, type GitRepository } from "./gitApi";
 import type { Logger } from "./log";
 import { addExcerpts, documentProblems, workspaceProblems } from "./problems";
 import { AgentsHost } from "./agents";
+import { InstructionsHost } from "./instructions";
 import { AgentReview } from "./review";
 import { vscodeConnectUi } from "./providers";
 import type { ToolTextProvider } from "./toolText";
@@ -136,6 +137,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private providersPending = false;
   /** The Agents panel's files, saves and imports. */
   private readonly agents: AgentsHost;
+  private readonly instructions: InstructionsHost;
   /** Open the Agents panel (true: its import preview) once the webview is ready. */
   private agentsPending: boolean | null = null;
   /** Keep / Undo review of the agent's changes in the editor. */
@@ -148,6 +150,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   ) {
     this.workspace = new WorkspaceTracker(context.workspaceState);
     this.disposables.push(this.workspace);
+    this.instructions = new InstructionsHost({
+      controller: () => this.controller,
+      folder: () => this.workspace.current.active?.path ?? null,
+      post: (m) => this.post(m),
+      log,
+      toolText,
+    });
     this.agents = new AgentsHost({
       controller: () => this.controller,
       folder: () => this.workspace.current.active?.path ?? null,
@@ -1223,6 +1232,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return this.addMcp(msg.name, msg.target);
       case "reloadMcp":
         return this.reloadMcp();
+      case "loadInstructions":
+        return this.instructions.postView();
+      case "openInstruction":
+        return this.instructions.open(msg.path);
+      case "createInstructions":
+        return this.instructions.create(msg.scope);
+      case "remember":
+        await this.instructions.remember(msg.text);
+        return;
       case "loadUsageDetails":
         return this.postUsageDetails();
       case "exportSession":
@@ -2228,6 +2246,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       signInState: () => this.signInState,
       setupReport: () => this.setupReport(),
       importItems: () => this.agents.previewItems(),
+      instructions: () => this.instructions,
       review: () => this.review.testApi,
       focusPending: () => this.focusPending,
       tap: (fn: (events: UiEvent[]) => void) => {
