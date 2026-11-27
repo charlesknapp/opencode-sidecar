@@ -415,6 +415,7 @@ async function pastedText(api: TestApi): Promise<void> {
   );
   check("The model read the pasted text", /\b12\b/.test(lastAssistantText(api)), lastAssistantText(api));
   await askAside(api);
+  await backgroundSessions(api);
 }
 
 // ============================================================ ask aside
@@ -477,6 +478,70 @@ async function askAside(api: TestApi): Promise<void> {
   );
   await waitIdle(api, since);
   check("The main task finished normally", c().current?.id === main && !api.viewState().busy);
+}
+
+// ====================================================== background sessions
+
+/**
+ * Two sessions at once: one keeps working while another is open. The strip shows it
+ * working, then finished; its notice's Open switches to it; the badge counts nothing.
+ */
+async function backgroundSessions(api: TestApi): Promise<void> {
+  const c = () => api.controller()!;
+  const notices: Array<{ message: string; actions: string[] }> = [];
+  // A background notice's Open is clicked once the strip has been checked.
+  let release!: () => void;
+  const clicked = new Promise<void>((r) => (release = r));
+  api.setNotifier(async (_severity, message, actions) => {
+    notices.push({ message, actions });
+    if (actions[0] !== "Open") return undefined;
+    await clicked;
+    return "Open";
+  });
+  await api.handle({ type: "newSession" });
+  await sendAndWait(api, "Reply with the single word OK.");
+  const first = c().current!.id;
+  const slow = waitCommand(30, "background-done");
+  await sendShell(
+    api,
+    `Run the shell command \`${slow.command}\` exactly as written and wait for it, then reply DONE.`,
+    slow.pattern,
+  );
+  await api.handle({ type: "newSession" });
+  await sendAndWait(api, "Reply with the single word OK.");
+  const second = c().current!.id;
+  const tab = (id: string) => api.viewState().strip.find((t) => t.id === id);
+  check(
+    "The strip shows the open session and the one working in the background",
+    tab(second)?.current === true && /^(running|done)$/.test(tab(first)?.status ?? ""),
+    JSON.stringify(api.viewState().strip),
+  );
+  const background = await waitFor(
+    "the background session's notice",
+    () => notices.find((n) => n.actions[0] === "Open"),
+    180_000,
+  );
+  check(
+    "A session that is not open is notified when it finishes, with Open",
+    /finished in/.test(background.message),
+    JSON.stringify(notices),
+  );
+  release();
+  await waitFor("Open switches to it", () => c().current?.id === first || undefined, 15_000).catch(
+    () => undefined,
+  );
+  check("Open switches to the session that finished", c().current?.id === first, c().current?.id ?? "");
+  check(
+    "Both stay on the strip; the opened one is seen",
+    tab(first)?.current === true && tab(first)?.status === "idle" && !!tab(second),
+    JSON.stringify(api.viewState().strip),
+  );
+  await api.handle({ type: "closeStripTab", id: second });
+  check("× takes a session off the strip", !tab(second), JSON.stringify(api.viewState().strip));
+  check(
+    "The closed session stays in History",
+    api.viewState().sessions.some((s) => s.id === second),
+  );
 }
 
 /** Root session ids OpenCode lists for the open folder, newest first (straight from OpenCode). */

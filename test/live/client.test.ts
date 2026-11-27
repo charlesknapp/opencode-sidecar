@@ -14,12 +14,14 @@ import {
   HttpOpenCodeClient,
   OpenCodeHttpError,
   opencodeDirectory,
+  sameDirectory,
   type Endpoint,
   type EventSubscription,
 } from "../../src/opencode/client";
 import { EventNormalizer, historyToEvents, type NormalizedEnvelope } from "../../src/opencode/events";
 import { discoverServer } from "../../src/opencode/service";
 import { buildPrompt } from "../../src/core/context";
+import type { TaskNotice } from "../../src/core/currentTask";
 import { ASIDES_KEY, SessionController } from "../../src/core/sessionController";
 import type { SessionSummary, UiEvent } from "../../src/shared/model";
 import { MemoryStore } from "../mockClient";
@@ -504,5 +506,141 @@ describe("live OpenCode service", () => {
     const after = await c.getSession(s.id);
     assert.equal(after.modelKey, "opencode/big-pickle");
     assert.equal(after.outcome, "succeeded");
+  });
+
+  /**
+   * A controller with session `open` open and `other` working in the background, fed by
+   * the real event stream. Returns the background session's own envelopes too.
+   */
+  async function watching(c: HttpOpenCodeClient) {
+    const open = await c.createSession({ directory: dir, agent: "build", model: FREE_MODEL });
+    created.add(open.id);
+    const other = await c.createSession({ directory: dir, agent: "build", model: FREE_MODEL });
+    created.add(other.id);
+    const notices: TaskNotice[] = [];
+    const ctl = new SessionController(
+      c,
+      new MemoryStore(),
+      { onEvents() {}, onTranscriptReset() {}, onStateChanged() {}, onTaskNotice: (n) => notices.push(n) },
+      { info() {}, warn() {}, error() {} },
+      () => ({ model: `${FREE_MODEL.providerID}/${FREE_MODEL.id}`, agent: "build" }),
+    );
+    const normalizer = new EventNormalizer();
+    const envelopes: NormalizedEnvelope[] = [];
+    let opened!: () => void;
+    const ready = new Promise<void>((r) => (opened = r));
+    const sub = c.subscribe({
+      onEvent: (r) => {
+        ctl.handleRawEvent(r);
+        const env = normalizer.normalize(r);
+        if (env?.sessionID === other.id) envelopes.push(env);
+      },
+      onOpen: () => opened(),
+      onClose() {},
+    });
+    await ready;
+    await ctl.setDirectory(dir);
+    assert.ok(await ctl.openSession(open.id));
+    const until = async (done: () => boolean, ms: number) => {
+      const deadline = Date.now() + ms;
+      while (!done() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      return done();
+    };
+    const dispose = () => {
+      sub.dispose();
+      ctl.dispose();
+    };
+    return { open, other, ctl, notices, envelopes, until, dispose };
+  }
+
+  it("follows a session that is not open on the strip and notifies its end (one model call)", async (t) => {
+    const c = live(t);
+    if (!c) return;
+    const models = await c.listModels(dir);
+    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
+      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
+    const w = await watching(c);
+    try {
+      // A `!command` makes no run: OpenCode answers once it is done and sends no execution events.
+      await c.runShell(w.other.id, "echo sidecar-strip");
+      assert.ok(!w.envelopes.some((e) => e.events.some((ev) => ev.type === "session.busy")));
+      // A prompt runs it; with the free limit reached it fails at once, which is reported too.
+      await c.prompt(w.other.id, { text: "Reply with the single word OK. Do not use any tools.", files: [] });
+      const idle = () =>
+        w.envelopes.flatMap((e) => e.events).find((ev) => ev.type === "session.idle") as
+          Extract<UiEvent, { type: "session.idle" }> | undefined;
+      assert.ok(await w.until(() => !!idle(), 120_000), "the background run ended");
+      // Execution events carry the session's id but no location: the folder comes from the session list.
+      const busy = w.envelopes.find((e) => e.events.some((ev) => ev.type === "session.busy"));
+      assert.ok(busy, "session.execution.started arrived for the session that is not open");
+      const end = w.envelopes.find((e) => e.events.some((ev) => ev.type === "session.idle"))!;
+      for (const env of [busy, end])
+        assert.ok(env.directory === null || sameDirectory(env.directory, dir), String(env.directory));
+      const outcome = idle()!.outcome;
+      assert.ok(outcome === "succeeded" || outcome === "failed", outcome);
+      assert.ok(await w.until(() => w.notices.length > 0, 5000), "a notice for the background session");
+      assert.deepEqual(
+        w.notices.map((n) => [n.kind, n.sessionID]),
+        [[outcome === "succeeded" ? "completed" : "failed", w.other.id]],
+      );
+      const tab = w.ctl.stripView().find((x) => x.id === w.other.id);
+      assert.equal(tab?.status, outcome === "succeeded" ? "done" : "failed");
+      assert.equal(w.ctl.stripView().find((x) => x.current)?.id, w.open.id);
+      if (outcome === "failed")
+        t.diagnostic("the free model usage limit is reached for today: the run failed");
+      // Opening it counts as seen.
+      assert.ok(await w.ctl.openSession(w.other.id));
+      assert.equal(w.ctl.stripView().find((x) => x.id === w.other.id)?.status, "idle");
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it("shows a background session's permission request on the strip (one model call)", async (t) => {
+    const c = live(t);
+    if (!c) return;
+    const models = await c.listModels(dir);
+    if (!models.some((m) => m.key === `${FREE_MODEL.providerID}/${FREE_MODEL.id}`))
+      return t.skip(`${FREE_MODEL.providerID}/${FREE_MODEL.id} is not offered`);
+    // A file outside the folder: reading it asks for the external-directory permission.
+    const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ocs-live-out-")));
+    fs.writeFileSync(path.join(outside, "secret-live.txt"), "x\n");
+    const w = await watching(c);
+    try {
+      await c.prompt(w.other.id, {
+        text: `Use the read tool to read ${path.join(outside, "secret-live.txt")} and reply with its contents.`,
+        files: [],
+      });
+      const asked = () => w.envelopes.find((e) => e.events.some((ev) => ev.type === "permission.requested"));
+      const ended = () => w.envelopes.some((e) => e.events.some((ev) => ev.type === "session.idle"));
+      await w.until(() => !!asked() || ended(), 120_000);
+      if (!asked()) {
+        const stored = (await c.listMessages(w.other.id, 10)) as Array<{ error?: { type?: string } }>;
+        if (stored.some((m) => m.error?.type === "provider.free-limit"))
+          return t.skip("the free model usage limit is reached for today");
+        return t.skip("the model did not use a tool that asks");
+      }
+      const env = asked()!;
+      assert.equal(env.sessionID, w.other.id);
+      assert.ok(env.directory === null || sameDirectory(env.directory, dir), String(env.directory));
+      const ev = env.events.find((e) => e.type === "permission.requested")!;
+      const request = ev.type === "permission.requested" ? ev.request : null;
+      assert.ok(request);
+      assert.ok(await w.until(() => w.notices.length > 0, 5000));
+      assert.deepEqual(
+        w.notices.map((n) => [n.kind, n.sessionID]),
+        [["needs-input", w.other.id]],
+      );
+      assert.equal(w.ctl.stripView().find((x) => x.id === w.other.id)?.status, "waiting");
+      assert.equal(w.ctl.backgroundWaitingCount(), 1);
+      // OpenCode lists it too (what Sidecar reads for a session found waiting).
+      assert.ok((await c.listPermissions(w.other.id)).some((p) => p.id === request.id));
+      await c.replyPermission(w.other.id, request.id, "reject", "Do not read it.");
+      assert.ok(await w.until(() => w.ctl.backgroundWaitingCount() === 0, 10_000), "the reply clears it");
+      await c.interrupt(w.other.id).catch(() => false);
+    } finally {
+      w.dispose();
+      fs.rmSync(outside, { recursive: true, force: true, maxRetries: 3 });
+    }
   });
 });

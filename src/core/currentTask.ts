@@ -208,6 +208,8 @@ export interface TaskNotice {
   key: string;
   /** What OpenCode is asking, for needs-input (already redacted, one line). */
   detail?: string;
+  /** Set for a session that is not open (it worked in the background); `summary` is its title. */
+  sessionID?: string;
 }
 
 export interface NotificationSettings {
@@ -227,7 +229,8 @@ export interface NotificationDecision {
  * Decides whether and how to show a notice. Completion and requests for input are
  * suppressed while the user is watching the chat (view visible and window focused),
  * where the request already takes the message box's place; failures and budget
- * stops are always shown. Each kind can be turned off in settings.
+ * stops are always shown. A session that is not open is always notified: the chat on
+ * screen is another conversation. Each kind can be turned off in settings.
  */
 export function decideNotification(
   n: TaskNotice,
@@ -235,6 +238,29 @@ export function decideNotification(
   ctx: { viewVisible: boolean; windowFocused: boolean },
 ): NotificationDecision {
   const task = n.summary || "OpenCode task";
+  if (n.sessionID) {
+    const where = `“${n.summary || "Untitled session"}”`;
+    switch (n.kind) {
+      case "completed":
+        return { show: settings.taskComplete, severity: "info", message: `✅ OpenCode finished in ${where}` };
+      case "needs-input":
+        return {
+          show: settings.needsInput,
+          severity: "warning",
+          message: n.detail
+            ? `❓ OpenCode is waiting for you in ${where}: ${n.detail}`
+            : `❓ OpenCode needs your input in ${where}`,
+        };
+      case "failed":
+        return {
+          show: settings.taskFailed,
+          severity: "error",
+          message: `❌ OpenCode task failed in ${where}`,
+        };
+      case "budget-stopped":
+        break;
+    }
+  }
   switch (n.kind) {
     case "completed":
       return {

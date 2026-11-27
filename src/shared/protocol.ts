@@ -18,6 +18,7 @@ import type {
   MentionCandidate,
   SavedPermission,
   ModelOption,
+  StripTab,
   OnboardingView,
   PendingInboxItem,
   PermissionDecision,
@@ -83,6 +84,8 @@ export interface ViewState {
     activity: "detailed" | "grouped";
     /** A playful word per run in the Working line (default on). */
     statusWords?: boolean;
+    /** The session strip above the conversation (default on). */
+    sessionStrip?: boolean;
   };
   /** OpenCode's slash commands for this folder (empty when unavailable). */
   commands: CommandInfo[];
@@ -96,6 +99,8 @@ export interface ViewState {
   revert: { messageID: string; files: number } | null;
   /** Archived sessions of this folder, once the history's Archived view asked for them. */
   archivedSessions: SessionSummary[] | null;
+  /** The session strip's tabs, most recent first (the open session among them). */
+  strip: StripTab[];
 }
 
 /** Official OpenCode pages the webview may ask the host to open (keys, never URLs). */
@@ -163,6 +168,8 @@ export type WebviewMessage =
   | { type: "stop" }
   | { type: "newSession" }
   | { type: "selectSession"; id: string }
+  /** Takes a session off the session strip (it stays in History). */
+  | { type: "closeStripTab"; id: string }
   | { type: "refreshSessions" }
   | { type: "selectModel"; key: string }
   | { type: "selectAgent"; id: string }
@@ -331,6 +338,7 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   stop: () => true,
   newSession: () => true,
   selectSession: (m) => isStr(m.id),
+  closeStripTab: (m) => isStr(m.id),
   refreshSessions: () => true,
   selectModel: (m) => isStr(m.key),
   selectAgent: (m) => isStr(m.id),
@@ -416,6 +424,7 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   openCode: ["text", "lang"],
   resolveRevert: ["action"],
   selectSession: ["id"],
+  closeStripTab: ["id"],
   selectModel: ["key"],
   selectAgent: ["id"],
   selectRoot: ["path"],

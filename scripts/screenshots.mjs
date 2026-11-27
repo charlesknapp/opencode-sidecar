@@ -191,6 +191,7 @@ const base = (o = {}) => ({
   skills: [],
   revert: null,
   archivedSessions: null,
+  strip: [],
   onboarding: {
     stage: "ready",
     checklist: { installed: "done", connected: "done", account: "done", models: "done" },

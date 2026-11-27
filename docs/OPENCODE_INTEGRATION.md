@@ -42,7 +42,7 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | Staged rewind ✓              | `DELETE /api/session/{id}/revert` (Restore) or `POST …/revert/commit` (Apply)                                         |
 | Compact                      | `POST /api/session/{id}/compact` `{}`                                                                                 |
 | Shell (`!command`) ✓         | `POST /api/session/{id}/shell` `{ command }`                                                                          |
-| Permissions                  | `GET …/permission`, `POST …/permission/{requestID}/reply` `{ decision, message? }`                                    |
+| Permissions                  | `GET …/permission` ✓, `POST …/permission/{requestID}/reply` `{ decision, message? }`                                  |
 | Folder's project ✓           | `GET /api/location?location[directory]=` (its `project.id`; `C:\` and `c:\` are different projects)                   |
 | Always-allowed rules         | `GET /api/permission/saved?projectID=` ✓, `DELETE /api/permission/saved/{id}` (from OpenCode's API description)       |
 | Questions (forms)            | `GET …/form`, `POST …/form/{formID}/reply` `{ answer }`, `DELETE …/form/{formID}`                                     |
@@ -96,6 +96,16 @@ Stored history replays `user`, `assistant` (text, thinking, tool parts), `shell`
 - A fork sends no `session.created`, only `session.forked` (with the original as `parentID`); it is a root session, so `GET /api/session?parentID=null` lists it. Sidecar keeps the ids in workspace state and leaves them out of History until they are deleted.
 - The stream is global, so the copy's events (and its subagents', found through `session.created`'s `parentID`) go to the aside card only. Its permission requests are rejected with a short instruction and its questions cancelled, so it never waits on an answer nobody sees.
 - Closing interrupts a running copy and deletes it. Archiving was not chosen: it would keep a full copy of the conversation in the Archived list. Ids that could not be deleted (VS Code closed first, OpenCode was away) are deleted at the next start; a `404` counts as deleted.
+
+## Several sessions
+
+The event stream is global, so Sidecar also follows the folder's other sessions for the session strip and its notices, without loading their history. Checked live:
+
+- `session.execution.started/succeeded/failed` carry `sessionID` but no `location`, so a session's folder comes from the folder's session list (or the strip, for older ones), never from the event.
+- A `!command` (`POST …/shell`) returns when the command is done and sends no `session.execution.*` events: it does not make a session busy.
+- `permission.asked` carries the asking session's id (OpenCode's API description; the live test checks it, and its `location` when present, whenever the free model asks for a permission); `GET /api/session/{id}/permission` ✓ lists pending requests. A session found working at start or after a reconnect has its pending permissions and questions read this way (`GET …/permission`, `GET …/form`, also for its running subagents from `GET /api/session?parentID=`), once per run and without a notification.
+- `session.deleted` carries no `location`. A deleted or archived session leaves the strip; a session OpenCode no longer knows answers `404` (`SessionNotFoundError`), also to `POST …/prompt`.
+- Subagents are tied to their session through `session.created`'s `parentID`: their requests show on its tab, and it counts as finished once they are done too. Side-question forks are never followed.
 
 ## Subagents
 

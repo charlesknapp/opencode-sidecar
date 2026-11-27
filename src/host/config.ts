@@ -22,6 +22,8 @@ export interface SidebarConfig {
   cacheWarmMinutes: number;
   /** Every tool call on its own row, or runs folded into one line. */
   activity: "detailed" | "grouped";
+  /** The strip of open sessions above the conversation. */
+  sessionStrip: boolean;
 }
 
 export const CONFIG_SECTION = "opencodeSidecar";
@@ -83,5 +85,6 @@ export function readConfig(): SidebarConfig {
       return Number.isFinite(v) ? Math.min(120, Math.max(0, v)) : 5;
     })(),
     activity: c.get<string>("activity", "detailed") === "grouped" ? "grouped" : "detailed",
+    sessionStrip: c.get<boolean>("sessionStrip", true),
   };
 }

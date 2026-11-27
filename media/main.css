@@ -386,6 +386,141 @@ button.p-title:focus-visible .i {
   color: var(--muted);
 }
 
+/* --------------------------------------------------------- session strip */
+
+/* The open sessions as small tabs under the header; it scrolls sideways when they do not fit. */
+.strip {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  min-width: 0;
+}
+.strip-tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  max-width: 150px;
+  min-width: 0;
+  border-radius: 5px;
+}
+.strip-tab:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+.strip-tab.current {
+  background: var(--menu-active);
+}
+.strip-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px 0 7px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.92em;
+  cursor: pointer;
+}
+.strip-tab.current .strip-open {
+  padding-right: 8px;
+  color: var(--vscode-foreground);
+  cursor: default;
+}
+.strip-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Status: a breathing dot while working, a ring while waiting for you, a dot when it
+   finished or failed since you looked; none when quiet. The label says it in words. */
+.strip-dot {
+  flex: none;
+  display: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.st-running .strip-dot {
+  display: block;
+  background: var(--accent);
+  animation: dot-breathe 1.6s ease-in-out infinite;
+}
+.st-waiting .strip-dot {
+  display: block;
+  border: 2px solid var(--vscode-charts-yellow, var(--vscode-editorWarning-foreground, #cca700));
+}
+.st-done .strip-dot {
+  display: block;
+  background: var(--ok);
+}
+.st-failed .strip-dot {
+  display: block;
+  border-radius: 1px;
+  background: var(--err);
+}
+.st-done:not(.current) .strip-open,
+.st-failed:not(.current) .strip-open,
+.st-waiting:not(.current) .strip-open {
+  color: var(--vscode-foreground);
+}
+.strip-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  opacity: 0;
+}
+.strip-close .i {
+  width: 12px;
+  height: 12px;
+}
+.strip-tab:hover .strip-close,
+.strip-tab:focus-within .strip-close {
+  opacity: 1;
+}
+.strip-close:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+@media (hover: none) {
+  .strip-close {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .st-running .strip-dot {
+    animation: none;
+  }
+}
+body.vscode-high-contrast .strip-tab.current,
+body.vscode-high-contrast-light .strip-tab.current {
+  outline: 1px solid var(--vscode-contrastActiveBorder, Highlight);
+}
+@media (forced-colors: active) {
+  .strip-tab.current {
+    outline: 1px solid Highlight;
+  }
+  .strip-dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}
+
 /* -------------------------------------------------------------- buttons */
 
 button {

@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import type { Browser, Page } from "puppeteer-core" with { "resolution-mode": "import" };
-import type { AsideTurn, AsideView, SubagentView, TranscriptItem } from "../../src/shared/model";
+import type { AsideTurn, AsideView, StripTab, SubagentView, TranscriptItem } from "../../src/shared/model";
 import type { HostMessage, ViewState } from "../../src/shared/protocol";
 
 const ROOT = path.resolve(__dirname, "../../..");
@@ -133,6 +133,7 @@ export function baseState(over: Partial<ViewState> = {}): ViewState {
     skills: [{ id: "review", name: "Review" }],
     revert: null,
     archivedSessions: null,
+    strip: [],
     ...over,
   };
 }
@@ -3986,6 +3987,164 @@ describe(
         const r = await page.$eval(`[data-testid="${id}"]`, (e) => e.getBoundingClientRect().right);
         assert.ok(r <= 300, `${id} at ${r}px`);
       }
+    });
+
+    // ------------------------------------------------------------ session strip
+
+    const STRIP: StripTab[] = [
+      { id: "ses_1", title: "Test session", status: "running", current: true },
+      { id: "ses_2", title: "Refactor the authentication middleware", status: "waiting", current: false },
+      { id: "ses_3", title: "Docs", status: "done", current: false },
+      { id: "ses_4", title: "Flaky test", status: "failed", current: false },
+      { id: "ses_5", title: "Spike", status: "idle", current: false },
+    ];
+    const stripShown = () => page.$eval('[data-testid="session-strip"]', (s) => !(s as HTMLElement).hidden);
+
+    it("shows the strip once two sessions are on it, and hides it when turned off", async () => {
+      assert.equal(await stripShown(), false, "no strip yet");
+      await host({ type: "state", state: baseState({ strip: STRIP.slice(0, 1) }) });
+      assert.equal(await stripShown(), false, "one session: no strip");
+      await host({ type: "state", state: baseState({ strip: STRIP }) });
+      assert.equal(await stripShown(), true);
+      // Right under the header, above the conversation.
+      const order = await page.evaluate(() => {
+        const strip = document.querySelector('[data-testid="session-strip"]')!;
+        return [
+          strip.previousElementSibling?.tagName,
+          !!(strip.compareDocumentPosition(document.querySelector(".conversation")!) & 4),
+        ];
+      });
+      assert.deepEqual(order, ["HEADER", true]);
+      await host({
+        type: "state",
+        state: baseState({
+          strip: STRIP,
+          prefs: { stickyPrompt: true, cacheWarmMinutes: 5, activity: "detailed", sessionStrip: false },
+        }),
+      });
+      assert.equal(await stripShown(), false);
+    });
+
+    it("labels each tab with its status, and only the others can be closed", async () => {
+      await host({ type: "state", state: baseState({ strip: STRIP }) });
+      const tabs = await page.$$eval('[data-testid="strip-tab"]', (b) =>
+        b.map((x) => [
+          x.getAttribute("aria-label"),
+          x.getAttribute("aria-current"),
+          (x as HTMLElement).dataset.status,
+          getComputedStyle(x.querySelector(".strip-dot")!).display,
+        ]),
+      );
+      assert.deepEqual(tabs, [
+        ["Test session, working (open)", "page", "running", "block"],
+        ["Refactor the authentication middleware, waiting for you", null, "waiting", "block"],
+        ["Docs, finished", null, "done", "block"],
+        ["Flaky test, failed", null, "failed", "block"],
+        ["Spike", null, "idle", "none"],
+      ]);
+      assert.equal(
+        await page.$eval('[role="list"][aria-label="Open sessions"]', (l) => l.children.length),
+        5,
+      );
+      const closes = await page.$$eval('[data-testid="strip-close"]', (b) =>
+        b.map((x) => x.getAttribute("aria-label")),
+      );
+      assert.equal(closes.length, 4, "the open session has no ×");
+      assert.equal(closes[0], "Remove Refactor the authentication middleware from the strip");
+    });
+
+    it("switches on click, takes a tab off with ×, and does nothing for the open one", async () => {
+      await host({ type: "state", state: baseState({ strip: STRIP }) });
+      await clearSent();
+      await page.click('[data-testid="strip-tab"][data-status="running"]');
+      assert.equal(await lastSent("selectSession"), undefined, "already open");
+      const tab = await page.$$('[data-testid="strip-tab"]');
+      await tab[2].click();
+      assert.deepEqual(await lastSent("selectSession"), { type: "selectSession", id: "ses_3" });
+      await page.hover('.strip-tab[data-id="ses_4"]');
+      await page.click('.strip-tab[data-id="ses_4"] [data-testid="strip-close"]');
+      assert.deepEqual(await lastSent("closeStripTab"), { type: "closeStripTab", id: "ses_4" });
+      await host({ type: "state", state: baseState({ strip: STRIP.filter((t) => t.id !== "ses_4") }) });
+      assert.equal(await page.$('.strip-tab[data-id="ses_4"]'), null);
+    });
+
+    it("moves between tabs with the arrow keys, Home and End, and Delete takes one off", async () => {
+      await host({ type: "state", state: baseState({ strip: STRIP }) });
+      await clearSent();
+      await page.focus('.strip-tab[data-id="ses_1"] .strip-open');
+      const focused = () =>
+        page.evaluate(() => document.activeElement?.closest<HTMLElement>(".strip-tab")?.dataset.id);
+      await page.keyboard.press("ArrowRight");
+      assert.equal(await focused(), "ses_2");
+      await page.keyboard.press("End");
+      assert.equal(await focused(), "ses_5");
+      await page.keyboard.press("ArrowRight");
+      assert.equal(await focused(), "ses_5", "stays at the end");
+      await page.keyboard.press("Home");
+      await page.keyboard.press("ArrowRight");
+      await page.keyboard.press("ArrowRight");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("selectSession"), { type: "selectSession", id: "ses_3" });
+      await page.keyboard.press("Delete");
+      assert.deepEqual(await lastSent("closeStripTab"), { type: "closeStripTab", id: "ses_3" });
+      await host({ type: "state", state: baseState({ strip: STRIP.filter((t) => t.id !== "ses_3") }) });
+      assert.equal(await focused(), "ses_4", "the focus moves to the next tab");
+      // Tab reaches the strip's tabs, not the × buttons.
+      const tabbable = await page.$$eval('[data-testid="strip-close"]', (b) =>
+        b.map((x) => x.getAttribute("tabindex")),
+      );
+      assert.ok(tabbable.every((t) => t === "-1"));
+    });
+
+    for (const width of [300, 400, 520]) {
+      it(`fits the strip at ${width}px: ellipsized titles, a sideways scroll, no page overflow`, async () => {
+        await page.setViewport({ width, height: 700 });
+        const many: StripTab[] = [
+          ...STRIP,
+          { id: "ses_6", title: "Another long session title for overflow", status: "idle", current: false },
+        ];
+        await host({ type: "state", state: baseState({ strip: many }) });
+        const m = await page.evaluate(() => {
+          const strip = document.querySelector<HTMLElement>('[data-testid="session-strip"]')!;
+          const title = document.querySelector<HTMLElement>('.strip-tab[data-id="ses_2"] .strip-title')!;
+          const header = document.querySelector<HTMLElement>(".header")!;
+          return {
+            overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            scrolls: strip.scrollWidth > strip.clientWidth,
+            overflowX: getComputedStyle(strip).overflowX,
+            ellipsis:
+              title.scrollWidth > title.clientWidth && getComputedStyle(title).textOverflow === "ellipsis",
+            height: strip.getBoundingClientRect().height,
+            right: strip.getBoundingClientRect().right,
+            headerRight: header.getBoundingClientRect().right,
+          };
+        });
+        assert.ok(m.overflow <= 0, `horizontal overflow ${m.overflow}px`);
+        assert.equal(m.overflowX, "auto");
+        assert.ok(m.scrolls, "six tabs scroll sideways");
+        assert.ok(m.ellipsis, "a long title is cut with …");
+        assert.ok(m.height <= 34, `strip ${m.height}px tall`);
+        assert.ok(m.right <= width && m.headerRight <= width);
+        // The last tab can be scrolled to and clicked.
+        await page.$eval('.strip-tab[data-id="ses_6"]', (t) => t.scrollIntoView({ inline: "end" }));
+        await clearSent();
+        await page.click('.strip-tab[data-id="ses_6"] [data-testid="strip-tab"]');
+        assert.deepEqual(await lastSent("selectSession"), { type: "selectSession", id: "ses_6" });
+      });
+    }
+
+    it("stops the working dot with reduced motion", async () => {
+      await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+      await host({ type: "state", state: baseState({ strip: STRIP }) });
+      assert.equal(
+        await page.$eval('.strip-tab[data-id="ses_1"] .strip-dot', (d) => getComputedStyle(d).animationName),
+        "none",
+      );
+      await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
+      assert.equal(
+        await page.$eval('.strip-tab[data-id="ses_1"] .strip-dot', (d) => getComputedStyle(d).animationName),
+        "dot-breathe",
+      );
     });
   },
 );

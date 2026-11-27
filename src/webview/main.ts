@@ -17,6 +17,7 @@ import type {
   MentionCandidate,
   SavedPermission,
   PromptMention,
+  StripStatus,
   SubagentView,
   TodoEntry,
   TranscriptItem,
@@ -286,6 +287,14 @@ function markSpinner(): SVGSVGElement {
 
 const app = document.getElementById("app")!;
 const headerEl = h("header", { className: "header" });
+/** The session strip: open sessions as small tabs with their status, under the header. */
+const stripEl = h("div", {
+  className: "strip",
+  role: "list",
+  "aria-label": "Open sessions",
+  "data-testid": "session-strip",
+  hidden: true,
+});
 const bannerEl = h("div", { className: "banners" });
 const bookmarksEl = h("section", {
   className: "bookmarks popover",
@@ -340,7 +349,18 @@ const jumpEl = h("button", {
   onclick: () => jumpToLatest(),
 });
 const bottomEl = h("div", { className: "bottom" }, jumpEl, stripsEl, composerEl);
-app.append(headerEl, bannerEl, bookmarksEl, sessionsEl, subHeaderEl, asideEl, scroller, bottomEl, statusLive);
+app.append(
+  headerEl,
+  stripEl,
+  bannerEl,
+  bookmarksEl,
+  sessionsEl,
+  subHeaderEl,
+  asideEl,
+  scroller,
+  bottomEl,
+  statusLive,
+);
 // The conversation scrolls under the floating box; its last line stays reachable above it.
 // The box keeps clear of the chat's scrollbar, whatever width the theme gives it.
 const fitBottom = new ResizeObserver(() => {
@@ -3132,6 +3152,127 @@ function renderBanners(s: ViewState) {
   if (bannerEl.dataset.sig === sig) return;
   bannerEl.dataset.sig = sig;
   bannerEl.replaceChildren(...banners);
+}
+
+// ---------------------------------------------------------- session strip
+//
+// The sessions opened lately in this folder, and any that work or wait, as small tabs
+// under the header, each with its status. Click one to switch; × only takes it off the
+// strip. It shows once two or more sessions are on it.
+
+const STRIP_STATUS: Record<StripStatus, { label: string; tip: string } | null> = {
+  waiting: { label: "waiting for you", tip: "Waiting for your answer" },
+  running: { label: "working", tip: "OpenCode is working" },
+  done: { label: "finished", tip: "Finished since you last looked" },
+  failed: { label: "failed", tip: "Failed since you last looked" },
+  idle: null,
+};
+let stripSignature = "";
+let stripCurrent: string | null = null;
+
+/** Moves the focus between the strip's tabs (←/→, Home, End); Delete takes one off. */
+stripEl.addEventListener("keydown", (e) => {
+  const tabs = Array.from(stripEl.querySelectorAll<HTMLButtonElement>(".strip-open"));
+  const at = tabs.indexOf(document.activeElement as HTMLButtonElement);
+  if (at < 0) return;
+  const rtl = getComputedStyle(stripEl).direction === "rtl";
+  let next: number;
+  if (e.key === "ArrowRight") next = rtl ? at - 1 : at + 1;
+  else if (e.key === "ArrowLeft") next = rtl ? at + 1 : at - 1;
+  else if (e.key === "Home") next = 0;
+  else if (e.key === "End") next = tabs.length - 1;
+  else if (e.key === "Delete") {
+    const close = tabs[at].parentElement?.querySelector<HTMLButtonElement>(".strip-close");
+    if (close) {
+      e.preventDefault();
+      close.click();
+    }
+    return;
+  } else return;
+  e.preventDefault();
+  tabs[Math.max(0, Math.min(tabs.length - 1, next))]?.focus();
+});
+
+function renderStrip(s: ViewState): void {
+  const tabs = s.strip ?? [];
+  const show = s.prefs.sessionStrip !== false && tabs.length > 1 && s.connection.kind === "connected";
+  stripEl.hidden = !show;
+  if (!show) {
+    stripSignature = "";
+    return;
+  }
+  const sig = JSON.stringify(tabs);
+  if (sig === stripSignature) return;
+  stripSignature = sig;
+  // A rebuild keeps the focus on the same tab (or the one after a tab taken off).
+  const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(".strip-tab");
+  const focusId = focused && stripEl.contains(focused) ? focused.dataset.id : undefined;
+  const focusAt = focused ? Array.from(stripEl.children).indexOf(focused) : -1;
+  stripEl.replaceChildren(
+    ...tabs.map((t) => {
+      const status = STRIP_STATUS[t.status];
+      const label = `${t.title}${status ? `, ${status.label}` : ""}${t.current ? " (open)" : ""}`;
+      return h(
+        "div",
+        {
+          className: `strip-tab st-${t.status}${t.current ? " current" : ""}`,
+          role: "listitem",
+          "data-id": t.id,
+        },
+        h(
+          "button",
+          {
+            className: "strip-open",
+            "aria-label": label,
+            "aria-current": t.current ? "page" : undefined,
+            "data-tip": status ? `${t.title} — ${status.tip}` : t.title,
+            "data-testid": "strip-tab",
+            "data-status": t.status,
+            onclick: () => {
+              if (t.current) return;
+              sessionsOpen = false;
+              bookmarksOpen = false;
+              send({ type: "selectSession", id: t.id });
+              render();
+            },
+          },
+          h("span", { className: "strip-dot", "aria-hidden": "true" }),
+          h("span", { className: "strip-title", dir: "auto" }, t.title),
+        ),
+        t.current
+          ? null
+          : h(
+              "button",
+              {
+                className: "strip-close",
+                tabindex: "-1",
+                "aria-label": `Remove ${t.title} from the strip`,
+                "data-tip": "Remove from the strip (it stays in History)",
+                "data-testid": "strip-close",
+                onclick: () => {
+                  const row = stripEl.querySelector<HTMLElement>(`.strip-tab[data-id="${CSS.escape(t.id)}"]`);
+                  const rows = Array.from(stripEl.children);
+                  const after = row ? (rows[rows.indexOf(row) + 1] ?? rows[rows.indexOf(row) - 1]) : null;
+                  after?.querySelector<HTMLElement>(".strip-open")?.focus();
+                  send({ type: "closeStripTab", id: t.id });
+                },
+              },
+              icon("close"),
+            ),
+      );
+    }),
+  );
+  if (focusId !== undefined) {
+    const rows = Array.from(stripEl.querySelectorAll<HTMLElement>(".strip-tab"));
+    const again = rows.find((r) => r.dataset.id === focusId) ?? rows[Math.min(focusAt, rows.length - 1)];
+    again?.querySelector<HTMLElement>(".strip-open")?.focus();
+  }
+  // The open session's tab is scrolled into view when it changes.
+  const current = tabs.find((t) => t.current)?.id ?? null;
+  if (current !== stripCurrent) {
+    stripCurrent = current;
+    stripEl.querySelector(".strip-tab.current")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
 }
 
 // --------------------------------------------------------------- history
@@ -6626,6 +6767,7 @@ let lastBusy: boolean | null = null;
 function render() {
   if (!state) return;
   renderHeader(state);
+  renderStrip(state);
   renderSessions(state);
   renderBookmarks(state);
   renderEmpty(state);

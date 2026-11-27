@@ -117,6 +117,18 @@ export interface SessionSummary {
   revert?: { messageID: string; files: number } | null;
 }
 
+/** A session strip tab's state: waiting for you, working, finished or failed since you looked, or quiet. */
+export type StripStatus = "waiting" | "running" | "done" | "failed" | "idle";
+
+/** A tab of the session strip (sessions opened lately in the folder, and any that work or wait). */
+export interface StripTab {
+  id: string;
+  title: string;
+  status: StripStatus;
+  /** The open session. */
+  current: boolean;
+}
+
 export type ContextAttachment =
   | { kind: "file"; id: string; relPath: string; absPath: string }
   /**

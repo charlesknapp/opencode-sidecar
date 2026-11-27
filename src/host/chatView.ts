@@ -199,28 +199,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.stateTimer = setTimeout(() => {
       this.stateTimer = undefined;
       const state = this.viewState();
-      this.updateStatusBar(state.onboarding.stage);
       this.updateBadge();
+      this.updateStatusBar(state.onboarding.stage);
       this.post({ type: "state", state });
     }, 16);
   }
 
+  /** Permission requests and questions waiting for an answer, in the open session and the others. */
+  private waitingCount(): { all: number; elsewhere: number } {
+    const elsewhere = this.controller?.backgroundWaitingCount() ?? 0;
+    return { all: (this.controller?.pendingRequestCount() ?? 0) + elsewhere, elsewhere };
+  }
+
   /**
-   * A count on Sidecar's icon while permission requests or questions wait, so a
-   * hidden panel still says it needs you. VS Code shows it on the Activity Bar icon.
+   * A count on Sidecar's icon while permission requests or questions wait (in any of the
+   * folder's sessions), so a hidden panel still says it needs you. VS Code shows it on
+   * the Activity Bar icon.
    */
   private updateBadge(): void {
     if (!this.view) return;
-    const n = this.controller?.pendingRequestCount() ?? 0;
-    const want = n ? `${n}` : "";
-    const have = this.view.badge ? `${this.view.badge.value}` : "";
+    const { all: n, elsewhere } = this.waitingCount();
+    const tooltip =
+      (n === 1 ? "OpenCode is waiting for your answer" : `OpenCode is waiting for ${n} answers`) +
+      (elsewhere === n
+        ? ` in ${n === 1 ? "another session" : "other sessions"}`
+        : elsewhere
+          ? ` (${elsewhere} in other sessions)`
+          : "");
+    const want = n ? `${n} ${tooltip}` : "";
+    const have = this.view.badge ? `${this.view.badge.value} ${this.view.badge.tooltip}` : "";
     if (want === have) return;
-    this.view.badge = n
-      ? {
-          value: n,
-          tooltip: n === 1 ? "OpenCode is waiting for your answer" : `OpenCode is waiting for ${n} answers`,
-        }
-      : undefined;
+    this.view.badge = n ? { value: n, tooltip } : undefined;
   }
 
   private queueEvents(events: UiEvent[]): void {
@@ -304,6 +313,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         statusWords: cfg.statusWords,
         cacheWarmMinutes: cfg.cacheWarmMinutes,
         activity: cfg.activity,
+        sessionStrip: cfg.sessionStrip,
       },
       commands: c?.commands ?? [],
       bookmarks: this.bookmarks(),
@@ -311,6 +321,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       skills: c?.skills ?? [],
       revert: c?.stagedRevert() ?? null,
       archivedSessions: c?.archivedSessions ?? null,
+      strip: c?.stripView() ?? [],
     };
   }
 
@@ -336,7 +347,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.statusItem.hide();
       return;
     }
-    const text = statusBarText(stage);
+    // Requests waiting in any session are counted, like the badge on Sidecar's icon.
+    const waiting = stage === "ready" ? this.waitingCount().all : 0;
+    const text = waiting ? `OpenCode: ${waiting} waiting for you` : statusBarText(stage);
     this.statusItem.text = `$(comment-discussion) ${text}`;
     this.statusItem.tooltip = `Sidecar — ${text === "Sidecar" ? "open the chat" : text}. Click to open the chat.`;
     this.statusItem.accessibilityInformation = {
@@ -899,6 +912,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       case "selectSession":
         if (c) await c.openSession(msg.id);
         return;
+      case "closeStripTab":
+        return c?.closeStripTab(msg.id);
       case "refreshSessions":
         return c?.refreshSessions();
       case "selectModel":
@@ -1108,16 +1123,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
-  /** Native VS Code notification for a task milestone; "Open Chat" reveals the sidebar. */
+  /**
+   * Native VS Code notification for a task milestone; "Open Chat" reveals the sidebar.
+   * For a session that is not open, "Open" switches to it.
+   */
   private async showTaskNotice(notice: TaskNotice): Promise<void> {
     const decision = decideNotification(notice, readNotificationSettings(), {
       viewVisible: !!this.view?.visible,
       windowFocused: vscode.window.state.focused,
     });
     if (!decision.show) return;
-    this.log.info(`Notification (${notice.kind}) shown`);
-    const choice = await this.notifier(decision.severity, decision.message, ["Open Chat"]);
-    if (choice === "Open Chat") await vscode.commands.executeCommand(FOCUS_COMMAND);
+    this.log.info(`Notification (${notice.kind}${notice.sessionID ? ", another session" : ""}) shown`);
+    const action = notice.sessionID ? "Open" : "Open Chat";
+    const c = this.controller;
+    const choice = await this.notifier(decision.severity, decision.message, [action]);
+    if (choice !== action) return;
+    // The folder (or the connection) may have changed while the notice was up.
+    if (notice.sessionID && c?.current?.id !== notice.sessionID) {
+      if (!c || c !== this.controller || !c.inFolder(notice.sessionID)) return;
+      if (!(await c.openSession(notice.sessionID))) return;
+    }
+    await vscode.commands.executeCommand(FOCUS_COMMAND);
   }
 
   /** Replaceable for tests; defaults to VS Code's native notifications. */

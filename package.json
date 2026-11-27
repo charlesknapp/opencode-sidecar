@@ -237,6 +237,11 @@
           "default": "detailed",
           "markdownDescription": "How tool activity shows in the chat."
         },
+        "opencodeSidecar.sessionStrip": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show the strip of open sessions above the chat: the sessions you opened lately in this folder and any that are working or waiting for you, each with its status. It appears once two or more sessions are on it."
+        },
         "opencodeSidecar.showStatusBarItem": {
           "type": "boolean",
           "default": true,
@@ -355,12 +360,12 @@
         "opencodeSidecar.notifications.taskComplete": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show a notification when an OpenCode task completes. Not shown while you are watching the chat (view visible and VS Code focused)."
+          "markdownDescription": "Show a notification when an OpenCode task completes. Not shown while you are watching the chat (view visible and VS Code focused), unless it finished in a session that is not open."
         },
         "opencodeSidecar.notifications.needsInput": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show a notification when OpenCode needs your input (a question or a permission request), saying what it asks. Not shown while you are watching the chat (view visible and VS Code focused), where the request already takes the message box's place."
+          "markdownDescription": "Show a notification when OpenCode needs your input (a question or a permission request), saying what it asks. Not shown while you are watching the chat (view visible and VS Code focused), where the request already takes the message box's place, unless the request comes from a session that is not open."
         },
         "opencodeSidecar.notifications.taskFailed": {
           "type": "boolean",

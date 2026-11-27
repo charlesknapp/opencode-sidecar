@@ -19,10 +19,22 @@ import { classifyError, describeForLog } from "./errors";
 import { sessionMarkdown } from "./exportMarkdown";
 import { summarizeAnswer, validateAnswer } from "./forms";
 import { reconstructSides, type FileSides } from "./patch";
+import {
+  SessionWatch,
+  STRIP_MAX,
+  type BackgroundNotice,
+  type StripEntry,
+  type WatchContext,
+} from "./sessionWatch";
 import { MAX_SUBAGENTS, SubagentTracker } from "./subagents";
 import { displayTitle, isUsableTitle } from "./titles";
 import { OpenCodeHttpError, sameDirectory, type FoundFile, type OpenCodeClient } from "../opencode/client";
-import { describeSensitive, EventNormalizer, historyToEvents } from "../opencode/events";
+import {
+  describeSensitive,
+  EventNormalizer,
+  historyToEvents,
+  type NormalizedEnvelope,
+} from "../opencode/events";
 import type {
   CommandInfo,
   AccountStatus,
@@ -41,6 +53,8 @@ import type {
   SavedPermission,
   SessionSummary,
   SkillOption,
+  StripStatus,
+  StripTab,
   SubagentView,
   TokenUsage,
   TranscriptItem,
@@ -237,6 +251,12 @@ export class SessionController {
   private asideToken = 0;
   /** Side-question sessions (and their subagents) not deleted yet: never listed in History. */
   private readonly asideIds = new Set<string>();
+  /** The session strip and the sessions working in the background (see src/core/sessionWatch.ts). */
+  private readonly watch = new SessionWatch();
+  /** Strip sessions missing from the listed ones (older than the list goes back); null while loading. */
+  private stripSessions = new Map<string, SessionSummary | null>();
+  /** Background sessions whose pending requests were read during their current run. */
+  private scanned = new Set<string>();
 
   constructor(
     private readonly client: OpenCodeClient,
@@ -375,6 +395,9 @@ export class SessionController {
     this.account = null;
     this.archivedSessions = null;
     this.catalogLoaded = false;
+    this.watch.reset(this.store.get<StripEntry[]>(this.key("strip")));
+    this.stripSessions.clear();
+    this.scanned.clear();
     const remembered = this.store.get<BudgetLevel>(this.key("budget"));
     this.budget.setLevel(remembered ?? this.defaults().budgetLevel ?? "off");
     this.sink.onStateChanged();
@@ -392,7 +415,7 @@ export class SessionController {
       await this.openSession(rememberedSession);
   }
 
-  private key(kind: "model" | "agent" | "session" | "budget"): string {
+  private key(kind: "model" | "agent" | "session" | "budget" | "strip"): string {
     return `opencodeSidecar.${kind}:${this.directory ?? ""}`;
   }
 
@@ -556,6 +579,7 @@ export class SessionController {
       }
       if (this.archivedSessions) this.archivedSessions = await this.listArchived(dir);
       this.sink.onStateChanged();
+      void this.scanBackground();
     } catch (e) {
       this.log.error("Listing sessions failed", e);
     }
@@ -613,6 +637,7 @@ export class SessionController {
       ]);
       return;
     }
+    if (archived) this.dropFromStrip(id);
     if (archived && this.current?.id === id) await this.newSession();
     await this.refreshSessions();
   }
@@ -638,6 +663,7 @@ export class SessionController {
       this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not delete the session") }]);
       return;
     }
+    this.dropFromStrip(id);
     if (this.current?.id === id) await this.newSession();
     await this.refreshSessions();
   }
@@ -679,6 +705,7 @@ export class SessionController {
   /** Starts a fresh conversation. The OpenCode session is created lazily on first send. */
   async newSession(): Promise<void> {
     this.loadToken++;
+    this.leaveSession();
     this.clearSession();
     if (this.directory) await this.store.update(this.key("session"), undefined);
     this.sink.onStateChanged();
@@ -713,8 +740,10 @@ export class SessionController {
       const permissions = [...rootPermissions, ...waiting.flatMap(([p]) => p)];
       const forms = [...rootForms, ...waiting.flatMap(([, f]) => f)];
       if (token !== this.loadToken) return false;
+      if (this.current?.id !== id) this.leaveSession();
       this.clearSession();
       this.subagents.restore(subagents, active);
+      for (const s of subagents) this.watch.link(s.summary.id, s.parentID);
       for (const request of permissions)
         this.subagents.apply(request.sessionID, [{ type: "permission.requested", request, sensitive: [] }]);
       for (const form of forms) this.subagents.apply(form.sessionID, [{ type: "form.requested", form }]);
@@ -750,6 +779,9 @@ export class SessionController {
           this.selectedAgent = summary.agent;
       }
       if (this.directory) await this.store.update(this.key("session"), id);
+      this.watch.opened(id, this.watchContext());
+      this.stripSessions.delete(id);
+      void this.saveStrip();
       this.sink.onTranscriptReset(this.transcript.items);
       this.sink.onStateChanged();
       void this.refreshChanges();
@@ -799,6 +831,198 @@ export class SessionController {
       }
     }
     return [...found.values()];
+  }
+
+  // ---------------------------------------------------------- session strip
+  //
+  // Sessions opened lately in the folder, and any that work or wait, as tabs above the
+  // conversation. Sessions other than the open one are followed from the global event
+  // stream (their history is never loaded); one that finishes, fails or starts waiting
+  // is notified once. Side questions, subagents and other folders' sessions never are.
+
+  private watchContext(): WatchContext {
+    return {
+      current: this.current?.id ?? null,
+      known: (id) =>
+        !this.asideIds.has(id) &&
+        (id === this.current?.id || this.watch.has(id) || this.sessions.some((s) => s.id === id)),
+      running: (id) => this.running.has(id),
+    };
+  }
+
+  private async saveStrip(): Promise<void> {
+    if (!this.directory) return;
+    const saved = this.watch.saved();
+    await this.store.update(this.key("strip"), saved.length ? saved : undefined);
+  }
+
+  /** The conversation being left: what it still waits on stays on its strip tab. */
+  private leaveSession(): void {
+    const id = this.current?.id;
+    if (!id) return;
+    this.watch.seedWaiting(
+      id,
+      this.transcript.items.flatMap((i) =>
+        i.kind === "permission" && i.status === "pending"
+          ? [{ id: i.request.id, sessionID: i.request.sessionID }]
+          : i.kind === "form" && i.status === "pending"
+            ? [{ id: i.form.id, sessionID: i.form.sessionID }]
+            : [],
+      ),
+    );
+  }
+
+  private dropFromStrip(id: string): void {
+    this.stripSessions.delete(id);
+    if (this.watch.remove(id)) void this.saveStrip();
+  }
+
+  /** Takes a session off the strip; it stays in History. The open session stays. */
+  closeStripTab(id: string): void {
+    if (id === this.current?.id) return;
+    this.dropFromStrip(id);
+    this.sink.onStateChanged();
+  }
+
+  /** True for a session of the open folder (listed, or on the strip). */
+  inFolder(id: string): boolean {
+    return this.watchContext().known(id);
+  }
+
+  /** Requests waiting for an answer in sessions other than the open one. */
+  backgroundWaitingCount(): number {
+    return this.watch.backgroundWaiting(this.current?.id ?? null);
+  }
+
+  /** The strip's tabs, most recent first. */
+  stripView(): StripTab[] {
+    const ctx = this.watchContext();
+    const listed = new Map(this.displaySessions().map((s) => [s.id, s]));
+    const tabs: StripTab[] = [];
+    for (const id of this.watch.ids()) {
+      if (this.asideIds.has(id)) continue;
+      const current = id === ctx.current;
+      const summary = listed.get(id) ?? this.stripSessions.get(id);
+      if (!current && !summary) {
+        // Older than the listed sessions: shown once OpenCode has described it.
+        this.loadStripSession(id);
+        continue;
+      }
+      const title = current
+        ? (this.currentTitle() ?? "Untitled session")
+        : displayTitle(summary!.title, this.titleCache.get(id));
+      let status: StripStatus;
+      if (current)
+        status =
+          this.pendingRequestCount() > 0
+            ? "waiting"
+            : this.busy || this.subagentsActive()
+              ? "running"
+              : "idle";
+      else status = this.watch.status(id, ctx);
+      tabs.push({ id, title, status, current });
+    }
+    return tabs;
+  }
+
+  private loadStripSession(id: string): void {
+    if (this.stripSessions.has(id)) return;
+    this.stripSessions.set(id, null);
+    const dir = this.directory;
+    this.client
+      .getSession(id)
+      .then((s) => {
+        if (dir !== this.directory) return;
+        if (s.archived) this.dropFromStrip(id);
+        else this.stripSessions.set(id, s);
+        this.sink.onStateChanged();
+      })
+      .catch((e: unknown) => {
+        if (dir !== this.directory) return;
+        if (e instanceof OpenCodeHttpError && e.status === 404) {
+          this.dropFromStrip(id);
+          this.sink.onStateChanged();
+        } else
+          this.log.warn(`Loading strip session ${id} failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
+  }
+
+  /** A session's title for a notice. */
+  private titleOf(id: string): string {
+    if (id === this.current?.id) return this.currentTitle() ?? "Untitled session";
+    const s = this.sessions.find((x) => x.id === id) ?? this.stripSessions.get(id);
+    return displayTitle(s?.title, this.titleCache.get(id));
+  }
+
+  /** Live events of any session, for the strip and the background notices. */
+  private watchEvents(raw: unknown, env: NormalizedEnvelope): void {
+    const id = env.sessionID!;
+    if (env.parentID && env.created) this.watch.link(id, env.parentID);
+    if (isRemovalEvent(raw)) {
+      if (this.watch.has(id) && id !== this.current?.id) {
+        this.dropFromStrip(id);
+        this.sink.onStateChanged();
+      }
+      return;
+    }
+    if (!env.events.length) return;
+    const ctx = this.watchContext();
+    const root = this.watch.rootOf(id);
+    // A later run is read again if Sidecar reconnects during it.
+    if (id === root && env.events.some((ev) => ev.type === "session.idle")) this.scanned.delete(root);
+    const { changed, save, notices } = this.watch.apply(id, env.events, ctx);
+    if (save) void this.saveStrip();
+    if (changed && root !== ctx.current) this.sink.onStateChanged();
+    for (const n of notices) this.noticeBackground(n);
+  }
+
+  private noticeBackground(n: BackgroundNotice): void {
+    const title = this.titleOf(n.sessionID);
+    this.log.info(`Background session ${n.sessionID}: ${n.kind}`);
+    this.sink.onTaskNotice?.({
+      kind: n.kind,
+      key: n.key,
+      summary: title,
+      sessionTitle: title,
+      sessionID: n.sessionID,
+      ...(n.detail ? { detail: n.detail } : {}),
+    });
+  }
+
+  /**
+   * Reads what the folder's working background sessions wait on (OpenCode's pending
+   * lists, theirs and their running subagents'), once per run, so a request raised before
+   * Sidecar connected shows on the strip too. Never notifies.
+   */
+  private async scanBackground(): Promise<void> {
+    const dir = this.directory;
+    const roots = this.sessions
+      .filter((s) => this.running.has(s.id) && s.id !== this.current?.id && !this.scanned.has(s.id))
+      .slice(0, STRIP_MAX)
+      .map((s) => s.id);
+    for (const root of roots) {
+      this.scanned.add(root);
+      try {
+        const subagents = await this.listSubagents(root);
+        for (const s of subagents) this.watch.link(s.summary.id, s.parentID);
+        const ids = [root, ...subagents.map((s) => s.summary.id).filter((s) => this.running.has(s))];
+        const lists = await Promise.all(
+          ids.map((s) => Promise.all([this.client.listPermissions(s), this.client.listForms(s)])),
+        );
+        if (dir !== this.directory || this.disposed || root === this.current?.id) continue;
+        this.watch.seedWaiting(
+          root,
+          lists.flatMap(([permissions, forms]) => [
+            ...permissions.map((p) => ({ id: p.id, sessionID: p.sessionID })),
+            ...forms.map((f) => ({ id: f.id, sessionID: f.sessionID })),
+          ]),
+        );
+        if (this.watch.show(root, this.watchContext())) void this.saveStrip();
+        this.sink.onStateChanged();
+      } catch (e) {
+        this.log.warn(`Checking session ${root} failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
   }
 
   // -------------------------------------------------------------- subagents
@@ -1046,6 +1270,9 @@ export class SessionController {
     this.sessionCost = created.cost ?? 0;
     this.loadToken++;
     await this.store.update(this.key("session"), created.id);
+    this.watch.opened(created.id, this.watchContext());
+    this.stripSessions.set(created.id, created);
+    void this.saveStrip();
     this.log.info(`Created session ${created.id}`);
     this.scheduleSessionsRefresh();
     return created;
@@ -1769,6 +1996,7 @@ export class SessionController {
       this.applyAside(env.sessionID, env.events);
       return;
     }
+    if (env.sessionID) this.watchEvents(raw, env);
     if (!this.current || !env.sessionID) return;
     const root = this.current.id;
     if (env.parentID && this.subagents.created(env.sessionID, env.parentID, root, env.created))
@@ -1845,6 +2073,8 @@ export class SessionController {
 
   /** Called when the event stream reconnects; resynchronizes the open session. */
   async resync(): Promise<void> {
+    // What background sessions wait on is read again: nothing that changed meanwhile is notified.
+    this.scanned.clear();
     if (this.current) await this.openSession(this.current.id);
     else await this.refreshSessions();
   }
@@ -2248,6 +2478,12 @@ const CATALOG_EVENTS = new Set([
   "model.updated",
   "models-dev.refreshed",
 ]);
+
+/** A session deleted or archived (in Sidecar or another client): it leaves the strip. */
+function isRemovalEvent(raw: unknown): boolean {
+  const type = raw && typeof raw === "object" ? (raw as { type?: unknown }).type : null;
+  return type === "session.deleted" || type === "session.archived";
+}
 
 export function isCatalogEvent(raw: unknown): boolean {
   if (!raw || typeof raw !== "object") return false;
