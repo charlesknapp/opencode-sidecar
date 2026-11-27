@@ -916,6 +916,12 @@ button:disabled {
   gap: 14px;
   min-width: 0;
 }
+/* Turns out of view skip layout and paint, so a long session scrolls and streams like a
+   short one; each keeps the height it last had. The last turn, where text streams, never. */
+.turn:not(:last-of-type) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 480px;
+}
 .prompt {
   display: flex;
   flex-direction: column;
@@ -4454,4 +4460,9 @@ body.vscode-high-contrast-light .p-approval {
 .history-more .btn[aria-disabled="true"] {
   opacity: 0.6;
   cursor: default;
+}
+/* A large output shown in full ("Show all N lines"): it scrolls inside its box. */
+.io-all > pre {
+  max-height: 60vh;
+  overflow-y: auto;
 }

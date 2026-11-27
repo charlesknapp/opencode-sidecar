@@ -212,6 +212,7 @@ Details are in [SECURITY.md](https://github.com/charlesknapp/opencode-sidecar/bl
 - The prompt cache clock and the live tokens-a-second figure are estimates. Provider limits are shown only for OpenCode Go and OpenCode Console budgets, the only ones OpenCode reports.
 - Agent files are read with a YAML subset (block and flow mappings and lists, quoted and block strings, comments); a file using anchors, aliases or tags opens in the editor instead of the form. OpenCode 2.4 stores an agent's temperature but does not send it to the model yet.
 - OpenCode's auto-compaction threshold is set in its config (`compaction`) and cannot be changed through its API, so Sidecar does not offer it.
+- In a long session, Find searches what shows: a large output or diff folded under **Show all** is searched once shown (its full text is a click away in an editor tab).
 - Reopening a session loads its newest 400 messages; **Load earlier messages** brings in more, up to 2,000.
 - The review knows the agent's changes from OpenCode's snapshots, which exist only in a Git repository. Edits made between two prompts (yours, or a `!` command's) are counted with the agent's, as OpenCode's session diff counts them. Files outside the folder are not reviewed. A change the agent made right next to one you already decided comes back as one new change to review.
 - An approval mode reaches subagents started after it is set; one already running keeps its rules. In Ask, a read-only subagent such as Explore asks before editing instead of being blocked.

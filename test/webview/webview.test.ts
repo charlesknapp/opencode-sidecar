@@ -22,6 +22,7 @@ import type {
   TranscriptItem,
 } from "../../src/shared/model";
 import type { HostMessage, ViewState } from "../../src/shared/protocol";
+import { longSession } from "./perfData";
 
 const ROOT = path.resolve(__dirname, "../../..");
 /** Directory holding dist/webview.js and media/main.css; override to test an unpacked VSIX. */
@@ -3982,7 +3983,7 @@ describe(
       ]);
     });
 
-    it("stays responsive with a large history and a long streaming report", async () => {
+    it("stays responsive with a large history and a long streaming report", async (t) => {
       const md = "## Section\n\n- a\n- b\n\n| x | y |\n|--|--|\n| 1 | 2 |\n\n```ts\nconst a = 1;\n```\n";
       const many: TranscriptItem[] = Array.from({ length: 400 }, (_, i) => ({
         kind: "assistant",
@@ -4013,7 +4014,175 @@ describe(
         events: [{ type: "assistant.completed", partId: "live:0", text: "done" }],
       });
       const streamMs = Date.now() - t1;
+      t.diagnostic(`400 messages rendered in ${historyMs} ms; 2,000 deltas in ${streamMs} ms`);
       assert.ok(streamMs < 4000, `2000 streamed deltas handled in ${streamMs}ms`);
+      assert.equal(
+        await page.$eval('[data-id="text:live:0"] .msg-body', (n) => (n as HTMLElement).innerText.trim()),
+        "done",
+      );
+    });
+
+    it("a long session shows its end at once and builds the older turns after; Find and bookmarks reach them", async () => {
+      const items = longSession(600);
+      await host({ type: "transcript", items });
+      const built = () => page.$$eval('[data-testid="assistant"]', (n) => n.length);
+      assert.ok((await built()) < 100, "only the newest turns at first");
+      assert.ok(await page.$('[data-id="text:a99:0"]'), "the last answer is there");
+      // Find covers everything, also turns not built yet.
+      await page.focus("textarea");
+      await page.keyboard.down("Control");
+      await page.keyboard.press("f");
+      await page.keyboard.up("Control");
+      await page.keyboard.type("clock skew (0)");
+      assert.equal(await text('[data-testid="find-count"]'), "1 of 1");
+      assert.equal(await built(), 100);
+      await page.keyboard.press("Escape");
+      // One day divider per day, the turns in order.
+      const days = await page.$$eval('[data-testid="date-divider"]', (n) => n.length);
+      assert.equal(days, 1);
+      const order = await page.$$eval(".turn > .prompt", (n) => n.map((e) => e.getAttribute("data-id")));
+      assert.deepEqual(order.slice(0, 3), ["user:u0", "user:u1", "user:u2"]);
+      assert.equal(order.length, 100);
+      // A bookmark in a turn not built yet opens it.
+      await host({ type: "transcript", items });
+      await host({ type: "revealItem", itemId: "text:a0:0" });
+      assert.equal(await page.$eval('[data-id="text:a0:0"]', (e) => e.classList.contains("flash")), true);
+    });
+
+    it("large outputs and diffs keep only what shows until Show all; small ones are as before", async () => {
+      const [, , , edit, shell] = longSession(6) as Array<Extract<TranscriptItem, { kind: "tool" }>>;
+      const small: TranscriptItem = {
+        ...shell,
+        id: "tool:small",
+        detail: { ...shell.detail, output: "one\ntwo\nthree\nfour\nfive" },
+      };
+      await host({ type: "transcript", items: [edit, shell, small] });
+      const outText = (id: string) =>
+        page.$eval(`[data-id="${id}"] [data-testid="tool-output"] pre`, (e) => e.textContent ?? "");
+      assert.equal((await outText("tool:s0")).split("\n").length, 4, "the folded part only");
+      assert.equal((await outText("tool:small")).split("\n").length, 5, "a short output is all there");
+      assert.equal(await page.$('[data-id="tool:small"] [data-testid="show-all"]'), null);
+      const diffLines = () => page.$$eval('[data-id="tool:e0"] .diff-lines > .dl', (n) => n.length);
+      assert.equal(await diffLines(), 18);
+      const links = await page.$$eval('[data-testid="show-all"]', (n) =>
+        n.map((e) => (e.parentElement as HTMLElement).innerText),
+      );
+      assert.equal(links.length, 2);
+      assert.match(links[0], /^Show all 80 lines · 24 more lines in the diff$/);
+      assert.match(links[1], /^Show all \d+ lines$/);
+      // Keyboard: the link works with Enter.
+      await page.focus('[data-id="tool:e0"] [data-testid="show-all"]');
+      await page.keyboard.press("Enter");
+      assert.equal(await diffLines(), 80);
+      assert.equal(await page.$eval('[data-id="tool:e0"] .diff', (e) => e.classList.contains("long")), false);
+      await page.click('[data-id="tool:s0"] [data-testid="show-all"]');
+      assert.equal(await outText("tool:s0"), (shell.detail.output ?? "").replace(/\n+$/, ""));
+      assert.equal(await page.$$eval('[data-testid="show-all"]', (n) => n.length), 0);
+      // Copy still copies the whole output.
+      await clearSent();
+      await page.click('[data-id="tool:s0"] .io-out [data-testid="io-copy"]');
+      const copied = (await lastSent("copy")) as { text?: string } | undefined;
+      assert.equal(copied?.text, shell.detail.output);
+    });
+
+    /** Durations of the main thread's long tasks (over 50 ms) since the last call. */
+    const longTasks = () =>
+      page.evaluate(() => {
+        const w = window as unknown as { __long?: number[] };
+        const out = w.__long ?? [];
+        w.__long = [];
+        return out;
+      });
+    const worst = (a: number[]) => (a.length ? Math.round(Math.max(...a)) : 0);
+
+    it("stays responsive with 2,000 messages with large diffs and outputs: render, scroll, stream", async (t) => {
+      const items = longSession(2000);
+      await page.evaluate(() => {
+        const w = window as unknown as { __long: number[] };
+        w.__long = [];
+        new PerformanceObserver((l) => {
+          for (const e of l.getEntries()) w.__long.push(e.duration);
+        }).observe({ type: "longtask" });
+      });
+      const initialMs = await page.evaluate(
+        (its) =>
+          new Promise<number>((res) => {
+            const t0 = performance.now();
+            window.postMessage({ type: "transcript", items: its }, "*");
+            setTimeout(
+              () => requestAnimationFrame(() => requestAnimationFrame(() => res(performance.now() - t0))),
+              0,
+            );
+          }),
+        items as unknown as Record<string, unknown>[],
+      );
+      const initialLong = await longTasks();
+      // The older turns are built in the background; then everything is there.
+      const t0 = Date.now();
+      await page.waitForFunction(
+        () => document.querySelectorAll('[data-testid="assistant"]').length === 333,
+        {
+          timeout: 60_000,
+        },
+      );
+      const fillMs = Date.now() - t0 + Math.round(initialMs);
+      const fillLong = await longTasks();
+      // Scroll up a page a frame (PageUp held), then jump to the top and back (the scroll bar).
+      const frames = await page.evaluate(
+        () =>
+          new Promise<number[]>((res) => {
+            const m = document.querySelector("main.conversation")!;
+            const out: number[] = [];
+            let last = performance.now();
+            let i = 0;
+            const step = () => {
+              const now = performance.now();
+              out.push(now - last);
+              last = now;
+              if (i++ >= 120) return res(out.slice(2));
+              if (i === 100) m.scrollTop = 0;
+              else if (i === 110) m.scrollTop = m.scrollHeight;
+              else m.scrollTop -= m.clientHeight * 0.9;
+              requestAnimationFrame(step);
+            };
+            requestAnimationFrame(step);
+          }),
+      );
+      const scrollLong = await longTasks();
+      await page.$eval("main.conversation", (m) => (m.scrollTop = m.scrollHeight));
+      await host({ type: "state", state: baseState({ busy: true }) });
+      await longTasks();
+      const t1 = Date.now();
+      for (let batch = 0; batch < 40; batch++) {
+        const events = Array.from({ length: 50 }, (_, i) => ({
+          type: "assistant.delta" as const,
+          partId: "live:0",
+          delta: `word${batch * 50 + i} ` + (i % 10 === 0 ? "\n" : ""),
+        }));
+        await page.evaluate((m) => window.postMessage(m, "*"), {
+          type: "events",
+          events,
+        } as unknown as Record<string, unknown>);
+      }
+      await host({
+        type: "events",
+        events: [{ type: "assistant.completed", partId: "live:0", text: "done" }],
+      });
+      const streamMs = Date.now() - t1;
+      const streamLong = await longTasks();
+      t.diagnostic(
+        `2,000 entries: first render ${Math.round(initialMs)} ms (longest task ${worst(initialLong)} ms), ` +
+          `all built after ${fillMs} ms (${fillLong.length} long task(s), longest ${worst(fillLong)} ms); ` +
+          `scroll: slowest frame ${Math.round(Math.max(...frames))} ms, ${scrollLong.length} long task(s) (longest ${worst(scrollLong)} ms); ` +
+          `2,000 deltas in ${streamMs} ms, ${streamLong.length} long task(s) (longest ${worst(streamLong)} ms)`,
+      );
+      // Generous for CI; the numbers on a developer machine are in the diagnostic above.
+      assert.ok(initialMs < 6000, `first render ${initialMs} ms`);
+      assert.ok(worst(streamLong) < 400, `a streamed frame blocked for ${worst(streamLong)} ms`);
+      assert.ok(worst(scrollLong) < 400, `scrolling blocked for ${worst(scrollLong)} ms`);
+      assert.ok(worst(fillLong) < 400, `building older turns blocked for ${worst(fillLong)} ms`);
+      // Everything is still there for Find, bookmarks and copy.
+      assert.equal(await page.$$eval('[data-testid="assistant"]', (n) => n.length), 334);
       assert.equal(
         await page.$eval('[data-id="text:live:0"] .msg-body', (n) => (n as HTMLElement).innerText.trim()),
         "done",

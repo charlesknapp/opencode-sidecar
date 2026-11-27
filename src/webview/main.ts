@@ -1916,11 +1916,21 @@ const findEl = h(
   findBtn("Next match (Enter)", "down", "find-next", () => stepFind(1)),
   findBtn("Close (Esc)", "close", "find-close", () => closeFind()),
 );
-let findMatches: Range[] = [];
+/**
+ * Static ranges: the browser updates every live Range on each change to the page, so
+ * thousands of live matches would slow every streamed frame. A live one is made to measure.
+ */
+let findMatches: StaticRange[] = [];
+const rectOf = (r: StaticRange): DOMRect => {
+  const live = document.createRange();
+  live.setStart(r.startContainer, r.startOffset);
+  live.setEnd(r.endContainer, r.endOffset);
+  return live.getBoundingClientRect();
+};
 let findIndex = -1;
 let findTimer = 0;
 const highlights = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
-const HighlightCtor = (window as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+const HighlightCtor = (window as unknown as { Highlight?: new (...r: AbstractRange[]) => unknown }).Highlight;
 
 function findOpen(): boolean {
   return !findEl.hidden;
@@ -1948,39 +1958,63 @@ function runFind(jump: boolean): void {
   const q = findInput.value.trim().toLowerCase();
   const before = findMatches[findIndex];
   findMatches = [];
+  // Find covers the whole conversation, also the older turns not built yet.
+  if (q) buildAll();
   if (q) {
+    // Hidden text (a hidden entry, a closed group) is left out. The check needs no layout,
+    // so turns out of view, which skip layout, stay cheap.
+    const shownIn = new Map<Element, boolean>();
     const walker = document.createTreeWalker(listEl, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       const text = (n.textContent ?? "").toLowerCase();
+      if (!text.includes(q) || !n.parentElement) continue;
+      let shown = shownIn.get(n.parentElement);
+      if (shown === undefined) shownIn.set(n.parentElement, (shown = isShown(n.parentElement)));
+      if (!shown) continue;
       for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + q.length)) {
-        const r = document.createRange();
-        r.setStart(n, i);
-        r.setEnd(n, i + q.length);
-        if (r.getClientRects().length) findMatches.push(r);
+        findMatches.push(
+          new StaticRange({ startContainer: n, startOffset: i, endContainer: n, endOffset: i + q.length }),
+        );
       }
     }
   }
   if (!findMatches.length) findIndex = -1;
   else if (jump || findIndex < 0) {
     const top = scroller.getBoundingClientRect().top;
-    findIndex = Math.max(
-      0,
-      findMatches.findIndex((r) => r.getBoundingClientRect().bottom > top),
-    );
+    const below = firstMatchBelow((r) => r.bottom > top);
+    findIndex = below < findMatches.length ? below : 0;
   } else {
     // Keep the place after a redraw: the match nearest where the current one was.
-    const y = before?.getBoundingClientRect().top ?? 0;
-    let best = 0;
-    findMatches.forEach((r, i) => {
-      if (
-        Math.abs(r.getBoundingClientRect().top - y) <
-        Math.abs(findMatches[best].getBoundingClientRect().top - y)
-      )
-        best = i;
-    });
-    findIndex = best;
+    const y = before?.startContainer.isConnected ? rectOf(before).top : 0;
+    const i = Math.min(
+      findMatches.length - 1,
+      firstMatchBelow((r) => r.top >= y),
+    );
+    const dist = (k: number) => Math.abs(rectOf(findMatches[k]).top - y);
+    findIndex = i > 0 && dist(i - 1) <= dist(i) ? i - 1 : i;
   }
   paintFind(jump);
+}
+
+/** True when `el` is rendered (not hidden); without layout where the browser can tell. */
+function isShown(el: Element): boolean {
+  const check = (el as Element & { checkVisibility?: () => boolean }).checkVisibility;
+  return check ? check.call(el) : el.getClientRects().length > 0;
+}
+
+/**
+ * The first match (in page order, which is top to bottom) whose box passes `below`: a binary
+ * search, so only a few turns out of view are laid out to answer it.
+ */
+function firstMatchBelow(below: (r: DOMRect) => boolean): number {
+  let lo = 0;
+  let hi = findMatches.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (below(rectOf(findMatches[mid]))) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
 }
 function stepFind(dir: 1 | -1): void {
   if (!findMatches.length) return;
@@ -1996,7 +2030,7 @@ function paintFind(scroll: boolean): void {
     highlights.set("sidecar-find-current", new HighlightCtor(...(n ? [findMatches[findIndex]] : [])));
   }
   if (!scroll || !n) return;
-  const rect = findMatches[findIndex].getBoundingClientRect();
+  const rect = rectOf(findMatches[findIndex]);
   const view = scroller.getBoundingClientRect();
   // Bring the match to about a third of the way down, clear of the box at the bottom.
   if (rect.top < view.top + 40 || rect.bottom > view.bottom - (bottomEl.offsetHeight + 20)) {
@@ -6488,6 +6522,8 @@ function clickable(attrs: Attrs, onActivate: () => void, ...children: Array<Node
 const DIFF_MARK = { add: "+", del: "−", ctx: " ", gap: "⋯" } as const;
 /** Diffs taller than this fade out at the bottom; the whole change is in the diff editor. */
 const DIFF_VISIBLE = 16;
+/** Diffs longer than this keep only the lines that show, with "Show all N lines". */
+const DIFF_LARGE = 40;
 /** A written file shows its first lines, fading out; a click opens the file. */
 const WRITTEN_VISIBLE = 6;
 
@@ -6589,8 +6625,16 @@ function splitDivider(): HTMLElement {
   return el;
 }
 
-function diffBox(diff: FileDiff): HTMLElement {
-  const long = diff.lines.length > DIFF_VISIBLE || diff.more > 0;
+/**
+ * A long diff shows its first lines fading out, so only those are built (with their syntax
+ * colors): in a long session hundreds of hidden lines would cost seconds. **Show all**
+ * (`itemId` set) builds the rest in place.
+ */
+function diffBox(diff: FileDiff, itemId?: string): HTMLElement {
+  const key = itemId ? `diff:${itemId}:${diff.path}` : "";
+  const shown = !!key && openDetails.has(key);
+  const long = !shown && (diff.lines.length > DIFF_VISIBLE || diff.more > 0);
+  const lines = long && diff.lines.length > DIFF_LARGE ? diff.lines.slice(0, DIFF_VISIBLE + 2) : diff.lines;
   const grammar = grammarFor(diff.path);
   const cell = (c: SplitCell) =>
     h(
@@ -6609,7 +6653,7 @@ function diffBox(diff: FileDiff): HTMLElement {
     h(
       "div",
       { className: "diff-lines" },
-      ...diff.lines.map((l) =>
+      ...lines.map((l) =>
         h(
           "div",
           { className: `dl dl-${l.t}` },
@@ -6621,7 +6665,7 @@ function diffBox(diff: FileDiff): HTMLElement {
     h(
       "div",
       { className: "diff-split", style: `--ds-left: ${splitLeft}%` },
-      ...splitRows(diff.lines).map(([a, b]) =>
+      ...splitRows(lines).map(([a, b]) =>
         h("div", { className: "ds-row", "aria-hidden": "true" }, cell(a), cell(b)),
       ),
       splitDivider(),
@@ -6694,11 +6738,19 @@ function ioRow(
  */
 function ioValue(itemId: string, part: "in" | "out" | "prompt", text: string): HTMLElement {
   const body = text.replace(/\n+$/, "");
-  const long = part === "out" && body.split("\n").length > 3;
+  const lines = part === "out" ? lineCount(body) : 0;
+  const shown = openDetails.has(`out:${itemId}`);
+  const long = part === "out" && lines > 3 && !shown;
   const what = part === "in" ? "Command" : part === "prompt" ? "Prompt" : "Output";
+  // Folded, a large output keeps only the lines that show: 20,000 characters cost nothing then.
+  const visible = long && lines > OUT_LARGE ? body.split("\n", OUT_VISIBLE).join("\n") : body;
   return clickable(
     {
-      className: "io-v io-open" + (long ? " io-fold" : "") + (part === "prompt" ? " io-prompt" : ""),
+      className:
+        "io-v io-open" +
+        (long ? " io-fold" : "") +
+        (shown && lines > 3 ? " io-all" : "") +
+        (part === "prompt" ? " io-prompt" : ""),
       "aria-label": `${what} (open in an editor tab)`,
       "data-tip": "Open in an editor tab",
       "data-testid": part === "out" ? "tool-output" : part === "in" ? "tool-command" : "subagent-prompt",
@@ -6706,8 +6758,21 @@ function ioValue(itemId: string, part: "in" | "out" | "prompt", text: string): H
       dir: part === "prompt" ? "auto" : undefined,
     },
     () => send({ type: "openToolText", itemId, part }),
-    part === "prompt" ? document.createTextNode(body) : h("pre", {}, body),
+    part === "prompt" ? document.createTextNode(body) : h("pre", {}, visible),
   );
+}
+
+/** Lines a folded output keeps in the page (three show, fading out). */
+const OUT_VISIBLE = 4;
+/** Outputs longer than this get "Show all N lines" (a click on the box still opens a tab). */
+const OUT_LARGE = 40;
+
+/** "Show all N lines" under a folded output or diff: builds the rest in place. */
+function showLink(label: string, key: string, itemId: string): HTMLElement {
+  return inlineLink(label, { "data-testid": "show-all", "data-key": `show:${key}` }, () => {
+    openDetails.add(key);
+    renderItemById(itemId);
+  });
 }
 
 function renderTool(item: ToolItem): HTMLElement {
@@ -6730,6 +6795,15 @@ function renderTool(item: ToolItem): HTMLElement {
       if (d.output)
         rows.push(ioRow("OUT", ioValue(item.id, "out", d.output), { itemId: item.id, text: d.output }));
       parts.push(h("div", { className: "io", "data-testid": "tool-io" }, ...rows));
+      const outLines = d.output ? lineCount(d.output.replace(/\n+$/, "")) : 0;
+      if (outLines > OUT_LARGE && !openDetails.has(`out:${item.id}`))
+        parts.push(
+          h(
+            "div",
+            { className: "tool-sub" },
+            showLink(`Show all ${outLines} lines`, `out:${item.id}`, item.id),
+          ),
+        );
       if (item.status === "failed" && d.exitCode !== null && !d.error)
         parts.push(h("div", { className: "tool-error" }, `Exit code ${d.exitCode}`));
       break;
@@ -6769,9 +6843,19 @@ function renderTool(item: ToolItem): HTMLElement {
               ),
             );
           else head.append(pathLink(d.path && diffs.length === 1 ? d.path : diff.path));
-          parts.push(changeSub(d.files.find((f) => f.path === diff.path)), diffBox(diff));
-          if (diff.more)
-            parts.push(h("div", { className: "tool-sub" }, `${plural(diff.more, "more line")} in the diff`));
+          parts.push(changeSub(d.files.find((f) => f.path === diff.path)), diffBox(diff, item.id));
+          const key = `diff:${item.id}:${diff.path}`;
+          const more = diff.more ? `${plural(diff.more, "more line")} in the diff` : "";
+          if (diff.lines.length > DIFF_LARGE && !openDetails.has(key))
+            parts.push(
+              h(
+                "div",
+                { className: "tool-sub" },
+                showLink(`Show all ${diff.lines.length} lines`, key, item.id),
+                more ? ` · ${more}` : "",
+              ),
+            );
+          else if (more) parts.push(h("div", { className: "tool-sub" }, more));
         });
       } else if (d.written && d.path) {
         head.append(pathLink(d.path));
@@ -8151,7 +8235,9 @@ const IMAGE_NAME = /\.(png|jpe?g|gif|webp)$/i;
 function measurePrompts(root: ParentNode = listEl): void {
   for (const b of root.querySelectorAll<HTMLElement>(".bubble:not(.open)")) {
     const txt = b.querySelector<HTMLElement>(".btxt");
-    if (!txt) continue;
+    // A turn out of view skips layout (content-visibility): measuring it would lay it out.
+    // It is measured when it comes into view.
+    if (!txt || !visibleNow(b)) continue;
     const long = txt.scrollHeight > txt.clientHeight + 1;
     b.classList.toggle("long", long);
     if (long) {
@@ -8167,6 +8253,12 @@ function measurePrompts(root: ParentNode = listEl): void {
     }
   }
 }
+/** False for content in a turn that skips layout while out of view (and so has no size yet). */
+function visibleNow(el: HTMLElement): boolean {
+  const check = (el as HTMLElement & { checkVisibility?: (o: object) => boolean }).checkVisibility;
+  return check ? check.call(el, { contentVisibilityAuto: true }) : true;
+}
+
 let measureFrame = 0;
 function scheduleMeasure(): void {
   if (measureFrame) return;
@@ -8536,29 +8628,40 @@ function entryOf(item: TranscriptItem, tr: Transcript): HTMLElement {
 }
 
 /** Where the next entry goes: the open turn's timeline, and the day of the last divider. */
-let layout: { day: string | null; timeline: HTMLElement | null } = { day: null, timeline: null };
+type Layout = { day: string | null; timeline: HTMLElement | null };
+let layout: Layout = { day: null, timeline: null };
 
-function openTurn(head: HTMLElement | null): HTMLElement {
+function openTurn(head: HTMLElement | null, lay: Layout = layout, root: ParentNode = listEl): HTMLElement {
   const timeline = h("div", { className: "timeline" });
-  listEl.append(h("section", { className: "turn" }, head, timeline));
-  layout.timeline = timeline;
+  const turn = h("section", { className: "turn" }, head, timeline);
+  // A turn that comes into view gets its prompt measured (see measurePrompts).
+  turn.addEventListener("contentvisibilityautostatechange", (e) => {
+    if (!(e as Event & { skipped?: boolean }).skipped) measurePrompts(turn);
+  });
+  root.append(turn);
+  lay.timeline = timeline;
   return timeline;
 }
 
-/** Appends a new entry at the end of the conversation; a prompt starts a new turn. */
-function place(item: TranscriptItem, el: HTMLElement) {
+/**
+ * Appends a new entry at the end of the conversation (or of `root`, for older turns built
+ * apart, with their own `lay`); a prompt starts a new turn.
+ */
+function place(item: TranscriptItem, el: HTMLElement, lay: Layout = layout, root: ParentNode = listEl) {
   if (item.kind === "user") {
     if (item.time !== undefined) {
       const day = dayKey(item.time);
-      if (day !== layout.day) {
-        listEl.append(dateDivider(item.time));
-        layout.day = day;
+      if (day !== lay.day) {
+        const divider = dateDivider(item.time);
+        divider.dataset.day = day;
+        root.append(divider);
+        lay.day = day;
       }
     }
-    openTurn(el);
+    openTurn(el, lay, root);
     return;
   }
-  const timeline = layout.timeline ?? openTurn(null);
+  const timeline = lay.timeline ?? openTurn(null, lay, root);
   if (state?.prefs.activity === "grouped" && groupable(item)) {
     const last = timeline.lastElementChild as HTMLElement | null;
     if (last?.classList.contains("tl-group")) {
@@ -8645,6 +8748,8 @@ function renderItemById(id: string) {
   const item = tr.get(id);
   if (!item) return;
   const prev = itemEls.get(id);
+  // An older entry not built yet is built with its turn (see fillOlder).
+  if (!prev && tr.indexOf(id) < unbuilt) return;
   // New items normally arrive at the end. If one lands before an item already on
   // screen, lay the whole conversation out again so turns stay in order.
   if (!prev && tr.items.slice(tr.indexOf(id) + 1).some((later) => itemEls.has(later.id))) {
@@ -8679,19 +8784,90 @@ function renderItemById(id: string) {
   }
 }
 
-function renderAllItems() {
+// ------------------------------------------------------------ long sessions
+//
+// A long conversation is laid out from its end: the newest turns at once, the older ones
+// in slices while the main thread is free, each slice put above what is there (the browser
+// keeps the reader's place). Find, bookmarks and Rounds build the rest first.
+
+/** Entries built at once when a conversation is laid out; older turns follow in slices. */
+const EAGER_ENTRIES = 120;
+/** Time a slice of older turns may take before the next frame. */
+const FILL_SLICE_MS = 12;
+/** Entries before this index are not built yet. */
+let unbuilt = 0;
+let fillTimer = 0;
+
+/** Lays the conversation out again; `keep`: an entry that must be built at once (and all after it). */
+function renderAllItems(keep?: string) {
   listEl.replaceChildren();
   itemEls.clear();
   layout = { day: null, timeline: null };
+  clearTimeout(fillTimer);
   const tr = shown();
-  for (const item of tr.items) {
+  const kept = keep ? tr.indexOf(keep) : -1;
+  // Start at a prompt, so a turn is never split.
+  let from = Math.max(0, tr.items.length - EAGER_ENTRIES);
+  if (kept >= 0) from = Math.min(from, kept);
+  while (from > 0 && tr.items[from].kind !== "user") from--;
+  for (const item of tr.items.slice(from)) {
     const el = renderEntry(item, tr);
     place(item, el);
     itemEls.set(item.id, el);
   }
+  unbuilt = from;
+  if (unbuilt > 0) fillTimer = window.setTimeout(() => fillOlder(FILL_SLICE_MS), 0);
   scheduleMeasure();
   renderDock();
   applyRevert();
+}
+
+/**
+ * Builds older turns above the ones on screen, for up to `budgetMs` (Infinity: all of them),
+ * then schedules the next slice.
+ */
+function fillOlder(budgetMs: number): void {
+  clearTimeout(fillTimer);
+  if (unbuilt <= 0) return;
+  const tr = shown();
+  const start = performance.now();
+  const frag = document.createDocumentFragment();
+  let to = unbuilt;
+  let from = unbuilt;
+  // Whole turns, back from the oldest one built, until the time is up.
+  while (from > 0 && performance.now() - start < budgetMs) {
+    from--;
+    while (from > 0 && tr.items[from].kind !== "user") from--;
+    const built: Array<[TranscriptItem, HTMLElement]> = [];
+    for (const item of tr.items.slice(from, to)) built.push([item, renderEntry(item, tr)]);
+    // Turns are built newest first but must stand oldest first: keep each slice apart.
+    const part = document.createDocumentFragment();
+    const partLay: Layout = { day: null, timeline: null };
+    for (const [item, el] of built) {
+      place(item, el, partLay, part);
+      itemEls.set(item.id, el);
+    }
+    frag.prepend(part);
+    to = from;
+  }
+  listEl.prepend(frag);
+  // Each turn was built apart, so a day can have a divider per turn: keep the first of each.
+  let day: string | undefined;
+  for (const el of listEl.querySelectorAll<HTMLElement>(":scope > [data-day]")) {
+    if (el.dataset.day === day) el.remove();
+    else day = el.dataset.day;
+  }
+  unbuilt = from;
+  applyRevert();
+  if (findOpen()) scheduleFind();
+  // At the end of the conversation it stays there; the layout waits for the next frame.
+  if (stickToBottom) requestAnimationFrame(() => maybeScroll());
+  if (unbuilt > 0 && budgetMs !== Infinity) fillTimer = window.setTimeout(() => fillOlder(budgetMs), 0);
+}
+
+/** Builds every older turn now (for Find, a bookmark or Rounds, which need the whole conversation). */
+function buildAll(): void {
+  if (unbuilt > 0) fillOlder(Infinity);
 }
 
 // Coalesce item re-renders to one per animation frame (streaming tokens arrive in bursts).
@@ -8706,7 +8882,11 @@ function scheduleItems(ids: Iterable<string>) {
     dirtyItems.clear();
     for (const id of ids) renderItemById(id);
     if (ids.length && state) renderEmpty(state);
-    if (ids.length) scheduleMeasure();
+    // Only redrawn prompts need measuring: a streamed frame never touches the rest.
+    for (const id of ids) {
+      const el = itemEls.get(id);
+      if (el?.classList.contains("prompt")) measurePrompts(el);
+    }
     // Redrawn items drop their old highlights; an open find bar searches again.
     if (ids.length && findOpen()) scheduleFind();
     renderDock();
@@ -9302,6 +9482,7 @@ function goalRows(): string[] {
 }
 
 function showGoalRound(): void {
+  buildAll();
   const ids = goalRows().filter((id) => itemEls.has(id));
   if (!ids.length) return;
   goalRound = (goalRound + 1) % ids.length;
@@ -9732,7 +9913,7 @@ window.addEventListener("message", (e: MessageEvent) => {
         historyAnchor && msg.items.some((i) => i.id === historyAnchor!.id) ? historyAnchor : null;
       if (anchor) historyAnchor = null;
       transcript.reset(msg.items);
-      renderAllItems();
+      renderAllItems(anchor?.id);
       if (state) renderEmpty(state);
       const el = anchor ? itemEls.get(anchor.id) : undefined;
       if (anchor && el) {
@@ -9821,6 +10002,7 @@ window.addEventListener("message", (e: MessageEvent) => {
       }
       break;
     case "revealItem": {
+      if (!itemEls.has(msg.itemId)) buildAll();
       const el = itemEls.get(msg.itemId);
       if (!el) break;
       stickToBottom = false;
