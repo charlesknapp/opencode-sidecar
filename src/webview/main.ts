@@ -21,6 +21,7 @@ import type {
   RewindPreview,
   FormAnswer,
   FormField,
+  GoalState,
   ImportPreview,
   InboxDelivery,
   InstructionRow,
@@ -365,6 +366,13 @@ const asideEl = h("section", {
   "data-testid": "aside",
   hidden: true,
 });
+/** The open session's goal, pinned above the conversation. */
+const goalEl = h("section", {
+  className: "goal-bar",
+  "aria-label": "Goal",
+  "data-testid": "goal-bar",
+  hidden: true,
+});
 const changesEl = h("section", { className: "changes", "aria-label": "Changed files" });
 const pendingEl = h("section", { className: "pending", "aria-label": "Pending messages" });
 /** A rewind staged in another OpenCode client: Restore or Apply. */
@@ -394,6 +402,7 @@ app.append(
   sessionsEl,
   subHeaderEl,
   asideEl,
+  goalEl,
   scroller,
   bottomEl,
   statusLive,
@@ -9022,6 +9031,124 @@ function renderPending(s: ViewState) {
   );
 }
 
+// --------------------------------------------------------------- goal header
+
+/**
+ * The open session's goal (`/goal`), pinned above the conversation: the objective, how it
+ * stands (in progress, achieved or stopped, with OpenCode's reason) and its round, with
+ * Rounds (go to the goal's notices in the conversation, one after another), Pause,
+ * Resume and End goal through OpenCode's own `/goal` command.
+ */
+const GOAL_STATUS: Record<GoalState["status"], string> = {
+  active: "In progress",
+  complete: "Achieved",
+  paused: "Stopped",
+};
+/** The goal notice Rounds went to last, so the next click goes on from there. */
+let goalRound = -1;
+
+/** The current goal's notices in the conversation: its "set" row and every round after it. */
+function goalRows(): string[] {
+  const rows = transcript.items.filter(
+    (i): i is Extract<TranscriptItem, { kind: "background" }> =>
+      i.kind === "background" && i.source === "goal",
+  );
+  let set = rows.length - 1;
+  while (set > 0 && rows[set].state !== "set") set--;
+  return rows.slice(Math.max(set, 0)).map((r) => r.id);
+}
+
+function showGoalRound(): void {
+  const ids = goalRows().filter((id) => itemEls.has(id));
+  if (!ids.length) return;
+  goalRound = (goalRound + 1) % ids.length;
+  const el = itemEls.get(ids[goalRound])!;
+  stickToBottom = false;
+  el.scrollIntoView({ block: "center" });
+  el.classList.add("flash");
+  setTimeout(() => el.classList.remove("flash"), 1600);
+}
+
+async function endGoal(): Promise<void> {
+  const pick = await confirmDialog({
+    title: "End this goal?",
+    body: "OpenCode stops working toward it and forgets it. The conversation stays as it is.",
+    choices: [{ value: "yes", label: "End goal", danger: true, testid: "goal-end-confirm" }],
+  });
+  if (pick === "yes") send({ type: "goalAction", action: "clear" });
+}
+
+function renderGoal(s: ViewState) {
+  const g = subView ? null : (s.goal ?? null);
+  goalEl.hidden = !g;
+  if (!g) {
+    goalEl.replaceChildren();
+    goalRound = -1;
+    return;
+  }
+  const round =
+    g.status === "active"
+      ? `Round ${g.rounds + 1}${g.maxRounds ? ` of ${g.maxRounds}` : ""}`
+      : g.rounds
+        ? `${g.rounds + 1} rounds`
+        : "";
+  const btn = (label: string, testid: string, tip: string, onclick: () => void) =>
+    h("button", { className: "btn subtle small", "data-testid": testid, "data-tip": tip, onclick }, label);
+  const actions: HTMLElement[] = [];
+  if (goalRows().length)
+    actions.push(btn("Rounds", "goal-rounds", "Go to the goal's rounds in the conversation", showGoalRound));
+  if (g.status === "active")
+    actions.push(
+      btn("Pause", "goal-pause", "Stop after this turn; Resume carries on", () =>
+        send({ type: "goalAction", action: "pause" }),
+      ),
+    );
+  if (g.status === "paused")
+    actions.push(
+      btn("Resume", "goal-resume", "Work toward the goal again", () =>
+        send({ type: "goalAction", action: "resume" }),
+      ),
+    );
+  actions.push(
+    g.status === "complete"
+      ? btn("Clear", "goal-clear", "Remove the achieved goal", () =>
+          send({ type: "goalAction", action: "clear" }),
+        )
+      : btn("End goal", "goal-end", "Stop working toward it and forget it", () => void endGoal()),
+  );
+  const status = g.status ? GOAL_STATUS[g.status] : null;
+  goalEl.dataset.status = g.status ?? "unknown";
+  goalEl.replaceChildren(
+    h(
+      "div",
+      { className: "goal-main" },
+      icon("goal"),
+      h("span", { className: "goal-label" }, "Goal"),
+      h(
+        "span",
+        { className: "goal-objective", dir: "auto", title: g.objective, "data-testid": "goal-objective" },
+        g.objective,
+      ),
+    ),
+    h(
+      "div",
+      { className: "goal-meta" },
+      status
+        ? h("span", { className: `goal-status s-${g.status}`, "data-testid": "goal-status" }, status)
+        : null,
+      round ? h("span", { className: "muted", "data-testid": "goal-round" }, round) : null,
+      g.reason && g.status !== "active"
+        ? h(
+            "span",
+            { className: "goal-reason muted", dir: "auto", title: g.reason, "data-testid": "goal-reason" },
+            g.reason,
+          )
+        : null,
+      h("span", { className: "goal-actions" }, ...actions),
+    ),
+  );
+}
+
 // ---------------------------------------------------------- staged rewind
 
 /**
@@ -9262,6 +9389,7 @@ function render() {
   renderChanges(state);
   renderPending(state);
   renderRevert(state);
+  renderGoal(state);
   syncSubagentView(state);
   renderSubHeader();
   renderComposer(state);

@@ -2820,6 +2820,150 @@ describe(
         assert.deepEqual(fit, { inside: true, scroll: true, rows: true, doc: true });
       });
 
+    // ------------------------------------------------------------- goal header
+
+    const GOAL_ITEMS: TranscriptItem[] = [
+      { kind: "user", id: "user:u1", text: "/goal make the tests pass", attachments: [] } as TranscriptItem,
+      {
+        kind: "background",
+        id: "background:g1",
+        source: "goal",
+        state: "set",
+        text: "make the tests pass",
+        command: null,
+        path: null,
+      },
+      { kind: "assistant", id: "text:a1", text: "Fixed add().", streaming: false },
+      {
+        kind: "background",
+        id: "background:g2",
+        source: "goal",
+        state: null,
+        text: "make the tests pass\nThe tests for average() were not run.\nNext step: run them.",
+        command: null,
+        path: null,
+      },
+      { kind: "assistant", id: "text:a2", text: "All tests pass.", streaming: false },
+    ];
+    const goal = (over: Partial<NonNullable<ViewState["goal"]>> = {}) => ({
+      objective: "make the tests pass",
+      status: "active" as const,
+      reason: null,
+      rounds: 1,
+      maxRounds: 50,
+      ...over,
+    });
+    const goalBar = () =>
+      page.$eval('[data-testid="goal-bar"]', (e) => (e as HTMLElement).innerText.replace(/\s+/g, " ").trim());
+
+    it("the goal header pins the objective with its status, round and actions", async () => {
+      await host({ type: "transcript", items: GOAL_ITEMS });
+      await host({ type: "state", state: baseState({ goal: null }) });
+      assert.equal(await page.$eval('[data-testid="goal-bar"]', (e) => (e as HTMLElement).hidden), true);
+      await host({ type: "state", state: baseState({ goal: goal() }) });
+      assert.equal(
+        await goalBar(),
+        "Goal make the tests pass In progress Round 2 of 50 Rounds Pause End goal",
+      );
+      await clearSent();
+      await page.click('[data-testid="goal-pause"]');
+      assert.deepEqual(await sent(), [{ type: "goalAction", action: "pause" }]);
+      // End goal asks first.
+      await clearSent();
+      await page.click('[data-testid="goal-end"]');
+      assert.match(await text('[data-testid="dialog"]'), /End this goal\?/);
+      await page.keyboard.press("Escape");
+      assert.deepEqual(await sent(), []);
+      await page.click('[data-testid="goal-end"]');
+      await page.click('[data-testid="goal-end-confirm"]');
+      assert.deepEqual(await sent(), [{ type: "goalAction", action: "clear" }]);
+    });
+
+    it("the goal header shows a stopped goal's reason with Resume, and an achieved one with Clear", async () => {
+      await host({ type: "transcript", items: GOAL_ITEMS });
+      await host({
+        type: "state",
+        state: baseState({
+          goal: goal({ status: "paused", reason: "The session failed: Free usage limit reached." }),
+        }),
+      });
+      assert.equal(
+        await goalBar(),
+        "Goal make the tests pass Stopped 2 rounds The session failed: Free usage limit reached. Rounds Resume End goal",
+      );
+      await clearSent();
+      await page.click('[data-testid="goal-resume"]');
+      assert.deepEqual(await sent(), [{ type: "goalAction", action: "resume" }]);
+      await host({
+        type: "state",
+        state: baseState({ goal: goal({ status: "complete", reason: "All tests pass", rounds: 0 }) }),
+      });
+      assert.equal(await goalBar(), "Goal make the tests pass Achieved All tests pass Rounds Clear");
+      assert.equal(
+        await page.$eval('[data-testid="goal-bar"]', (e) => (e as HTMLElement).dataset.status),
+        "complete",
+      );
+      await clearSent();
+      await page.click('[data-testid="goal-clear"]');
+      assert.deepEqual(
+        await sent(),
+        [{ type: "goalAction", action: "clear" }],
+        "an achieved goal clears at once",
+      );
+      // Only the history told: no status, but the objective and its round.
+      await host({ type: "state", state: baseState({ goal: goal({ status: null, maxRounds: null }) }) });
+      assert.equal(await page.$('[data-testid="goal-status"]'), null);
+      assert.match(await goalBar(), /^Goal make the tests pass 2 rounds Rounds End goal$/);
+    });
+
+    it("Rounds goes to the goal's notices in the conversation, one after another", async () => {
+      await host({ type: "transcript", items: GOAL_ITEMS });
+      await host({ type: "state", state: baseState({ goal: goal() }) });
+      const flashed = () =>
+        page.$$eval(".flash", (els) =>
+          els.map((e) => e.querySelector('[data-testid="background"]')?.textContent ?? ""),
+        );
+      await page.click('[data-testid="goal-rounds"]');
+      assert.match((await flashed()).join(), /Goal · set: make the tests pass/);
+      await page.click('[data-testid="goal-rounds"]');
+      assert.ok((await flashed()).includes("Goal: make the tests pass"), "then the round after it");
+      // After the last round it starts again from the goal's start.
+      await new Promise((r) => setTimeout(r, 1700));
+      await page.click('[data-testid="goal-rounds"]');
+      assert.deepEqual(await flashed(), ["Goal · set: make the tests pass"]);
+    });
+
+    for (const width of [300, 520])
+      it(`the goal header fits ${width} px with a long objective`, async () => {
+        await page.setViewport({ width, height: 700 });
+        await host({ type: "transcript", items: GOAL_ITEMS });
+        await host({
+          type: "state",
+          state: baseState({
+            goal: goal({
+              objective:
+                "make add() and average() correct, with a test file for each that passes when run with node, and document both in the README",
+            }),
+          }),
+        });
+        const fit = await page.$eval('[data-testid="goal-bar"]', (el) => {
+          const r = el.getBoundingClientRect();
+          const obj = el.querySelector<HTMLElement>('[data-testid="goal-objective"]')!;
+          const buttons = Array.from(el.querySelectorAll("button")).every((b) => {
+            const x = b.getBoundingClientRect();
+            return x.left >= r.left - 1 && x.right <= r.right + 1;
+          });
+          return {
+            inside: r.left >= 0 && r.right <= window.innerWidth,
+            oneLine: obj.scrollWidth > obj.clientWidth && obj.getBoundingClientRect().height < 24,
+            buttons,
+            doc: document.documentElement.scrollWidth <= window.innerWidth,
+            slim: r.height < 80,
+          };
+        });
+        assert.deepEqual(fit, { inside: true, oneLine: true, buttons: true, doc: true, slim: true });
+      });
+
     // ---------------------------------------------------- project instructions
 
     const INSTRUCTIONS: InstructionsView = {

@@ -418,6 +418,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       bookmarks: this.bookmarks(),
       mentionAgents: c?.mentionAgents ?? [],
       skills: c?.skills ?? [],
+      goal: c?.goalView() ?? null,
       revert: c?.stagedRevert() ?? null,
       archivedSessions: c?.archivedSessions ?? null,
       strip: c?.stripView() ?? [],
@@ -1238,6 +1239,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return this.instructions.open(msg.path);
       case "createInstructions":
         return this.instructions.create(msg.scope);
+      case "goalAction":
+        return c?.goalCommand(msg.action);
       case "remember":
         await this.instructions.remember(msg.text);
         return;

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **A header for the session's goal.** With `/goal` running, the objective stays pinned above the conversation with how it stands (in progress, achieved, or stopped with OpenCode's reason) and its round, read from OpenCode's goal plugin and kept up to date by its events, also for a goal set in another client. **Rounds** jumps through the goal's notices, **Pause** / **Resume** / **End goal** use OpenCode's own `/goal` command (ending asks first), and an achieved goal can be cleared.
+
 - **Project instructions.** **/ → Project instructions…** and the Agents panel show which instruction files OpenCode reads for the folder (the global AGENTS.md or Claude's, each folder's AGENTS.md or CLAUDE.md up to your home folder, the config's `instructions`), worked out the way OpenCode 2.4.2 does, with what it skips (a CLAUDE.md beside an AGENTS.md). **Open** any of them, **Create AGENTS.md** from a short template (a global one only after asking), or **Set up with /init**.
 - **Remember this.** Under a reply, it adds the text you selected (or the reply's first line) to the project's AGENTS.md as one line: you edit it first, see the change as a diff and confirm. Line endings and a BOM are kept; while the project only has a CLAUDE.md, the line goes there, since a new AGENTS.md would make OpenCode stop reading it.
 

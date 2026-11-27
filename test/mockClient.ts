@@ -19,6 +19,7 @@ import type {
   AgentOption,
   FormAnswer,
   FormRequest,
+  GoalState,
   ModelOption,
   PendingInboxItem,
   PermissionDecision,
@@ -338,6 +339,17 @@ export class MockClient implements OpenCodeClient {
   /** "Always allow" rules by project; `projects` maps a folder to its project. */
   projects = new Map<string, string>();
   saved: Array<SavedPermission & { projectID: string }> = [];
+  /** Goals by session; `goalFailures` calls fail first (the plugin's RPC not loaded yet). */
+  goals = new Map<string, GoalState | null>();
+  goalFailures = 0;
+  async getGoal(directory: string, sessionID: string) {
+    this.record("getGoal", directory, sessionID);
+    if (this.goalFailures > 0) {
+      this.goalFailures--;
+      throw new OpenCodeHttpError(400, "RpcError", "RPC is unavailable: opencode.goal");
+    }
+    return this.goals.get(sessionID) ?? null;
+  }
   /** Project folders by folder; the folder itself when not set. */
   projectDirs = new Map<string, string>();
   async projectDirectory(directory: string) {

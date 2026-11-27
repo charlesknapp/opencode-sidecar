@@ -427,6 +427,7 @@ async function pastedText(api: TestApi): Promise<void> {
   await customAgents(api);
   await mcpServers(api);
   await projectInstructions(api);
+  await goalHeader(api);
   await problemsAndCommit(api);
   await agentReview(api);
 }
@@ -716,6 +717,46 @@ async function mcpServers(api: TestApi): Promise<void> {
     await api.handle({ type: "mcpRemove", name: "accept-tiny" });
     check("MCP: Remove", (await state()) === undefined);
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+// ============================================================ goals
+
+/**
+ * A small `/goal` runs to its end: the header follows OpenCode's goal plugin (in progress,
+ * then achieved or stopped with a reason), the goal's notices are in the conversation, and
+ * End goal clears it. The file it asks for is removed afterwards.
+ */
+async function goalHeader(api: TestApi): Promise<void> {
+  const c = api.controller()!;
+  const root = api.workspace().active!.path;
+  const file = path.join(root, "goal.txt");
+  try {
+    await api.handle({ type: "newSession" });
+    await api.handle({
+      type: "runCommand",
+      name: "goal",
+      text: "Create a file named goal.txt containing the word done, then show its contents with a shell command.",
+    });
+    await waitFor("the goal header", () => api.viewState().goal ?? undefined, 30_000);
+    check("Goal: the header shows the objective", /goal\.txt/.test(api.viewState().goal?.objective ?? ""));
+    const end = await waitFor(
+      "the goal to end",
+      () => (api.viewState().goal?.status !== "active" ? api.viewState().goal : undefined),
+      360_000,
+    );
+    check(
+      "Goal: achieved, or stopped with OpenCode's reason",
+      end?.status === "complete" || (end?.status === "paused" && !!end.reason),
+      JSON.stringify(end),
+    );
+    const rows = items(api).filter((i) => i.kind === "background" && i.source === "goal");
+    check("Goal: its notices are in the conversation", rows.length >= 1, String(rows.length));
+    await api.handle({ type: "goalAction", action: "clear" });
+    await waitFor("the goal to clear", () => (api.viewState().goal === null ? true : undefined), 15_000);
+    check("Goal: End goal clears the header", api.viewState().goal === null && !c.goalView());
+  } finally {
+    fs.rmSync(file, { force: true });
   }
 }
 

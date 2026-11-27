@@ -4,7 +4,14 @@
 import { findSensitive } from "../core/sensitive";
 import { parseForm } from "../core/forms";
 import { parseRules } from "../shared/approval";
-import type { FormAnswer, PermissionRequest, RawError, TokenUsage, UiEvent } from "../shared/model";
+import type {
+  FormAnswer,
+  GoalState,
+  PermissionRequest,
+  RawError,
+  TokenUsage,
+  UiEvent,
+} from "../shared/model";
 import { splitUserText } from "../shared/userText";
 
 type Rec = Record<string, unknown>;
@@ -172,6 +179,24 @@ export function backgroundNotice(id: string, raw: Record<string, unknown>, time?
     command: source === "shell" ? (s(raw.description) ?? attrs.command ?? null) : null,
     path: s(meta?.path) ?? null,
     ...(time !== undefined ? { time } : {}),
+  };
+}
+
+/** OpenCode's `Goal.State` (its goal plugin's RPC and events); null for none or anything else. */
+export function parseGoal(v: unknown): GoalState | null {
+  const g = rec(v);
+  const id = s(g?.id);
+  const objective = s(g?.objective);
+  const status = g?.status;
+  if (!g || !id || !objective || (status !== "active" && status !== "paused" && status !== "complete"))
+    return null;
+  return {
+    id,
+    objective,
+    status,
+    reason: s(g.reason) || null,
+    rounds: n(g.rounds),
+    maxRounds: typeof g.maxRounds === "number" && g.maxRounds > 0 ? g.maxRounds : null,
   };
 }
 
@@ -517,6 +542,9 @@ export class EventNormalizer {
       case "session.permissions":
         // The whole list, from Sidecar, the TUI or another client.
         return out([{ type: "session.permissions", rules: parseRules(data.permissions) }]);
+      case "rpc.opencode.goal.changed":
+        // The goal plugin's own event: the whole goal, or null once cleared.
+        return out([{ type: "goal.changed", goal: parseGoal(data.goal) }]);
       case "session.compaction.ended":
         return out([{ type: "notice", level: "info", text: "Conversation context was compacted." }]);
       case "session.skill.activated":

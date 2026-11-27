@@ -21,6 +21,7 @@ import type {
   ReviewView,
   RewindPreview,
   FormAnswer,
+  GoalView,
   ImportPreview,
   InboxDelivery,
   InstructionsView,
@@ -119,6 +120,8 @@ export interface ViewState {
   mentionAgents: AgentOption[];
   /** OpenCode's skills for this folder, mentioned as `@id`. */
   skills: SkillOption[];
+  /** The open session's goal (`/goal`), for the header above the conversation; null when it has none. */
+  goal?: GoalView | null;
   /** A rewind staged in another client and not yet committed, for the open session. */
   revert: { messageID: string; files: number } | null;
   /** Archived sessions of this folder, once the history's Archived view asked for them. */
@@ -224,6 +227,8 @@ export type WebviewMessage =
   | { type: "openInstruction"; path: string }
   /** Create the project's AGENTS.md, or (after the host asks) the global one. */
   | { type: "createInstructions"; scope: "project" | "global" }
+  /** Pause, resume or end the open session's goal (OpenCode's `/goal pause|resume|clear`). */
+  | { type: "goalAction"; action: "pause" | "resume" | "clear" }
   /** "Remember this": add a line to the project's AGENTS.md (the host shows the change and asks). */
   | { type: "remember"; text: string }
   /** The Providers panel opened (or wants a fresh list). */
@@ -507,6 +512,7 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   loadInstructions: () => true,
   openInstruction: (m) => isStr(m.path, 4096),
   createInstructions: (m) => m.scope === "project" || m.scope === "global",
+  goalAction: (m) => m.action === "pause" || m.action === "resume" || m.action === "clear",
   remember: (m) => typeof m.text === "string" && m.text.length <= 20_000,
   loadProviders: () => true,
   providerConnect: (m) => isProviderId(m.id),
@@ -652,6 +658,7 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   openInstruction: ["path"],
   createInstructions: ["scope"],
   remember: ["text"],
+  goalAction: ["action"],
   providerConnect: ["id"],
   providerReauth: ["id"],
   providerDisconnect: ["id"],

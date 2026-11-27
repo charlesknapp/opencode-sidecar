@@ -385,6 +385,29 @@ export interface McpServerInfo {
   runtime?: boolean;
 }
 
+/**
+ * A session's goal (`/goal`), as OpenCode's goal plugin keeps it: `rounds` counts the
+ * reviewer's "continue" verdicts (a resume restarts it at 1), up to `maxRounds`.
+ */
+export interface GoalState {
+  id: string;
+  objective: string;
+  status: "active" | "paused" | "complete";
+  /** Why it stopped or was achieved, or the reviewer's last reason. */
+  reason: string | null;
+  rounds: number;
+  maxRounds: number | null;
+}
+
+/** The goal header above the conversation; `status` null when only the history told (no live state). */
+export interface GoalView {
+  objective: string;
+  status: GoalState["status"] | null;
+  reason: string | null;
+  rounds: number;
+  maxRounds: number | null;
+}
+
 /** An instruction file OpenCode reads (or would read) for the folder. */
 export interface InstructionRow {
   /** Absolute path; for a URL or a pattern, as written. */
@@ -1026,6 +1049,8 @@ export type UiEvent =
   | { type: "session.selection"; agent?: string; modelKey?: string; variant?: string | null }
   /** The session's permission rules were replaced (by any client). */
   | { type: "session.permissions"; rules: PermissionRule[] }
+  /** The session's goal was set, advanced, stopped, achieved or cleared (null), by any client. */
+  | { type: "goal.changed"; goal: GoalState | null }
   /** A model step started (live only): the throughput readout starts counting again. */
   | { type: "step.started"; modelKey: string | null; agent: string | null }
   /**

@@ -17,59 +17,60 @@ The password stays in memory and is only sent to that loopback URL. With `openco
 
 Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode compares directories case-sensitively and its CLI records Windows drive letters in upper case, while VS Code reports them in lower case, so Sidecar upper-cases the drive letter (`c:\repo` → `C:\repo`). The session list also asks for the lower-case form, which older Sidecar versions recorded. ✓ marks calls checked against a live OpenCode service; `npm run test:live` (`test/live/`) repeats those checks.
 
-| Purpose                      | Endpoint                                                                                                              |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Health / version ✓           | `GET /api/info`                                                                                                       |
-| Models, providers, default ✓ | `GET /api/model`, `GET /api/provider`, `GET /api/model/default`                                                       |
-| Agents ✓                     | `GET /api/agent` (primary, non-hidden; with OpenCode's descriptions)                                                  |
-| Agents panel ✓               | `GET /api/agent` (every agent: mode, model, `system`, `request.body.temperature`, rules), `GET /api/config` (folders) |
-| Agent file changes ✓         | none: OpenCode watches its config folders; `agent.updated` follows, `POST /api/location/reload` only as a fallback    |
-| Commands ✓                   | `GET /api/command`; run one with `POST /api/session/{id}/command` `{ name, text, delivery? }`                         |
-| Account and provider state ✓ | `GET /api/integration` (connection states only)                                                                       |
-| Providers panel ✓            | `GET /api/integration`, `GET /api/integration/{id}`, `GET /api/provider` (`integrationID`, `settings.baseURL` host)   |
-| Connect with a key ✓         | `POST /api/integration/{id}/connect/key` `{ key, answer? }`                                                           |
-| Connect with OAuth ✓         | `POST …/connect/oauth` `{ methodID, answer? }`, `GET …/connect/oauth/{attemptID}`, `POST …/complete` `{ code }`       |
-| Cancel an OAuth sign-in ✓    | `DELETE /api/integration/{id}/connect/oauth/{attemptID}`                                                              |
-| Connect external ✓           | `POST /api/integration/{id}/connect/external` `{ methodID, answer? }`                                                 |
-| Disconnect ✓                 | `DELETE /api/credential/{credentialID}` (each `credential` connection of the integration)                             |
-| Reload config ✓              | `POST /api/location/reload` (retried while a deleted folder is still loaded)                                          |
-| Subagents and skills ✓       | `GET /api/agent` (non-primary, for `@` mentions), `GET /api/skill`                                                    |
-| File search (`@`) ✓          | `GET /api/fs/find?query=&limit=` (ranked paths relative to the folder)                                                |
-| Sessions ✓                   | `GET /api/session?parentID=null&archived=false` (workspace list; `archived=true` for the Archived view)               |
-| Subagent sessions ✓          | `GET /api/session?parentID=`, `GET/POST /api/session`                                                                 |
-| Rename ✓                     | `PATCH /api/session/{id}` `{ title }`                                                                                 |
-| Archive ✓                    | `PATCH /api/session/{id}` `{ archived: true \| false }`                                                               |
-| Delete ✓                     | `DELETE /api/session/{id}`                                                                                            |
-| Instruction files ✓          | `GET /api/location` (`project.directory`), `GET /api/config` (documents' `instructions` only); files read from disk   |
-| MCP servers ✓                | `GET /api/mcp` (each server's `status`: connected, pending, disabled, failed or needs_auth, with `error`)             |
-| MCP connect, disconnect ✓    | `POST /api/experimental/mcp/{name}/connect`, `…/disconnect` (for this OpenCode run; `404 McpServerNotFoundError`)     |
-| MCP for this run ✓           | `PUT /api/experimental/mcp/{name}` `{ config }`, `DELETE /api/experimental/mcp/{name}` (runtime only, per folder)     |
-| MCP sign-in ✓                | the server's `integrationID`: `GET /api/integration/{id}`, then the OAuth calls below                                 |
-| Fork ✓                       | `POST /api/session/{id}/fork` `{ before? }` (a non-empty session; the copy has `fork`, not `parentID`)                |
-| Side question (`/btw`) ✓     | `POST …/fork` `{}`, `POST …/agent` `{ agent: "plan" }`, `POST …/prompt`, then `DELETE /api/session/{id}` on close     |
-| History ✓                    | `GET /api/session/{id}/message` (newest first, cursor paging)                                                         |
-| Prompt, steer, queue ✓       | `POST /api/session/{id}/prompt` `{ text, files?, agents?, skills?, delivery? }`                                       |
-| Model and agent ✓            | `POST /api/session/{id}/model` (with `variant`), `POST /api/session/{id}/agent`                                       |
-| Running state, stop ✓        | `GET /api/session/active`, `POST /api/session/{id}/interrupt`                                                         |
-| Rewind ✓                     | `POST /api/session/{id}/revert/stage` `{ messageID, files }`, then `POST /api/session/{id}/revert/commit`             |
-| Staged rewind ✓              | `DELETE /api/session/{id}/revert` (Restore) or `POST …/revert/commit` (Apply)                                         |
-| Compact                      | `POST /api/session/{id}/compact` `{}`                                                                                 |
-| Context messages ✓           | `GET /api/session/{id}/context` (the messages after the last compaction; for what fills the context)                  |
-| Usage limits ✓               | `GET /api/experimental/usage/limits?location[directory]=` (`data: null` unless signed in to an OpenCode workspace)    |
-| Usage stats ✓                | `GET /api/experimental/session/stats?from=&project=&tools=none` (today's cost in the project)                         |
-| One-off generation ✓         | `POST /api/experimental/generate/text` `{ prompt, model? }` → `{ data: { text } }` (commit messages; no session)      |
-| Shell (`!command`) ✓         | `POST /api/session/{id}/shell` `{ command }`                                                                          |
-| Permissions ✓                | `GET …/permission`, `POST …/permission/{requestID}/reply` `{ decision, message? }`                                    |
-| Folder's project ✓           | `GET /api/location?location[directory]=` (its `project.id`; `C:\` and `c:\` are different projects)                   |
-| Always-allowed rules ✓       | `GET /api/permission/saved?projectID=`, `PATCH /api/permission/saved/{id}` `{ action?, resource? }`, `DELETE …/{id}`  |
-| Session rules ✓              | `PATCH /api/session/{id}` `{ permissions }` (the whole list), read back with `GET /api/session/{id}`                  |
-| Agents' rules ✓              | `GET /api/agent` (each agent's `permissions`, subagents included)                                                     |
-| New session in a mode ✓      | `POST /api/session` `{ location, agent, model, permissions }`                                                         |
-| Questions (forms)            | `GET …/form`, `POST …/form/{formID}/reply` `{ answer }`, `DELETE …/form/{formID}`                                     |
-| Pending (steer/queue) items  | `GET …/inbox`, `DELETE …/inbox/{inboxID}`, `PATCH …/inbox/{inboxID}` `{ delivery }` (from OpenCode's API description) |
-| Agent-only changes ✓         | `GET …/diff?from=…&to=…&context=10000000` (full-file patches; see below)                                              |
-| Rewind preview ✓             | `GET …/message` (each assistant message's `snapshot.files`) and `GET …/diff?from=…&to=…&context=3`                    |
-| Events ✓                     | `GET /api/event` (Server-Sent Events, global for all locations)                                                       |
+| Purpose                      | Endpoint                                                                                                                          |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Health / version ✓           | `GET /api/info`                                                                                                                   |
+| Models, providers, default ✓ | `GET /api/model`, `GET /api/provider`, `GET /api/model/default`                                                                   |
+| Agents ✓                     | `GET /api/agent` (primary, non-hidden; with OpenCode's descriptions)                                                              |
+| Agents panel ✓               | `GET /api/agent` (every agent: mode, model, `system`, `request.body.temperature`, rules), `GET /api/config` (folders)             |
+| Agent file changes ✓         | none: OpenCode watches its config folders; `agent.updated` follows, `POST /api/location/reload` only as a fallback                |
+| Commands ✓                   | `GET /api/command`; run one with `POST /api/session/{id}/command` `{ name, text, delivery? }`                                     |
+| Account and provider state ✓ | `GET /api/integration` (connection states only)                                                                                   |
+| Providers panel ✓            | `GET /api/integration`, `GET /api/integration/{id}`, `GET /api/provider` (`integrationID`, `settings.baseURL` host)               |
+| Connect with a key ✓         | `POST /api/integration/{id}/connect/key` `{ key, answer? }`                                                                       |
+| Connect with OAuth ✓         | `POST …/connect/oauth` `{ methodID, answer? }`, `GET …/connect/oauth/{attemptID}`, `POST …/complete` `{ code }`                   |
+| Cancel an OAuth sign-in ✓    | `DELETE /api/integration/{id}/connect/oauth/{attemptID}`                                                                          |
+| Connect external ✓           | `POST /api/integration/{id}/connect/external` `{ methodID, answer? }`                                                             |
+| Disconnect ✓                 | `DELETE /api/credential/{credentialID}` (each `credential` connection of the integration)                                         |
+| Reload config ✓              | `POST /api/location/reload` (retried while a deleted folder is still loaded)                                                      |
+| Subagents and skills ✓       | `GET /api/agent` (non-primary, for `@` mentions), `GET /api/skill`                                                                |
+| File search (`@`) ✓          | `GET /api/fs/find?query=&limit=` (ranked paths relative to the folder)                                                            |
+| Sessions ✓                   | `GET /api/session?parentID=null&archived=false` (workspace list; `archived=true` for the Archived view)                           |
+| Subagent sessions ✓          | `GET /api/session?parentID=`, `GET/POST /api/session`                                                                             |
+| Rename ✓                     | `PATCH /api/session/{id}` `{ title }`                                                                                             |
+| Archive ✓                    | `PATCH /api/session/{id}` `{ archived: true \| false }`                                                                           |
+| Delete ✓                     | `DELETE /api/session/{id}`                                                                                                        |
+| Goal ✓                       | `POST /api/rpc/opencode.goal/get` `{ input: { sessionID } }` (`output`: `Goal.State` or `null`); `/goal pause`, `resume`, `clear` |
+| Instruction files ✓          | `GET /api/location` (`project.directory`), `GET /api/config` (documents' `instructions` only); files read from disk               |
+| MCP servers ✓                | `GET /api/mcp` (each server's `status`: connected, pending, disabled, failed or needs_auth, with `error`)                         |
+| MCP connect, disconnect ✓    | `POST /api/experimental/mcp/{name}/connect`, `…/disconnect` (for this OpenCode run; `404 McpServerNotFoundError`)                 |
+| MCP for this run ✓           | `PUT /api/experimental/mcp/{name}` `{ config }`, `DELETE /api/experimental/mcp/{name}` (runtime only, per folder)                 |
+| MCP sign-in ✓                | the server's `integrationID`: `GET /api/integration/{id}`, then the OAuth calls below                                             |
+| Fork ✓                       | `POST /api/session/{id}/fork` `{ before? }` (a non-empty session; the copy has `fork`, not `parentID`)                            |
+| Side question (`/btw`) ✓     | `POST …/fork` `{}`, `POST …/agent` `{ agent: "plan" }`, `POST …/prompt`, then `DELETE /api/session/{id}` on close                 |
+| History ✓                    | `GET /api/session/{id}/message` (newest first, cursor paging)                                                                     |
+| Prompt, steer, queue ✓       | `POST /api/session/{id}/prompt` `{ text, files?, agents?, skills?, delivery? }`                                                   |
+| Model and agent ✓            | `POST /api/session/{id}/model` (with `variant`), `POST /api/session/{id}/agent`                                                   |
+| Running state, stop ✓        | `GET /api/session/active`, `POST /api/session/{id}/interrupt`                                                                     |
+| Rewind ✓                     | `POST /api/session/{id}/revert/stage` `{ messageID, files }`, then `POST /api/session/{id}/revert/commit`                         |
+| Staged rewind ✓              | `DELETE /api/session/{id}/revert` (Restore) or `POST …/revert/commit` (Apply)                                                     |
+| Compact                      | `POST /api/session/{id}/compact` `{}`                                                                                             |
+| Context messages ✓           | `GET /api/session/{id}/context` (the messages after the last compaction; for what fills the context)                              |
+| Usage limits ✓               | `GET /api/experimental/usage/limits?location[directory]=` (`data: null` unless signed in to an OpenCode workspace)                |
+| Usage stats ✓                | `GET /api/experimental/session/stats?from=&project=&tools=none` (today's cost in the project)                                     |
+| One-off generation ✓         | `POST /api/experimental/generate/text` `{ prompt, model? }` → `{ data: { text } }` (commit messages; no session)                  |
+| Shell (`!command`) ✓         | `POST /api/session/{id}/shell` `{ command }`                                                                                      |
+| Permissions ✓                | `GET …/permission`, `POST …/permission/{requestID}/reply` `{ decision, message? }`                                                |
+| Folder's project ✓           | `GET /api/location?location[directory]=` (its `project.id`; `C:\` and `c:\` are different projects)                               |
+| Always-allowed rules ✓       | `GET /api/permission/saved?projectID=`, `PATCH /api/permission/saved/{id}` `{ action?, resource? }`, `DELETE …/{id}`              |
+| Session rules ✓              | `PATCH /api/session/{id}` `{ permissions }` (the whole list), read back with `GET /api/session/{id}`                              |
+| Agents' rules ✓              | `GET /api/agent` (each agent's `permissions`, subagents included)                                                                 |
+| New session in a mode ✓      | `POST /api/session` `{ location, agent, model, permissions }`                                                                     |
+| Questions (forms)            | `GET …/form`, `POST …/form/{formID}/reply` `{ answer }`, `DELETE …/form/{formID}`                                                 |
+| Pending (steer/queue) items  | `GET …/inbox`, `DELETE …/inbox/{inboxID}`, `PATCH …/inbox/{inboxID}` `{ delivery }` (from OpenCode's API description)             |
+| Agent-only changes ✓         | `GET …/diff?from=…&to=…&context=10000000` (full-file patches; see below)                                                          |
+| Rewind preview ✓             | `GET …/message` (each assistant message's `snapshot.files`) and `GET …/diff?from=…&to=…&context=3`                                |
+| Events ✓                     | `GET /api/event` (Server-Sent Events, global for all locations)                                                                   |
 
 `decision` is `once`, `always` (only when the request carries `save` patterns, shown as "always allow `npm test *`") or `reject`; a rejection can carry `message`, which OpenCode hands to the agent as what to do instead. Model records can include provider headers or bodies; the adapter drops them on arrival because they can contain secrets. `GET /api/credential` is never called.
 
@@ -104,6 +105,14 @@ Checked against the live service (2.4.2), its documentation and its OpenAPI docu
 - **Picking up a change.** OpenCode watches the config folders: a new, changed or deleted file shows in `GET /api/agent` within a second or two and emits `agent.updated` with the folder's `location`. The first request for a folder OpenCode has not loaded lists only the built-in agents. Sidecar polls the list until it shows the change and only after 6 s calls `POST /api/location/reload`, which rebuilds every folder and cancels pending permissions and questions.
 - **Built-in agents** are those with no file: `build`, `plan`, `general`, `explore`, and the hidden `compaction`, `title` and `summary`. Build also allows OpenCode's `question` tool; a custom agent does not get that rule.
 - **Roo Code and Kilo Code** keep custom modes in `.roomodes` / `.kilocodemodes` (JSON or YAML, `customModes`) and globally in `<globalStorage>/rooveterinaryinc.roo-cline/settings/custom_modes.yaml` (older: `cline_custom_modes.json`) and `<globalStorage>/kilocode.kilo-code/settings/`, where `globalStorage` is `%APPDATA%\Code\User\globalStorage` on Windows (Insiders, Cursor and VSCodium beside it). Groups map to rules on top of OpenCode's defaults: no `read` → `read`, `glob`, `grep` denied; no `edit` → `edit` denied, `edit` with `fileRegex` → `edit * deny` then `allow` per glob (regular expressions that globs cannot express make every edit ask); no `command` → `shell` denied; `browser` → `webfetch` and `websearch` allowed (otherwise denied; OpenCode's own browser stays off). MCP tools are named per tool in OpenCode's rules, so the `mcp` group is not mapped.
+
+### Goals
+
+`/goal` is OpenCode's goal plugin (`opencode.goal`). Checked live (2.4.2, `test/live/goal.test.ts`) and against its build:
+
+- The plugin keeps one goal per session, `Goal.State` `{ id, objective, status: active | paused | complete, reason?, rounds, maxRounds: 50, stalls?, boot, updatedAt }`, and serves it through its RPC: `POST /api/rpc/opencode.goal/get?location[directory]=` `{ input: { sessionID } }` → `{ output }` (`null` without a goal or for an unknown session). While the folder's plugins load it answers `400 RpcError` `rpc.unavailable`, so Sidecar asks once more and otherwise falls back to the goal's notices in the history (objective and rounds, no status).
+- Every change is the event `rpc.opencode.goal.changed` `{ sessionID, goal }` (`goal: null` once cleared), whichever client made it.
+- `/goal <objective>` (`POST …/command` `{ name: "goal", text }`) sets it and posts the kickoff as a synthetic message with `metadata: { source: "goal", goalID }`; after each turn a reviewer (a stateless generation) answers `done`, `continue` (another synthetic "Continue working toward the active goal" with the reason and next step, `rounds + 1`), `blocked`, `paused` or `wait`. It stops (`paused`, with a `reason`) when the session fails ("The session failed: …", also at the free limit), is interrupted by the user ("Stopped by the user"), after 50 rounds, after 3 rounds without progress, or when the server restarts. `/goal pause`, `/goal resume` (back to `active`, `rounds: 1`, and a new turn) and `/goal clear` (removes it) control it; `/goal` alone or `pause` without an active goal answer `500 CommandExecutionError` with a message ("No active goal to pause.").
 
 ### Instruction files
 
@@ -165,6 +174,7 @@ The stream is global, so the controller filters by `sessionID`.
 | `session.revert.staged/committed/cleared` ✓                                                         | reload the open session; a staged rewind shows its bar |
 | `session.agent.selected`, `session.model.selected`                                                  | follow an agent or model chosen in another client      |
 | `session.compaction.started/ended/failed`                                                           | notices                                                |
+| `rpc.opencode.goal.changed` ✓                                                                       | the goal header                                        |
 | `mcp.status.changed` ✓                                                                              | refresh the MCP panel (the event's `location`)         |
 | `session.skill.activated`                                                                           | a notice naming the skill                              |
 | `session.retry.scheduled`                                                                           | a retry notice                                         |

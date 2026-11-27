@@ -2980,6 +2980,81 @@ kbd {
   background: var(--menu-active);
 }
 
+/* The session's goal: a slim bar above the conversation, the objective on one line and
+   how it stands with its actions under it (they wrap in a narrow view). */
+.goal-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 8px 0;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--rail);
+  border-left: 3px solid var(--vscode-focusBorder);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  font-size: 0.92em;
+}
+.goal-bar[hidden] {
+  display: none;
+}
+.goal-bar[data-status="complete"] {
+  border-left-color: var(--vscode-testing-iconPassed, var(--vscode-charts-green, var(--vscode-focusBorder)));
+}
+.goal-bar[data-status="paused"] {
+  border-left-color: var(--muted);
+}
+.goal-main,
+.goal-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.goal-meta {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+.goal-main > .i {
+  flex: none;
+  color: var(--muted);
+}
+.goal-label {
+  flex: none;
+  font-weight: 600;
+}
+.goal-objective,
+.goal-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.goal-objective {
+  flex: 1;
+}
+.goal-reason {
+  flex: 1 1 120px;
+}
+.goal-status {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.goal-status.s-complete {
+  color: var(--vscode-testing-iconPassed, var(--vscode-charts-green, var(--vscode-foreground)));
+}
+.goal-status.s-paused {
+  color: var(--muted);
+}
+.goal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: auto;
+}
+
 /* A rewind staged in another client: one line above the message box. */
 .revert-bar {
   display: flex;

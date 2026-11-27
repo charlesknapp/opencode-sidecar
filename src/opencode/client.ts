@@ -9,6 +9,7 @@ import type {
   AgentOption,
   FormAnswer,
   FormRequest,
+  GoalState,
   InboxDelivery,
   ModelOption,
   PendingInboxItem,
@@ -27,7 +28,7 @@ import type { PromptPayload } from "../core/context";
 import { parseIntegration, parseProvider, type IntegrationInfo, type ProviderEntry } from "../core/providers";
 import { parseAgentDetail, parseConfigSources, type AgentDetail, type ConfigSources } from "../core/agents";
 import { parseRules, type PermissionRule } from "../shared/approval";
-import { modelKey, toPermissionRequest } from "./events";
+import { modelKey, parseGoal, toPermissionRequest } from "./events";
 import { SseParser } from "./sse";
 
 export interface Endpoint {
@@ -179,6 +180,11 @@ export interface OpenCodeClient {
   removeMcp(directory: string, name: string): Promise<void>;
   /** OpenCode's project for a folder (the scope of its saved permissions). */
   projectId(directory: string): Promise<string | null>;
+  /**
+   * A session's goal from OpenCode's goal plugin (`POST /api/rpc/opencode.goal/get`), null
+   * when it has none. `400 RpcError` (`rpc.unavailable`) while the plugin is not loaded.
+   */
+  getGoal(directory: string, sessionID: string): Promise<GoalState | null>;
   /** The project's folder (its Git root, or the folder itself), where AGENTS.md lives. */
   projectDirectory(directory: string): Promise<string | null>;
   /** "Always allow" rules OpenCode saved for a project. */
@@ -1021,6 +1027,16 @@ export class HttpOpenCodeClient implements OpenCodeClient {
     const d = rec(await this.request("GET", "/api/location", { query: this.loc(directory) }));
     const id = rec(d.project).id;
     return typeof id === "string" && id ? id : null;
+  }
+
+  async getGoal(directory: string, sessionID: string): Promise<GoalState | null> {
+    const d = rec(
+      await this.request("POST", "/api/rpc/opencode.goal/get", {
+        query: this.loc(directory),
+        body: { input: { sessionID } },
+      }),
+    );
+    return parseGoal(d.output);
   }
 
   async projectDirectory(directory: string): Promise<string | null> {

@@ -55,6 +55,8 @@ import type {
   FileChange,
   RewindPreview,
   FormAnswer,
+  GoalState,
+  GoalView,
   InboxDelivery,
   ModelOption,
   PendingInboxItem,
@@ -322,6 +324,12 @@ export class SessionController {
   private approvalBusy = false;
   /** Actions of the folder's saved rules, for the rule editor's picker. */
   private savedActions: string[] = [];
+  /**
+   * The open session's goal: OpenCode's goal plugin's (`live`), or, while its RPC cannot be
+   * reached, the objective and rounds read from the goal's notices in the history.
+   */
+  private goal: { state: GoalState; live: boolean } | null = null;
+  private goalToken = 0;
   /** MCP servers added from Sidecar for this OpenCode run, by folder. */
   private readonly mcpAdded = new Map<string, Set<string>>();
 
@@ -341,6 +349,8 @@ export class SessionController {
       /** How long a saved agent file may take to show in OpenCode's list, and how often to look. */
       agentWaitMs?: number;
       agentPollMs?: number;
+      /** How long to wait before asking OpenCode's goal plugin again. */
+      goalRetryMs?: number;
       /** How often an MCP server's state is read while it connects after a sign-in. */
       mcpPollMs?: number;
       /** Clock for subagent timing (tests). */
@@ -1085,6 +1095,8 @@ export class SessionController {
     this.pendingStartsTask.clear();
     this.budget.reset();
     clearTimeout(this.stopTimer);
+    this.goal = null;
+    this.goalToken++;
     this.transcript.reset();
     this.sink.onTranscriptReset([]);
   }
@@ -1173,6 +1185,7 @@ export class SessionController {
       this.sink.onTranscriptReset(this.transcript.items);
       this.sink.onStateChanged();
       void this.refreshChanges();
+      void this.loadGoal(id);
       return true;
     } catch (e) {
       this.log.error(`Opening session ${id} failed`, e);
@@ -2175,6 +2188,77 @@ export class SessionController {
   }
 
   /** A rewind staged in another client and not yet committed, for the open session. */
+  // ------------------------------------------------------------------- goal
+
+  /**
+   * Reads the session's goal from OpenCode's goal plugin. Its RPC is briefly unavailable
+   * while a folder loads, so it is tried again once; if it still cannot be reached, the
+   * objective and rounds come from the goal's notices in the history (without a status).
+   */
+  private async loadGoal(id: string): Promise<void> {
+    const dir = this.directory;
+    if (!dir) return;
+    const token = ++this.goalToken;
+    let state: GoalState | null | undefined;
+    for (let i = 0; i < 2 && state === undefined; i++) {
+      try {
+        state = await this.client.getGoal(dir, id);
+      } catch (e) {
+        if (i === 0) await delay(this.timing.goalRetryMs ?? 1000);
+        else this.log.warn(`Reading the goal failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    if (token !== this.goalToken || this.current?.id !== id) return;
+    this.goal = state ? { state, live: true } : state === null ? null : this.goalFromHistory();
+    this.sink.onStateChanged();
+  }
+
+  /** The last goal set in the history, and the rounds noted since. */
+  private goalFromHistory(): { state: GoalState; live: boolean } | null {
+    const notes = this.transcript.items.filter(
+      (i): i is Extract<TranscriptItem, { kind: "background" }> =>
+        i.kind === "background" && i.source === "goal",
+    );
+    let set = notes.length - 1;
+    while (set >= 0 && notes[set].state !== "set") set--;
+    if (set < 0) return null;
+    const objective = notes[set].text.split("\n")[0].trim();
+    if (!objective) return null;
+    return {
+      state: {
+        id: "",
+        objective,
+        status: "active",
+        reason: null,
+        rounds: notes.length - set - 1,
+        maxRounds: null,
+      },
+      live: false,
+    };
+  }
+
+  /** The goal header's view; null when the open session has no goal. */
+  goalView(): GoalView | null {
+    const g = this.goal;
+    if (!g || !this.current) return null;
+    return {
+      objective: g.state.objective,
+      status: g.live ? g.state.status : null,
+      reason: g.state.reason,
+      rounds: g.state.rounds,
+      maxRounds: g.state.maxRounds,
+    };
+  }
+
+  /** Pauses, resumes or ends (`clear`) the goal with OpenCode's own `/goal` command. */
+  async goalCommand(action: "pause" | "resume" | "clear"): Promise<void> {
+    const id = this.current?.id;
+    if (!id) return;
+    await this.runCommand("goal", action);
+    // OpenCode sends the change as an event; read it back too, in case the stream missed it.
+    void this.loadGoal(id);
+  }
+
   stagedRevert(): { messageID: string; files: number } | null {
     return this.current?.revert ?? null;
   }
@@ -2850,6 +2934,11 @@ export class SessionController {
         // Rules set by Sidecar, the TUI or another client: the badge follows them.
         if (this.current) this.current = { ...this.current, permissions: ev.rules };
         break;
+      case "goal.changed":
+        // Set, advanced, stopped, achieved or cleared, in Sidecar or another client.
+        this.goalToken++;
+        this.goal = ev.goal ? { state: ev.goal, live: true } : null;
+        break;
       case "user.message":
         if (this.firstUserText === null) this.firstUserText = ev.text;
         break;
@@ -3033,7 +3122,7 @@ export class SessionController {
     let changesDirty = false;
     const forwarded: UiEvent[] = [];
     for (const ev of events) {
-      if (/^(session\.|usage\.|inbox\.|budget)/.test(ev.type)) stateChanged = true;
+      if (/^(session\.|usage\.|inbox\.|budget|goal\.)/.test(ev.type)) stateChanged = true;
       if (ev.type === "files.changed" || ev.type === "session.idle") changesDirty = true;
       forwarded.push(...this.applyLocal(ev));
     }
