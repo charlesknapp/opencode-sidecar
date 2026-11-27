@@ -123,6 +123,7 @@ Which files OpenCode 2.4.2 builds a session's instructions from, from its docume
 - **Project:** only when the folder is inside OpenCode's project (`GET /api/location` → `project.directory`, the Git root or the folder). Every folder from the open one up to the home folder, both included (outside home: up to the project root), so an AGENTS.md above the Git root is read too: its `AGENTS.md`, or its `CLAUDE.md` when it has none. `.opencode/AGENTS.md` is not read. AGENTS.md files below the folder load as the agent reads files there.
 - **Config `instructions`:** after the AGENTS.md files, from every config document (`GET /api/config` lists them with `info.instructions`; Sidecar reads only that key, since documents can hold keys). Relative paths and globs are looked up from the folder to the project root, `~/` from home, absolute paths as written, `http(s)` URLs fetched when the config loads. A new entry is picked up without a reload.
 - OpenCode watches these files; a change applies to the next session after a second or two. `OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1` (set on the service) skips every CLAUDE.md, which Sidecar cannot see.
+- Sidecar writes only the project's `AGENTS.md` (Remember this, Create). Beside a `CLAUDE.md` OpenCode reads, it warns first and can start the new file as a copy of it; checked live: after that OpenCode reads the new `AGENTS.md` and a change to the `CLAUDE.md` no longer changes the hash.
 - `/init` (`GET /api/command`: "guided AGENTS.md setup") is a command; Sidecar runs it like any other.
 
 ### MCP servers

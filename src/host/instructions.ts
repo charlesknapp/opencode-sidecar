@@ -1,14 +1,16 @@
 // VS Code side of the Project instructions panel: which instruction files OpenCode reads
 // for the folder (src/core/instructions.ts works them out), opening and creating them, and
 // "Remember this", which adds one line to the project's AGENTS.md after showing the change
-// as a diff and asking. A file outside the folder is only created after a modal question.
+// as a diff and asking. A file outside the folder is only created after a modal question,
+// and so is an AGENTS.md beside a CLAUDE.md, which OpenCode then stops reading (it can be
+// copied in first).
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { globalConfigDir, isInside } from "../core/agents";
-import { AGENTS_TEMPLATE, appendBullet, instructionView, rememberLine } from "../core/instructions";
+import { appendBullet, instructionView, rememberLine, startAgentsFile } from "../core/instructions";
 import type { SessionController } from "../core/sessionController";
 import type { InstructionsView } from "../shared/model";
 import type { HostMessage } from "../shared/protocol";
@@ -22,6 +24,10 @@ const GLOBAL_TEMPLATE = [
   "OpenCode reads this file in every session, before a project's own AGENTS.md.",
   "",
 ].join("\n");
+
+/** The choices for a new AGENTS.md beside a CLAUDE.md. */
+const COPY = "Create AGENTS.md and copy CLAUDE.md into it";
+const CREATE = "Create AGENTS.md";
 
 const isFile = (f: string) => {
   try {
@@ -45,12 +51,12 @@ export class InstructionsHost {
     },
   ) {}
 
-  /** Replaceable for tests: a modal question; resolves to the label picked. */
-  confirm: (message: string, detail: string, action: string) => Thenable<string | undefined> = (
+  /** Replaceable for tests: a modal question; resolves to the label picked (undefined: Cancel). */
+  confirm: (message: string, detail: string, ...actions: string[]) => Thenable<string | undefined> = (
     message,
     detail,
-    action,
-  ) => vscode.window.showWarningMessage(message, { modal: true, detail }, action);
+    ...actions
+  ) => vscode.window.showWarningMessage(message, { modal: true, detail }, ...actions);
 
   /** Replaceable for tests: the line to remember, edited by the user (undefined: cancelled). */
   ask: (title: string, value: string) => Thenable<string | undefined> = (title, value) =>
@@ -95,6 +101,31 @@ export class InstructionsHost {
     }
   }
 
+  /**
+   * Before a new AGENTS.md is written beside a CLAUDE.md OpenCode reads: says that OpenCode
+   * then stops reading it, and offers to copy it in. Resolves to CLAUDE.md's text to start
+   * from (null: the template), or undefined when cancelled.
+   */
+  private async fromClaude(view: InstructionsView): Promise<string | null | undefined> {
+    if (view.projectExists || !view.claudeFile) return null;
+    const pick = await this.confirm(
+      "Create AGENTS.md?",
+      `OpenCode reads a folder's AGENTS.md, or its CLAUDE.md only when there is no AGENTS.md. Once ${view.projectLabel} exists, OpenCode stops reading ${view.claudeFile}. Copy CLAUDE.md into it to keep those instructions.`,
+      COPY,
+      CREATE,
+    );
+    if (pick === CREATE) return null;
+    if (pick !== COPY) return undefined;
+    try {
+      return await fs.promises.readFile(view.claudeFile, "utf8");
+    } catch (e) {
+      void vscode.window.showWarningMessage(
+        `Could not read CLAUDE.md: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return undefined;
+    }
+  }
+
   /** Opens one of the listed files (nothing else: the path comes from the webview). */
   async open(file: string): Promise<void> {
     const view = this.view ?? (await this.load().catch(() => null));
@@ -115,6 +146,7 @@ export class InstructionsHost {
     const file = scope === "project" ? view.projectFile : view.globalFile;
     if (!isFile(file)) {
       const folder = this.deps.folder() ?? "";
+      let claude: string | null = null;
       if (scope === "global") {
         const pick = await this.confirm(
           "Create a global AGENTS.md?",
@@ -122,14 +154,10 @@ export class InstructionsHost {
           "Create",
         );
         if (pick !== "Create") return;
-      } else if (view.rememberFile !== view.projectFile) {
-        // The project root has a CLAUDE.md that OpenCode reads only while there is no AGENTS.md.
-        const pick = await this.confirm(
-          "Create AGENTS.md?",
-          `OpenCode reads ${view.rememberLabel} only while the project has no AGENTS.md. Once AGENTS.md exists, it reads AGENTS.md instead.`,
-          "Create",
-        );
-        if (pick !== "Create") return;
+      } else if (view.claudeFile) {
+        const from = await this.fromClaude(view);
+        if (from === undefined) return;
+        claude = from;
       } else if (!isInside(file, folder)) {
         const pick = await this.confirm(
           "Create AGENTS.md at the project root?",
@@ -141,7 +169,7 @@ export class InstructionsHost {
       try {
         await fs.promises.mkdir(path.dirname(file), { recursive: true });
         // "wx": never replaces a file that appeared meanwhile.
-        await fs.promises.writeFile(file, scope === "project" ? AGENTS_TEMPLATE : GLOBAL_TEMPLATE, {
+        await fs.promises.writeFile(file, scope === "project" ? startAgentsFile(claude) : GLOBAL_TEMPLATE, {
           flag: "wx",
         });
         this.deps.log.info(`Created ${file}`);
@@ -159,8 +187,9 @@ export class InstructionsHost {
   }
 
   /**
-   * "Remember this": the user edits the line, sees the change to the project's instruction
-   * file as a diff, and confirms; then the line is added at the end. Returns whether it was.
+   * "Remember this": the user edits the line, sees the change to the project's AGENTS.md as
+   * a diff, and confirms; then the line is added at the end. A new AGENTS.md beside a
+   * CLAUDE.md is asked about first (and can start as a copy of it). Returns whether it was.
    */
   async remember(text: string): Promise<boolean> {
     let view: InstructionsView;
@@ -170,13 +199,15 @@ export class InstructionsHost {
       void vscode.window.showWarningMessage(e instanceof Error ? e.message : String(e));
       return false;
     }
-    const file = view.rememberFile;
-    const typed = await this.ask(`Remember in ${view.rememberLabel}`, rememberLine(text).slice(0, 500));
+    const file = view.projectFile;
+    const claude = await this.fromClaude(view);
+    if (claude === undefined) return false;
+    const typed = await this.ask(`Remember in ${view.projectLabel}`, rememberLine(text).slice(0, 500));
     const line = typed === undefined ? "" : rememberLine(typed);
     if (!line) return false;
     const read = () => fs.promises.readFile(file, "utf8").catch(() => null);
     const before = await read();
-    const after = appendBullet(before, line);
+    const after = appendBullet(before ?? startAgentsFile(claude), line);
     const name = path.basename(file);
     const docs = this.deps.toolText;
     if (docs)
@@ -184,12 +215,13 @@ export class InstructionsHost {
         "vscode.diff",
         docs.uri(`${name} now`, before ?? ""),
         docs.uri(`${name} with the new line`, after),
-        `${view.rememberLabel}: Remember this (preview)`,
+        `${view.projectLabel}: Remember this (preview)`,
         { preview: true },
       );
+    const created = claude === null ? "with a short template" : "from a copy of CLAUDE.md";
     const pick = await this.confirm(
-      `Add this line to ${view.rememberLabel}?`,
-      `- ${line}${before === null ? `\n\n${name} does not exist yet; it is created with a short template.` : ""}`,
+      `Add this line to ${view.projectLabel}?`,
+      `- ${line}${before === null ? `\n\n${name} does not exist yet; it is created ${created}.` : ""}`,
       "Add",
     );
     if (pick !== "Add") return false;
@@ -205,7 +237,7 @@ export class InstructionsHost {
       );
       return false;
     }
-    void vscode.window.showInformationMessage(`Added to ${view.rememberLabel}.`, "Open").then((o) => {
+    void vscode.window.showInformationMessage(`Added to ${view.projectLabel}.`, "Open").then((o) => {
       if (o === "Open") void vscode.window.showTextDocument(vscode.Uri.file(file), { preview: false });
     });
     await this.postView();

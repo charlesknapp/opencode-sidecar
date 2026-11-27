@@ -16,7 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, describe, it, type TestContext } from "node:test";
 import { globalConfigDir } from "../../src/core/agents";
-import { appendBullet, instructionView } from "../../src/core/instructions";
+import { appendBullet, instructionView, startAgentsFile } from "../../src/core/instructions";
 import { HttpOpenCodeClient, type EventSubscription } from "../../src/opencode/client";
 import { discoverServer } from "../../src/opencode/service";
 
@@ -146,11 +146,25 @@ describe("live: project instructions", () => {
     // Without AGENTS.md, the CLAUDE.md beside it is read instead.
     fs.rmSync(agents);
     assert.ok(mine().includes(`project ${path.join("repo", "CLAUDE.md")} loaded`));
-    assert.equal(view().rememberFile, path.join(repo, "CLAUDE.md"));
+    assert.equal(view().claudeFile, path.join(repo, "CLAUDE.md"), "a new AGENTS.md would hide it");
     const fifth = await instructionHash(c, ws);
     assert.notEqual(fifth, fourth);
-    write("repo/CLAUDE.md", "# Claude\n- now read\n");
-    assert.notEqual(await instructionHash(c, ws), fifth, "now the CLAUDE.md is read");
+    write("repo/CLAUDE.md", "# Claude\r\n- now read\r\n");
+    const sixth = await instructionHash(c, ws);
+    assert.notEqual(sixth, fifth, "now the CLAUDE.md is read");
+    // "Remember this" with "Create AGENTS.md and copy CLAUDE.md into it": OpenCode reads the
+    // new AGENTS.md (CLAUDE.md's rules and the line) and no longer the CLAUDE.md.
+    const claude = fs.readFileSync(path.join(repo, "CLAUDE.md"), "utf8");
+    fs.writeFileSync(agents, appendBullet(startAgentsFile(claude), "Keep replies short"), { flag: "wx" });
+    assert.equal(fs.readFileSync(agents, "utf8"), "# Claude\r\n- now read\r\n- Keep replies short\r\n");
+    assert.ok(mine().includes(`project ${path.join("repo", "CLAUDE.md")} shadowed`));
+    assert.equal(view().claudeFile, null);
+    const seventh = await instructionHash(c, ws);
+    assert.notEqual(seventh, sixth, "the new AGENTS.md is read");
+    write("repo/CLAUDE.md", "# Claude\n- changed after the copy\n");
+    assert.equal(await instructionHash(c, ws), seventh, "the CLAUDE.md is no longer read");
+    fs.appendFileSync(agents, "- Another rule\r\n");
+    assert.notEqual(await instructionHash(c, ws), seventh, "the copy in AGENTS.md is what is read");
   });
 
   it("offers /init for the folder", async (t) => {

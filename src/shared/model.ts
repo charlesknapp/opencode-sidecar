@@ -423,12 +423,12 @@ export interface InstructionRow {
 /** The Project instructions panel. */
 export interface InstructionsView {
   rows: InstructionRow[];
-  /** The project's AGENTS.md (at OpenCode's project root), and whether it exists. */
+  /** The project's AGENTS.md (at OpenCode's project root), where "Remember this" adds a line, and whether it exists. */
   projectFile: string;
   projectExists: boolean;
-  /** Where "Remember this" adds a line: the project's AGENTS.md, or its CLAUDE.md while it has no AGENTS.md. */
-  rememberFile: string;
-  rememberLabel: string;
+  projectLabel: string;
+  /** The root's CLAUDE.md while there is no AGENTS.md: OpenCode reads it now and stops once AGENTS.md exists. */
+  claudeFile: string | null;
   globalFile: string;
   globalExists: boolean;
   notes: string[];

@@ -2746,8 +2746,9 @@ function openInstructions(): void {
         smallBtn("Open", "instruction-open", () => send({ type: "openInstruction", path: r.path })),
       );
     else if (r.state === "missing" && r.path === v.projectFile)
+      // Beside a CLAUDE.md, the host asks first and offers to copy it in.
       actions.push(
-        smallBtn("Create AGENTS.md", "instructions-create", () =>
+        smallBtn(v.claudeFile ? "Create AGENTS.md…" : "Create AGENTS.md", "instructions-create", () =>
           send({ type: "createInstructions", scope: "project" }),
         ),
       );

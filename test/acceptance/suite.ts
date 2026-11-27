@@ -845,22 +845,29 @@ async function goalHeader(api: TestApi): Promise<void> {
 // ============================================================ project instructions
 
 /**
- * The fixture gets an AGENTS.md through the panel's Create, then "Remember this" adds a
- * rule (the input box and the confirmation answered here); a new session follows it,
- * which shows OpenCode read the file. The file is removed afterwards.
+ * The fixture has a CLAUDE.md; the panel's Create warns that OpenCode would stop reading
+ * it and makes AGENTS.md from a copy of it, then "Remember this" adds a rule (the input
+ * box and the questions answered here); a new session follows it, which shows OpenCode
+ * read the file. Both files are removed afterwards.
  */
 async function projectInstructions(api: TestApi): Promise<void> {
   const root = api.workspace().active!.path;
   const file = path.join(root, "AGENTS.md");
+  const claude = path.join(root, "CLAUDE.md");
   const host = api.instructions();
   const asked: string[] = [];
-  host.confirm = async (message) => (asked.push(message), message.startsWith("Add") ? "Add" : "Create");
+  // The first choice: "Create AGENTS.md and copy CLAUDE.md into it", "Add", "Create".
+  host.confirm = async (message, _detail, ...actions) => (asked.push(message), actions[0]);
   host.ask = async (_title, value) => value;
+  fs.writeFileSync(claude, "# Claude rules\n\n- Answer in English.\n");
   try {
     await api.handle({ type: "createInstructions", scope: "project" });
     check(
-      "Instructions: Create writes AGENTS.md from the template",
-      fs.existsSync(file) && fs.readFileSync(file, "utf8").startsWith("# Project instructions"),
+      "Instructions: Create asks, then writes AGENTS.md from a copy of CLAUDE.md",
+      asked[0] === "Create AGENTS.md?" &&
+        fs.existsSync(file) &&
+        fs.readFileSync(file, "utf8") === fs.readFileSync(claude, "utf8"),
+      JSON.stringify(asked),
     );
     await api.handle({ type: "remember", text: "End every reply with the word MANGO." });
     const text = fs.readFileSync(file, "utf8");
@@ -880,6 +887,7 @@ async function projectInstructions(api: TestApi): Promise<void> {
     );
   } finally {
     fs.rmSync(file, { force: true });
+    fs.rmSync(claude, { force: true });
   }
 }
 

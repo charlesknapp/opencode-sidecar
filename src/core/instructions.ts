@@ -106,7 +106,20 @@ export function instructionView(input: InstructionInput): InstructionsView {
   } else notes.push("This folder is outside OpenCode's project, so OpenCode reads only the global file.");
   const projectFile = p.join(root, "AGENTS.md");
   const projectExists = isFile(projectFile);
-  if (!projectExists) add({ path: projectFile, kind: "project", state: "missing" });
+  // OpenCode reads the root's CLAUDE.md only while there is no AGENTS.md beside it.
+  const rootClaude = p.join(root, "CLAUDE.md");
+  const claudeFile = !projectExists && inProject && isFile(rootClaude) ? rootClaude : null;
+  if (!projectExists)
+    add({
+      path: projectFile,
+      kind: "project",
+      state: "missing",
+      ...(claudeFile
+        ? {
+            note: "Creating it makes OpenCode stop reading CLAUDE.md here; Create can copy CLAUDE.md into it",
+          }
+        : {}),
+    });
 
   // The config's `instructions`.
   for (const { entry, from } of input.instructions) {
@@ -131,16 +144,12 @@ export function instructionView(input: InstructionInput): InstructionsView {
     if (!found.length) add({ path: p.join(root, expanded), kind: "config", state: "missing", note });
   }
 
-  // "Remember this" adds to the project file OpenCode reads: AGENTS.md, or the root's
-  // CLAUDE.md while there is no AGENTS.md (a new AGENTS.md would hide it).
-  const rootClaude = p.join(root, "CLAUDE.md");
-  const rememberFile = !projectExists && isFile(rootClaude) ? rootClaude : projectFile;
   return {
     rows,
     projectFile,
     projectExists,
-    rememberFile,
-    rememberLabel: label(rememberFile),
+    projectLabel: label(projectFile),
+    claudeFile,
     globalFile,
     globalExists,
     notes,
@@ -154,6 +163,15 @@ export function rememberLine(text: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/^[-*•]\s+/, "");
+}
+
+/**
+ * What a new AGENTS.md starts with: CLAUDE.md's text as it is (BOM and line endings kept)
+ * when it is copied in, otherwise the template.
+ */
+export function startAgentsFile(claude: string | null): string {
+  // trim() also drops a BOM, so a file holding only one is empty too.
+  return claude?.trim() ? claude : AGENTS_TEMPLATE;
 }
 
 /**

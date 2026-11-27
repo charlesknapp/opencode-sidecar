@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parseConfigSources } from "../src/core/agents";
-import { AGENTS_TEMPLATE, appendBullet, instructionView, rememberLine } from "../src/core/instructions";
+import {
+  AGENTS_TEMPLATE,
+  appendBullet,
+  instructionView,
+  rememberLine,
+  startAgentsFile,
+} from "../src/core/instructions";
 import { HttpOpenCodeClient } from "../src/opencode/client";
 import type { InstructionRow } from "../src/shared/model";
 import { parseWebviewMessage } from "../src/shared/protocol";
@@ -44,8 +50,8 @@ describe("the instruction files OpenCode reads", () => {
     assert.equal(v.rows[3].note, "Not read: AGENTS.md beside it wins");
     assert.equal(v.projectFile, "C:\\Users\\me\\code\\repo\\AGENTS.md", "at the project root");
     assert.equal(v.projectExists, true);
-    assert.equal(v.rememberFile, v.projectFile);
-    assert.equal(v.rememberLabel, "~/code/repo/AGENTS.md");
+    assert.equal(v.projectLabel, "~/code/repo/AGENTS.md");
+    assert.equal(v.claudeFile, null, "the CLAUDE.md beside AGENTS.md is not read anyway");
   });
 
   it("stops at the project root for a folder outside home, and offers to create AGENTS.md", () => {
@@ -64,7 +70,8 @@ describe("the instruction files OpenCode reads", () => {
       "project AGENTS.md missing",
     ]);
     assert.equal(v.projectExists, false);
-    assert.equal(v.rememberFile, "/srv/repo/AGENTS.md");
+    assert.equal(v.projectFile, "/srv/repo/AGENTS.md");
+    assert.equal(v.claudeFile, null);
   });
 
   it("does not read the Claude global file when the global AGENTS.md exists", () => {
@@ -88,19 +95,28 @@ describe("the instruction files OpenCode reads", () => {
     assert.equal(v.globalExists, true);
   });
 
-  it("adds to the root's CLAUDE.md while the project has no AGENTS.md", () => {
-    const v = instructionView({
-      folder: "/home/me/repo",
-      projectDir: "/home/me/repo",
-      home: "/home/me",
-      configDir: "/home/me/.config/opencode",
-      platform: "linux",
-      instructions: [],
-      isFile: files("/home/me/repo/CLAUDE.md"),
-    });
-    assert.equal(v.rememberFile, "/home/me/repo/CLAUDE.md");
-    assert.equal(v.rememberLabel, "CLAUDE.md");
-    assert.ok(brief(v.rows).includes("project AGENTS.md missing"));
+  it("names the root's CLAUDE.md that a new AGENTS.md would stop OpenCode reading", () => {
+    const at = (...list: string[]) =>
+      instructionView({
+        folder: "/home/me/repo/app",
+        projectDir: "/home/me/repo",
+        home: "/home/me",
+        configDir: "/home/me/.config/opencode",
+        platform: "linux",
+        instructions: [],
+        isFile: files(...list),
+      });
+    const v = at("/home/me/repo/CLAUDE.md");
+    assert.equal(v.projectFile, "/home/me/repo/AGENTS.md", "Remember this always writes AGENTS.md");
+    assert.equal(v.projectLabel, "~/repo/AGENTS.md");
+    assert.equal(v.claudeFile, "/home/me/repo/CLAUDE.md");
+    const missing = v.rows.find((r) => r.path === v.projectFile);
+    assert.equal(missing?.state, "missing");
+    assert.match(missing?.note ?? "", /stop reading CLAUDE\.md here; Create can copy/);
+    // A CLAUDE.md below the root stays read: the new AGENTS.md goes to the root.
+    const below = at("/home/me/repo/app/CLAUDE.md");
+    assert.equal(below.claudeFile, null);
+    assert.equal(below.rows.find((r) => r.path === below.projectFile)?.note, undefined);
   });
 
   it("reads only the global file for a folder outside OpenCode's project", () => {
@@ -116,6 +132,17 @@ describe("the instruction files OpenCode reads", () => {
     assert.deepEqual(brief(v.rows), ["global ~/.config/opencode/AGENTS.md missing"]);
     assert.match(v.notes[0], /outside OpenCode's project/);
     assert.equal(v.projectFile, "/tmp/x/AGENTS.md");
+    // Outside the project no CLAUDE.md is read, so a new AGENTS.md hides none.
+    const claude = instructionView({
+      folder: "/tmp/x",
+      projectDir: "/srv/repo",
+      home: "/home/me",
+      configDir: "/home/me/.config/opencode",
+      platform: "linux",
+      instructions: [],
+      isFile: files("/tmp/x/CLAUDE.md"),
+    });
+    assert.equal(claude.claudeFile, null);
   });
 
   it("lists the config's instructions: found up to the project root, ~/, absolute, globs and URLs", () => {
@@ -180,6 +207,21 @@ describe("Remember this", () => {
     assert.equal(appendBullet(null, "Use pnpm"), `${AGENTS_TEMPLATE}- Use pnpm\n`);
     assert.equal(appendBullet("\n\n", "x"), `${AGENTS_TEMPLATE}- x\n`);
     assert.ok(AGENTS_TEMPLATE.endsWith("## Notes\n\n"));
+  });
+
+  it("starts a new AGENTS.md from a copy of CLAUDE.md, keeping its line endings and BOM", () => {
+    assert.equal(startAgentsFile(null), AGENTS_TEMPLATE);
+    assert.equal(startAgentsFile(" \n"), AGENTS_TEMPLATE, "an empty CLAUDE.md gives the template");
+    assert.equal(startAgentsFile("﻿"), AGENTS_TEMPLATE);
+    assert.equal(
+      appendBullet(startAgentsFile("# Claude\n- use tabs\n"), "Use pnpm"),
+      "# Claude\n- use tabs\n- Use pnpm\n",
+    );
+    assert.equal(
+      appendBullet(startAgentsFile("﻿# Claude\r\n- use tabs"), "Use pnpm"),
+      "﻿# Claude\r\n- use tabs\r\n- Use pnpm\r\n",
+    );
+    assert.equal(appendBullet(startAgentsFile(null), "x"), appendBullet(null, "x"));
   });
 
   it("accepts the panel's messages and nothing else", () => {
