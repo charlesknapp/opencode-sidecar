@@ -185,7 +185,10 @@ export class MockClient implements OpenCodeClient {
     this.record("resolveRevert", id, action);
     for (const x of this.sessions) if (x.id === id) x.revert = null;
   }
+  /** When set, `getSession` waits for it (to test what happens while a session loads). */
+  sessionGate: Promise<void> | null = null;
   async getSession(id: string): Promise<SessionSummary> {
+    if (this.sessionGate) await this.sessionGate;
     const s = this.sessions.find((x) => x.id === id);
     if (!s) throw new OpenCodeHttpError(404, "NotFound", "Session not found");
     return s;

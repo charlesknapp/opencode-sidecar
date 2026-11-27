@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A model or variant you pick is no longer undone a moment later.** OpenCode confirms each model or agent switch with an event, and a late or out-of-order confirmation of an earlier switch could put the variant back to the model default. A reload of the open session that was still under way (for example after the connection to OpenCode came back) could also restore the session's old model. Your latest choice now wins, and goes to the session.
+
 ## 0.1.7 (2026-11-26)
 
 - **Type `/` for commands.** A `/` at the start of the message opens OpenCode's commands above the box, filtered as you type. Tab or Enter completes one; a command typed out in full still runs on Enter. ([#1](https://github.com/charlesknapp/opencode-sidecar/issues/1))

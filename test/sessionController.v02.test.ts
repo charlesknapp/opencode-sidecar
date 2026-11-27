@@ -402,6 +402,87 @@ describe("model variants", () => {
     await c.selectVariant(null);
     assert.deepEqual(client.callsTo("switchModel").at(-1)?.args[1], { providerID: "vast", id: "qwen" });
   });
+
+  it("ignores OpenCode's late echo of an earlier model switch", async () => {
+    const { c, client } = await running();
+    await c.selectModel("vast/qwen");
+    await c.selectVariant("high");
+    // OpenCode echoes each switch as an event; the first one (no variant, stored as
+    // "default") can arrive after the variant was chosen and must not undo it.
+    const selected = (variant: string) =>
+      raw("session.model.selected", {
+        sessionID: "ses_1",
+        model: { providerID: "vast", id: "qwen", variant },
+      });
+    c.handleRawEvent(selected("default"));
+    assert.equal(c.selectedVariant, "high");
+    await c.newSession();
+    c.handleRawEvent(selected("high"));
+    await c.send("next", []);
+    assert.deepEqual((client.callsTo("createSession").at(-1)?.args[0] as { model: unknown }).model, {
+      providerID: "vast",
+      id: "qwen",
+      variant: "high",
+    });
+  });
+
+  it("ignores the earlier echo when OpenCode sends the echoes out of order", async () => {
+    const { c } = await running();
+    await c.selectModel("vast/qwen");
+    await c.selectVariant("high");
+    const selected = (variant?: string) =>
+      raw("session.model.selected", {
+        sessionID: "ses_1",
+        model: { providerID: "vast", id: "qwen", ...(variant ? { variant } : {}) },
+      });
+    c.handleRawEvent(selected("high"));
+    // OpenCode's echo of a switch without a variant carries none.
+    c.handleRawEvent(selected());
+    assert.equal(c.selectedVariant, "high");
+  });
+
+  it("keeps a model and variant chosen while a session was loading, and sends them to it", async () => {
+    const { c, client } = await running();
+    client.sessions[0] = { ...client.sessions[0], modelKey: "opencode-go/kimi", variant: null };
+    let release!: () => void;
+    client.sessionGate = new Promise((r) => (release = r));
+    // A reload of the open session (after the event stream reconnected, say) is under way...
+    const reopening = c.openSession("ses_1");
+    await c.selectModel("vast/qwen");
+    await c.selectVariant("high");
+    client.sessionGate = null;
+    release();
+    await reopening;
+    // ...and finishes with the session's own model (opencode-go/kimi), which must not win.
+    assert.equal(c.selectedModel, "vast/qwen");
+    assert.equal(c.selectedVariant, "high");
+    await tick();
+    assert.deepEqual(client.callsTo("switchModel").at(-1)?.args, [
+      "ses_1",
+      { providerID: "vast", id: "qwen", variant: "high" },
+    ]);
+  });
+
+  it("still follows a model or variant chosen in another client", async () => {
+    const { c } = await running();
+    await c.selectModel("vast/qwen");
+    await c.selectVariant("high");
+    const selected = (variant: string) =>
+      raw("session.model.selected", {
+        sessionID: "ses_1",
+        model: { providerID: "vast", id: "qwen", variant },
+      });
+    c.handleRawEvent(selected("default"));
+    c.handleRawEvent(selected("high"));
+    // Both echoes seen; a later change is someone else's.
+    c.handleRawEvent(selected("low"));
+    assert.equal(c.selectedVariant, "low");
+    c.handleRawEvent(
+      raw("session.model.selected", { sessionID: "ses_1", model: { providerID: "opencode-go", id: "kimi" } }),
+    );
+    assert.equal(c.selectedModel, "opencode-go/kimi");
+    assert.equal(c.selectedVariant, null);
+  });
 });
 
 describe("agent-only changes", () => {

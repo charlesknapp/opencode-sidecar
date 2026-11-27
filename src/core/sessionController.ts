@@ -661,6 +661,7 @@ export class SessionController {
   /** Continues an existing OpenCode session: replays history, pending permissions, forms and queue. */
   async openSession(id: string): Promise<boolean> {
     const token = ++this.loadToken;
+    const selection = this.selectionVersion;
     try {
       const [summary, messages, rootPermissions, rootForms, inbox, active, subagents] = await Promise.all([
         this.client.getSession(id),
@@ -708,14 +709,20 @@ export class SessionController {
       this.task = deriveTaskFromHistory(messages, this.busy);
       for (const item of inbox) this.pendingStartsTask.set(item.id, item.delivery === "queue");
       if (this.busy) this.budget.startTask(this.sessionCost);
-      if (summary.modelKey && this.models?.some((m) => m.key === summary.modelKey)) {
-        this.selectedModel = summary.modelKey;
-        const model = this.models.find((m) => m.key === summary.modelKey);
-        this.selectedVariant =
-          summary.variant && model?.variants.includes(summary.variant) ? summary.variant : null;
+      if (selection !== this.selectionVersion) {
+        // A model, variant or agent chosen while the session loaded (a reload after the event
+        // stream reconnected, say) is the user's latest choice: it goes to the session instead.
+        void this.pushSelection(summary);
+      } else {
+        if (summary.modelKey && this.models?.some((m) => m.key === summary.modelKey)) {
+          this.selectedModel = summary.modelKey;
+          const model = this.models.find((m) => m.key === summary.modelKey);
+          this.selectedVariant =
+            summary.variant && model?.variants.includes(summary.variant) ? summary.variant : null;
+        }
+        if (summary.agent && this.agents?.some((a) => a.id === summary.agent))
+          this.selectedAgent = summary.agent;
       }
-      if (summary.agent && this.agents?.some((a) => a.id === summary.agent))
-        this.selectedAgent = summary.agent;
       if (this.directory) await this.store.update(this.key("session"), id);
       this.sink.onTranscriptReset(this.transcript.items);
       this.sink.onStateChanged();
@@ -725,6 +732,23 @@ export class SessionController {
       this.log.error(`Opening session ${id} failed`, e);
       this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not open the session") }]);
       return false;
+    }
+  }
+
+  /** Sends the selected model, variant and agent to the open session where they differ from `summary`. */
+  private async pushSelection(summary: SessionSummary): Promise<void> {
+    const variant = (v: string | null) => (v && v !== "default" ? v : null);
+    if (summary.modelKey !== this.selectedModel || variant(summary.variant) !== this.selectedVariant)
+      await this.pushModel("Model unavailable");
+    if (this.selectedAgent && summary.agent !== this.selectedAgent && this.current) {
+      const echo = SessionController.echoKey(this.current.id, { agent: this.selectedAgent });
+      this.expectEcho(echo);
+      try {
+        await this.client.switchAgent(this.current.id, this.selectedAgent);
+      } catch (e) {
+        this.dropEcho(echo);
+        this.log.error("Switching agent failed", e);
+      }
     }
   }
 
@@ -856,12 +880,66 @@ export class SessionController {
     await this.pushModel("Could not switch the model variant");
   }
 
+  /**
+   * Selections Sidecar sent that OpenCode has not echoed back yet (`session.model.selected`,
+   * `session.agent.selected`). An echo can arrive after a newer local choice; it must not undo it.
+   */
+  private selectionEchoes: string[] = [];
+  /** The last selection Sidecar sent, per session and kind (model or agent). */
+  private latestSelection = new Map<string, string>();
+
+  private static echoKey(
+    sessionID: string,
+    sel: { agent?: string; modelKey?: string; variant?: string | null },
+  ): string {
+    // OpenCode records "no variant" as `default`.
+    if (sel.agent) return `${sessionID} agent ${sel.agent}`;
+    const variant = sel.variant && sel.variant !== "default" ? sel.variant : "";
+    return `${sessionID} model ${sel.modelKey ?? ""}#${variant}`;
+  }
+
+  private static echoKind(key: string): string {
+    return key.slice(0, key.indexOf(" ", key.indexOf(" ") + 1));
+  }
+
+  private expectEcho(key: string): void {
+    this.selectionEchoes.push(key);
+    this.latestSelection.set(SessionController.echoKind(key), key);
+    // Echoes lost with a dropped event stream must not pile up.
+    if (this.selectionEchoes.length > 20) this.selectionEchoes.shift();
+  }
+
+  /** Forgets a selection OpenCode refused (it will not be echoed). */
+  private dropEcho(key: string): void {
+    const at = this.selectionEchoes.lastIndexOf(key);
+    if (at >= 0) this.selectionEchoes.splice(at, 1);
+  }
+
+  /**
+   * Whether a selection event only echoes a change Sidecar made before its latest one.
+   * Echoes can arrive in any order, so the latest choice is kept apart from the list.
+   */
+  private staleEcho(sessionID: string, sel: { agent?: string; modelKey?: string; variant?: string | null }) {
+    const key = SessionController.echoKey(sessionID, sel);
+    const at = this.selectionEchoes.indexOf(key);
+    if (at < 0) return false;
+    this.selectionEchoes.splice(at, 1);
+    return this.latestSelection.get(SessionController.echoKind(key)) !== key;
+  }
+
   private async pushModel(failure: string): Promise<void> {
     const ref = this.modelRef();
     if (!this.current || !ref) return;
+    const echo = SessionController.echoKey(this.current.id, {
+      modelKey: `${ref.providerID}/${ref.id}`,
+      variant: ref.variant,
+    });
+    // Recorded before the request: OpenCode can publish the event before it answers.
+    this.expectEcho(echo);
     try {
       await this.client.switchModel(this.current.id, ref);
     } catch (e) {
+      this.dropEcho(echo);
       this.log.error("Switching model failed", e);
       this.emit([{ type: "notice", level: "error", text: friendlyError(e, failure) }]);
     }
@@ -874,9 +952,12 @@ export class SessionController {
     if (this.directory) await this.store.update(this.key("agent"), id);
     this.sink.onStateChanged();
     if (this.current) {
+      const echo = SessionController.echoKey(this.current.id, { agent: id });
+      this.expectEcho(echo);
       try {
         await this.client.switchAgent(this.current.id, id);
       } catch (e) {
+        this.dropEcho(echo);
         this.log.error("Switching agent failed", e);
         this.emit([{ type: "notice", level: "error", text: friendlyError(e, "Could not switch agent") }]);
       }
@@ -1576,6 +1657,7 @@ export class SessionController {
         break;
       case "session.selection":
         // Follow an agent or model chosen in another client (the TUI, another window).
+        if (this.current && this.staleEcho(this.current.id, ev)) break;
         if (ev.agent && this.agents?.some((a) => a.id === ev.agent)) this.selectedAgent = ev.agent;
         if (ev.modelKey && this.models?.some((m) => m.key === ev.modelKey)) {
           this.selectedModel = ev.modelKey;
