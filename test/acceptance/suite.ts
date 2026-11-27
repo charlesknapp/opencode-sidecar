@@ -28,6 +28,7 @@ interface TestApi {
   statusBar(): { text: string; tooltip: string; command: unknown };
   signInState(): string;
   focusPending(): boolean;
+  setupReport(): Promise<{ markdown: string; level: string }>;
 }
 
 /**
@@ -418,6 +419,56 @@ async function pastedText(api: TestApi): Promise<void> {
   await backgroundSessions(api);
   await approvalModes(api);
   await usageAndCosts(api);
+  await providerSetup(api);
+}
+
+// ============================================================ providers and setup check
+
+/**
+ * Read-only: the Providers panel lists the scenario model's provider with its models, a run
+ * that fails on a model OpenCode does not have gets Choose another model and Re-authenticate,
+ * and the setup check reaches the service. Nothing is connected, changed or removed.
+ */
+async function providerSetup(api: TestApi): Promise<void> {
+  const c = api.controller()!;
+  const view = await c.providersView();
+  const provider = MODEL.split("/")[0];
+  const row = view.connected.find((r) => r.id === provider || r.name.toLowerCase().includes(provider));
+  check(
+    "Providers panel: the model's provider is connected, with its models",
+    !!row && row.state !== "needs-auth" && row.models > 0,
+    JSON.stringify(row),
+  );
+  check(
+    "Providers panel: every other provider can be searched",
+    view.available.length > 50,
+    String(view.available.length),
+  );
+  check("Providers panel: no settings or keys", !/apiKey|"key"/.test(JSON.stringify(view)));
+  await api.handle({ type: "loadProviders" });
+  // The payload OpenCode 2.4.2 sends for a model it does not have (no model is called).
+  const sid = c.current?.id;
+  if (sid) {
+    const mark = items(api).length;
+    c.handleRawEvent({
+      id: "evt_acceptance",
+      created: Date.now(),
+      type: "session.execution.failed",
+      data: { sessionID: sid, error: { type: "provider.no-route", message: `Model unavailable: ${MODEL}` } },
+    });
+    const card = items(api)
+      .slice(mark)
+      .find((i): i is Extract<TranscriptItem, { kind: "error" }> => i.kind === "error");
+    check(
+      "Error card: Choose another model and Re-authenticate the provider",
+      !!card && card.actions.includes("changeModel") && card.actions.includes("reauth") && !!card.provider,
+      JSON.stringify(card),
+    );
+  }
+  const report = await api.setupReport();
+  const svc = JSON.parse(fs.readFileSync(serviceFilePath(), "utf8")) as { password?: string };
+  check("Setup check reaches the service", /Reachable: OpenCode/.test(report.markdown), report.level);
+  check("Setup check holds no password", !svc.password || !report.markdown.includes(svc.password));
 }
 
 // ============================================================ usage and costs

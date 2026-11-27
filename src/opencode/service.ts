@@ -208,15 +208,53 @@ export function startService(
   executable: string,
   timeoutMs = 60_000,
 ): Promise<{ ok: boolean; output: string }> {
+  return runCli(executable, ["service", "start"], timeoutMs);
+}
+
+/**
+ * How to run the CLI. npm installs it on Windows as `opencode.cmd`, which Node cannot start
+ * directly (spawn EINVAL), so a command script runs through cmd.exe with its path and
+ * arguments quoted.
+ */
+export function cliInvocation(
+  executable: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+  comspec = process.env.ComSpec,
+): { file: string; args: string[]; verbatim: boolean } {
+  if (platform !== "win32" || !/\.(cmd|bat)$/i.test(executable))
+    return { file: executable, args, verbatim: false };
+  const line = [executable, ...args].map((a) => `"${a.replace(/"/g, '""')}"`).join(" ");
+  return { file: comspec || "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], verbatim: true };
+}
+
+export function runCli(
+  executable: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ ok: boolean; output: string }> {
+  const run = cliInvocation(executable, args);
   return new Promise((resolve) => {
-    execFile(
-      executable,
-      ["service", "start"],
-      { timeout: timeoutMs, windowsHide: true },
-      (error, stdout, stderr) => {
-        const output = `${stdout ?? ""}${stderr ?? ""}`.trim();
-        resolve({ ok: !error, output: error ? `${error.message}\n${output}`.trim() : output });
-      },
-    );
+    try {
+      execFile(
+        run.file,
+        run.args,
+        { timeout: timeoutMs, windowsHide: true, windowsVerbatimArguments: run.verbatim },
+        (error, stdout, stderr) => {
+          const output = `${stdout ?? ""}${stderr ?? ""}`.trim();
+          resolve({ ok: !error, output: error ? `${error.message}\n${output}`.trim() : output });
+        },
+      );
+    } catch (e) {
+      // Thrown before the process starts (EINVAL, EACCES): reported like a failed run.
+      resolve({ ok: false, output: e instanceof Error ? e.message : String(e) });
+    }
   });
+}
+
+/** The version `opencode --version` prints ("opencode v2.4.2" → "2.4.2"); null when it fails. */
+export async function cliVersion(executable: string): Promise<{ version: string | null; output: string }> {
+  const r = await runCli(executable, ["--version"], 10_000);
+  const m = r.ok ? /\d+\.\d+\.\d+[\w.+-]*/.exec(r.output) : null;
+  return { version: m ? m[0] : null, output: r.output };
 }

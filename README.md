@@ -26,6 +26,8 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 | Several sessions at once                   | A strip of open sessions with their status; a notice when one you're not looking at needs you       |
 | Prompts and delivery                       | Send, **steer** the running task or **queue** the next message; switch, edit or remove pending ones |
 | Agents and models                          | Agent switch (Shift+Tab), models by provider, variants, defaults per workspace                      |
+| Providers                                  | Connect, re-authenticate or disconnect through OpenCode's sign-in, with each one's state            |
+| Setup check                                | One report: the opencode program, service, sign-in, models, providers and Windows PATH              |
 | Tools                                      | A timeline row per call: shell IN/OUT, reads, edits with diffs, writes, searches, and the rest      |
 | Subagents                                  | Live rows with prompt, activity, Stop and Open; their requests and reports come back to you         |
 | Permissions                                | Yes, Always allow (when offered), No, or No with an instruction for the agent                       |
@@ -104,6 +106,8 @@ On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctr
 
 - **Approval modes.** The badge in the header (**Ask**, **Balanced**, **Auto**, or **Default** with no Sidecar rules) opens a menu with one line per mode. **Ask** asks before every edit, command and web request. **Balanced** lets reads, searches and edits in the folder run, and asks for commands, web requests and files outside the folder. **Auto** lets everything run but blocks destructive commands (`rm -rf`, `git push --force`, `git reset --hard`, `git clean -f`, `Remove-Item -Recurse`, `rmdir /s`); switching to it asks once, with _Don't ask again_. **Apply to** picks this session or this folder (new sessions in the folder start in the mode). Modes are OpenCode permission rules on the session, after the agent's own: an agent's blocks stay (Plan still never edits), as do its exceptions such as asking before reading `.env` files, and subagents started afterwards inherit them. The badge reads the rules back from OpenCode, so a change made in another client shows too. OpenCode's config files are never changed.
 - **Permission rules.** **Permission rules…** (in the badge's menu and the **/** palette) lists the session's rules, the mode's read-only and your own (action, pattern and Allow, Ask or Deny) to add, edit or delete, and the folder's _always allowed_ rules OpenCode saved, to edit or remove. Patterns are OpenCode's: `*` matches anything and `npm test *` also matches `npm test`. In a permission request, **Always allow commands like this…** suggests a pattern (`npm test -- --grep foo` → `npm test *`, `Get-ChildItem -Path src` → `Get-ChildItem *`), shows whether it covers the request, and saves it for the session or, when OpenCode offers _always_, for the folder.
+- **Providers.** **/ → Providers…** (or **Manage providers…** under the model list) lists the providers OpenCode is connected to: connected, needs sign-in or the last error in plain English, how each is connected (OAuth, API key, an environment variable or OpenCode's config; never the secret) and how many models it offers. **Connect** searches every provider OpenCode knows; **Re-authenticate** runs OpenCode's own sign-in again: the browser page OpenCode returns, a masked box whose key goes straight to OpenCode, or OpenCode's terminal flow. **Disconnect** asks first. **Reload config** has OpenCode read its config again, for example after adding an OpenAI-compatible endpoint to `opencode.json` (OpenCode only takes custom providers from its config). When a run fails because a key was rejected, a sign-in expired or the model is gone, the error card offers **Re-authenticate _Provider_** and **Choose another model**.
+- **Check OpenCode setup.** **Sidecar: Check OpenCode Setup** (also in the `/` palette and the Providers panel) opens one Markdown report, with **Copy Report**: the `opencode` program and its version, the background service (registered, reachable, the same process and version), sign-in, the default model, providers with problems, and on Windows PATH and the folder's drive letter. A local server such as Ollama or LM Studio gets a warning when a model's context is under 16k tokens, too small for OpenCode's instructions and tools (Ollama's default `num_ctx` is 2048–4096).
 - **Jump to latest.** Scroll up while the agent works and a **↓ Jump to latest** pill (with how many steps are new) takes you back to the end.
 - **Mentions.** Type `@` and pick from the list, or keep typing to search: files and folders (found by OpenCode), subagents such as `@explore`, and OpenCode's skills. OpenCode reads mentioned files itself, and a mentioned subagent or skill is passed to the agent as such.
 - **Pasted text.** A paste of more than 8 lines or 800 characters becomes a chip, **Pasted text #1 · 120 lines · ~3.1k tokens**, with `[Pasted text #1]` in the box where you pasted it. Click the chip to read it, the pencil to put the text back in the box, or × to remove it. It is sent exactly as pasted (line endings as `\n`, as in the box), in its place, and the prompt in the chat folds it into a chip you can open. Chips survive the view being hidden or reloaded, and ↑ brings a prompt back with its chips.
@@ -127,15 +131,17 @@ On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctr
 
 ### Commands
 
-| Command                      | What it does                                                     |
-| ---------------------------- | ---------------------------------------------------------------- |
-| Sidecar: Focus Chat          | Reveal the chat and focus the message box                        |
-| Sidecar: Refresh Connection  | Re-check OpenCode, account, providers, models and agents         |
-| Sidecar: Sign in to OpenCode | Run OpenCode's own sign-in in a terminal                         |
-| Sidecar: New Session         | Start a fresh conversation                                       |
-| Sidecar: Add Current File    | Attach the active editor's file                                  |
-| Sidecar: Add Selection       | Attach the selected lines; also in the editor's right-click menu |
-| Sidecar: Stop                | Cancel the running task                                          |
+| Command                       | What it does                                                     |
+| ----------------------------- | ---------------------------------------------------------------- |
+| Sidecar: Focus Chat           | Reveal the chat and focus the message box                        |
+| Sidecar: Refresh Connection   | Re-check OpenCode, account, providers, models and agents         |
+| Sidecar: Sign in to OpenCode  | Run OpenCode's own sign-in in a terminal                         |
+| Sidecar: Manage Providers     | Open the Providers panel                                         |
+| Sidecar: Check OpenCode Setup | Check the program, service, sign-in, models and providers        |
+| Sidecar: New Session          | Start a fresh conversation                                       |
+| Sidecar: Add Current File     | Attach the active editor's file                                  |
+| Sidecar: Add Selection        | Attach the selected lines; also in the editor's right-click menu |
+| Sidecar: Stop                 | Cancel the running task                                          |
 
 ### Settings
 

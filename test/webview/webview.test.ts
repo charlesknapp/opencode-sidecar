@@ -9,7 +9,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import type { Browser, Page } from "puppeteer-core" with { "resolution-mode": "import" };
-import type { AsideTurn, AsideView, StripTab, SubagentView, TranscriptItem } from "../../src/shared/model";
+import type {
+  AsideTurn,
+  AsideView,
+  ProvidersView,
+  StripTab,
+  SubagentView,
+  TranscriptItem,
+} from "../../src/shared/model";
 import type { HostMessage, ViewState } from "../../src/shared/protocol";
 
 const ROOT = path.resolve(__dirname, "../../..");
@@ -2370,6 +2377,265 @@ describe(
       assert.ok(await lastSent("retryLast"));
     });
 
+    it("an auth error card offers Re-authenticate <Provider> and Choose another model", async () => {
+      await host({
+        type: "transcript",
+        items: [
+          {
+            kind: "error",
+            id: "error:1",
+            title: "GPT-5 (OpenAI) rejected the credentials. Sign in again, or choose another model.",
+            detail: "Incorrect API key provided",
+            actions: ["reauth", "changeModel", "retry"],
+            provider: { id: "openai", name: "OpenAI" },
+          },
+          {
+            kind: "error",
+            id: "error:2",
+            title: "The request failed.",
+            detail: "",
+            actions: ["reauth", "changeModel"],
+          },
+        ],
+      });
+      const labels = await page.$$eval('[data-testid="error-card"]', (cards) =>
+        cards.map((c) => Array.from(c.querySelectorAll("button")).map((b) => b.textContent)),
+      );
+      assert.deepEqual(labels, [
+        ["Re-authenticate OpenAI", "Choose another model", "Retry"],
+        ["Choose another model"],
+      ]);
+      await clearSent();
+      await page.click('[data-testid="error-reauth"]');
+      assert.deepEqual(await sent(), [{ type: "providerReauth", id: "openai" }]);
+      await page.click('[data-testid="error-change-model"]');
+      assert.ok(await lastSent("focusModelPicker"));
+      // Keyboard: the buttons are reachable with Tab and work with Enter.
+      await page.focus('[data-testid="error-reauth"]');
+      await clearSent();
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await sent(), [{ type: "providerReauth", id: "openai" }]);
+    });
+
+    const PROVIDERS: ProvidersView = {
+      connected: [
+        {
+          id: "github-copilot",
+          name: "GitHub Copilot",
+          state: "needs-auth",
+          via: "OAuth",
+          error: "Your GitHub sign-in expired.",
+          models: 0,
+          canReauth: true,
+          canDisconnect: true,
+        },
+        {
+          id: "anthropic",
+          name: "Anthropic",
+          state: "error",
+          via: "Environment variable ANTHROPIC_API_KEY",
+          error:
+            "Claude Sonnet (Anthropic) rejected the credentials. Sign in again, or choose another model.",
+          models: 12,
+          canReauth: true,
+          canDisconnect: false,
+        },
+        {
+          id: "ollama",
+          name: "Ollama",
+          state: "connected",
+          via: "OpenCode config",
+          error: null,
+          models: 1,
+          canReauth: false,
+          canDisconnect: false,
+          local: true,
+        },
+        {
+          id: "openai",
+          name: "OpenAI",
+          state: "connected",
+          via: "API key",
+          error: null,
+          models: 30,
+          canReauth: true,
+          canDisconnect: true,
+        },
+      ],
+      available: [
+        { id: "google", name: "Google", methods: "API key", popular: true },
+        { id: "openrouter", name: "OpenRouter", methods: "API key", popular: true },
+        ...Array.from({ length: 60 }, (_, i) => ({ id: `acme-${i}`, name: `Acme ${i}`, methods: "API key" })),
+        { id: "zhipuai", name: "Zhipu AI", methods: "API key" },
+      ],
+      busy: null,
+    };
+    const rowsOf = (testid: string) =>
+      page.$$eval(`[data-testid="providers-panel"] [data-testid="${testid}"]`, (els) =>
+        els.map((e) => (e as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
+      );
+
+    it("the Providers panel opens from the / menu and lists connected providers with their state", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await clearSent();
+      await page.click('[data-testid="providers"]');
+      assert.deepEqual(await sent(), [{ type: "loadProviders" }]);
+      assert.match(await text('[data-testid="providers-panel"]'), /Loading…/);
+      await host({ type: "providers", view: PROVIDERS });
+      assert.deepEqual(await rowsOf("provider-row"), [
+        "GitHub Copilot Needs sign-in OAuth · 0 models Your GitHub sign-in expired. Sign in again Disconnect",
+        "Anthropic Error Environment variable ANTHROPIC_API_KEY · 12 models Claude Sonnet (Anthropic) rejected the credentials. Sign in again, or choose another model. Re-authenticate",
+        "Ollama Connected OpenCode config · 1 model · on this machine",
+        "OpenAI Connected API key · 30 models Re-authenticate Disconnect",
+      ]);
+      assert.match(await text('[data-testid="providers-panel"]'), /Sidecar never sees or keeps them/);
+      assert.equal(
+        await page.$$eval('[data-testid="providers-panel"] input[type="password"]', (e) => e.length),
+        0,
+      );
+      // Without a query, the popular ones; the note says how many there are.
+      assert.deepEqual(await rowsOf("provider-choice"), [
+        "Google API key Connect",
+        "OpenRouter API key Connect",
+      ]);
+      assert.match(await text('[data-testid="providers-more"]'), /Search all 63/);
+      await page.click('[data-testid="providers-close"]');
+      assert.equal(await page.$('[data-testid="providers-panel"]'), null);
+    });
+
+    it("the Providers panel searches every provider and connects one", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="providers"]');
+      await host({ type: "providers", view: PROVIDERS });
+      assert.equal(
+        await page.evaluate(() => (document.activeElement as HTMLElement).dataset.testid),
+        "providers-search",
+        "the search has the focus",
+      );
+      await page.keyboard.type("zhip");
+      assert.deepEqual(await rowsOf("provider-choice"), ["Zhipu AI API key Connect"]);
+      await clearSent();
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await sent(), [{ type: "providerConnect", id: "zhipuai" }]);
+      // A broad query shows at most 40 and says how many more match.
+      await page.click('[data-testid="providers-search"]', { count: 3 });
+      await page.keyboard.type("acme");
+      assert.equal((await rowsOf("provider-choice")).length, 40);
+      assert.match(await text('[data-testid="providers-more"]'), /20 more match/);
+      await page.click('[data-testid="providers-search"]', { count: 3 });
+      await page.keyboard.type("nothing like it");
+      assert.match(await text('[data-testid="providers-more"]'), /No provider matches “nothing like it”/);
+      // The list redrawn from the host keeps what was typed.
+      await host({ type: "providers", view: PROVIDERS });
+      assert.equal(
+        await page.$eval('[data-testid="providers-search"]', (i) => (i as HTMLInputElement).value),
+        "nothing like it",
+      );
+      // Escape clears the search first, then closes the panel.
+      await page.keyboard.press("Escape");
+      assert.equal(
+        await page.$eval('[data-testid="providers-search"]', (i) => (i as HTMLInputElement).value),
+        "",
+      );
+      await page.keyboard.press("Escape");
+      assert.equal(await page.$('[data-testid="providers-panel"]'), null);
+    });
+
+    it("the Providers panel re-authenticates, disconnects after confirming, reloads and checks setup", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await page.click('[data-testid="providers"]');
+      await host({ type: "providers", view: PROVIDERS });
+      await clearSent();
+      await page.click('[data-id="openai"] [data-testid="provider-reauth"]');
+      assert.deepEqual(await sent(), [{ type: "providerReauth", id: "openai" }]);
+      await clearSent();
+      await page.click('[data-id="openai"] [data-testid="provider-disconnect"]');
+      assert.match(await text('[data-testid="dialog"]'), /Disconnect OpenAI\?/);
+      await page.keyboard.press("Escape");
+      assert.deepEqual(await sent(), [], "cancelled: nothing sent");
+      assert.ok(await page.$('[data-testid="providers-panel"]'), "Escape in the dialog keeps the panel");
+      await page.click('[data-id="openai"] [data-testid="provider-disconnect"]');
+      await page.click('[data-testid="provider-disconnect-confirm"]');
+      assert.deepEqual(await sent(), [{ type: "providerDisconnect", id: "openai" }]);
+      await clearSent();
+      await page.click('[data-testid="providers-reload"]');
+      await page.click('[data-testid="providers-check"]');
+      assert.deepEqual(await sent(), [{ type: "reloadProviders" }, { type: "checkSetup" }]);
+      // While a sign-in runs, the panel says what it waits for and the actions wait.
+      await host({
+        type: "providers",
+        view: { ...PROVIDERS, busy: { id: "openai", text: "Enter code ABCD-1234" } },
+      });
+      assert.equal(await text('[data-testid="providers-busy"]'), "Enter code ABCD-1234");
+      assert.equal(
+        await page.$eval(
+          '[data-id="openai"] [data-testid="provider-reauth"]',
+          (b) => (b as HTMLButtonElement).disabled,
+        ),
+        true,
+      );
+      assert.equal(
+        await page.$eval('[data-testid="provider-connect"]', (b) => (b as HTMLButtonElement).disabled),
+        true,
+      );
+      await host({ type: "providers", view: PROVIDERS });
+      assert.equal(
+        await page.$eval('[data-testid="providers-busy"]', (b) => (b as HTMLElement).hidden),
+        true,
+      );
+      // Focus stays inside the panel with Tab.
+      for (let i = 0; i < 25; i++) {
+        await page.keyboard.press("Tab");
+        assert.ok(
+          await page.evaluate(() => !!document.activeElement?.closest('[data-testid="providers-panel"]')),
+        );
+      }
+    });
+
+    it("the Providers panel shows why it could not load, and opens from the model menu and the host", async () => {
+      await page.click('[data-testid="model-pill"]');
+      await clearSent();
+      await page.click('[data-testid="manage-providers"]');
+      assert.deepEqual(await sent(), [{ type: "loadProviders" }]);
+      await host({ type: "providers", view: null, error: "OpenCode could not list them." });
+      assert.match(
+        await text('[data-testid="providers-panel"]'),
+        /Couldn't load them: OpenCode could not list them\./,
+      );
+      await page.click('[data-testid="providers-close"]');
+      await host({ type: "showProviders" });
+      assert.ok(await page.$('[data-testid="providers-panel"]'));
+      await host({ type: "providers", view: { connected: [], available: [], busy: null } });
+      assert.match(await text('[data-testid="providers-panel"]'), /No provider is connected yet/);
+    });
+
+    for (const width of [300, 520])
+      it(`the Providers panel fits ${width} px without sideways scrolling`, async () => {
+        await page.setViewport({ width, height: 700 });
+        await host({ type: "showProviders" });
+        await host({ type: "providers", view: PROVIDERS });
+        const fit = await page.$eval('[data-testid="providers-panel"]', (el) => {
+          const r = el.getBoundingClientRect();
+          const rows = Array.from(
+            el.querySelectorAll<HTMLElement>('[data-testid="provider-row"], [data-testid="provider-choice"]'),
+          );
+          return {
+            inside: r.left >= 0 && r.right <= window.innerWidth,
+            scroll: el.scrollWidth <= el.clientWidth + 1,
+            rows: rows.every((x) => x.scrollWidth <= x.clientWidth + 1),
+            doc: document.documentElement.scrollWidth <= window.innerWidth,
+          };
+        });
+        assert.deepEqual(fit, { inside: true, scroll: true, rows: true, doc: true });
+      });
+
+    it("the / menu runs the setup check", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await clearSent();
+      await page.click('[data-testid="check-setup"]');
+      assert.deepEqual(await sent(), [{ type: "checkSetup" }]);
+    });
+
     it("stays responsive with a large history and a long streaming report", async () => {
       const md = "## Section\n\n- a\n- b\n\n| x | y |\n|--|--|\n| 1 | 2 |\n\n```ts\nconst a = 1;\n```\n";
       const many: TranscriptItem[] = Array.from({ length: 400 }, (_, i) => ({
@@ -3486,8 +3752,10 @@ describe(
       assert.deepEqual(await sent(), [
         { type: "signIn" },
         { type: "openOfficial", link: "account" },
-        { type: "connectProvider" },
+        { type: "loadProviders" },
       ]);
+      assert.ok(await page.$('[data-testid="providers-panel"]'), "another provider: the Providers panel");
+      await page.keyboard.press("Escape");
       assert.equal(await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).disabled), true);
     });
 
@@ -3503,7 +3771,7 @@ describe(
       assert.match(await text('[data-testid="onboarding"]'), /could not complete the sign-in/);
     });
 
-    it("onboarding D: no models → exact guidance, Configure models / Refresh, docs links", async () => {
+    it("onboarding D: no models → exact guidance, Connect a provider / Refresh, docs links", async () => {
       await host({
         type: "state",
         state: baseState({
@@ -3520,16 +3788,17 @@ describe(
       assert.equal(await status(), "No models");
       assert.equal(await text('[data-testid="model-pill"]'), "No models — connect a provider");
       await clearSent();
-      await page.click('[data-testid="onb-provider"]');
       await page.click('[data-testid="onb-refresh"]');
       await page.click('[data-link="providers"]');
       await page.click('[data-link="go"]');
+      await page.click('[data-testid="onb-provider"]');
       assert.deepEqual(await sent(), [
-        { type: "connectProvider" },
         { type: "refreshConnection" },
         { type: "openOfficial", link: "providers" },
         { type: "openOfficial", link: "go" },
+        { type: "loadProviders" },
       ]);
+      assert.ok(await page.$('[data-testid="providers-panel"]'));
     });
 
     it("onboarding F: no folder → Open Folder; the model pill explains why it is empty", async () => {

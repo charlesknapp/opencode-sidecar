@@ -24,6 +24,13 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | Agents ✓                     | `GET /api/agent` (primary, non-hidden; with OpenCode's descriptions)                                                  |
 | Commands ✓                   | `GET /api/command`; run one with `POST /api/session/{id}/command` `{ name, text, delivery? }`                         |
 | Account and provider state ✓ | `GET /api/integration` (connection states only)                                                                       |
+| Providers panel ✓            | `GET /api/integration`, `GET /api/integration/{id}`, `GET /api/provider` (`integrationID`, `settings.baseURL` host)   |
+| Connect with a key ✓         | `POST /api/integration/{id}/connect/key` `{ key, answer? }`                                                           |
+| Connect with OAuth ✓         | `POST …/connect/oauth` `{ methodID, answer? }`, `GET …/connect/oauth/{attemptID}`, `POST …/complete` `{ code }`       |
+| Cancel an OAuth sign-in ✓    | `DELETE /api/integration/{id}/connect/oauth/{attemptID}`                                                              |
+| Connect external ✓           | `POST /api/integration/{id}/connect/external` `{ methodID, answer? }`                                                 |
+| Disconnect ✓                 | `DELETE /api/credential/{credentialID}` (each `credential` connection of the integration)                             |
+| Reload config ✓              | `POST /api/location/reload` (retried while a deleted folder is still loaded)                                          |
 | Subagents and skills ✓       | `GET /api/agent` (non-primary, for `@` mentions), `GET /api/skill`                                                    |
 | File search (`@`) ✓          | `GET /api/fs/find?query=&limit=` (ranked paths relative to the folder)                                                |
 | Sessions ✓                   | `GET /api/session?parentID=null&archived=false` (workspace list; `archived=true` for the Archived view)               |
@@ -57,6 +64,19 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | Events ✓                     | `GET /api/event` (Server-Sent Events, global for all locations)                                                       |
 
 `decision` is `once`, `always` (only when the request carries `save` patterns, shown as "always allow `npm test *`") or `reject`; a rejection can carry `message`, which OpenCode hands to the agent as what to do instead. Model records can include provider headers or bodies; the adapter drops them on arrival because they can contain secrets. `GET /api/credential` is never called.
+
+## Providers
+
+Checked against the live service (2.4.2), its OpenAPI document and its build, without connecting, changing or removing any credential:
+
+- `GET /api/integration` lists every provider OpenCode can connect (334 in 2.4.2) with its `methods` (`key`, `env` with variable `names`, `oauth`, `command` and `external` with an `id` and `label`, some with a `form` of questions, such as GitHub Copilot's deployment type with a `when` condition, or OpenCode's hidden `server`) and its `connections`: `credential` (`id`, `label`, `method`) or `env` (`name`), each with `status: { status: "needs_auth", message, url }` when it needs a new sign-in. Sidecar keeps states, methods and credential ids; labels (which can hold an email address) are dropped. An unknown id is `404 IntegrationNotFoundError`.
+- `GET /api/provider` lists the active providers with their `integrationID`; their `settings` hold the base URL and can hold an `apiKey` (the free `opencode` provider's is `public`), so the adapter keeps only whether the base URL is on this machine. Model counts per provider come from `GET /api/model`. There is no provider error state: the panel's errors are the last failed run's, and OpenCode's `needs_auth` notes.
+- A key goes in `POST …/connect/key` `{ key }` (a missing key is `400`); Sidecar asks for it in a masked input box, sends it and keeps no copy. `GET /api/credential` returns every stored secret and is never called. Disconnect sends `DELETE /api/credential/{id}` for each `credential` connection of the integration (an unknown id answers `204`); one connected through an environment variable or the config has nothing to remove.
+- OAuth: `POST …/connect/oauth` returns `{ attemptID, url, instructions, mode: auto | code, paste?, time.expires }`. Sidecar opens `url`; for `auto` it polls `GET …/oauth/{attemptID}` (`pending`, `complete`, `failed` with `message`, `expired`) every 2 s, for `code` it asks for the code and sends `POST …/complete` `{ code }`. Giving up sends `DELETE …/oauth/{attemptID}`. An unknown attempt is `404 IntegrationAttemptNotFoundError`; an unknown integration or method in `POST …/connect/oauth` is a `500 UnknownError` in 2.4.2, not the documented `404`.
+- `command` methods and questions Sidecar cannot ask in an input box (multiple choice, external pages) run `opencode auth login <id> --method <methodID>` in a VS Code terminal, like Sign in. No 2.4.2 integration has a command method.
+- `POST /api/location/reload` rebuilds every loaded folder (pending permissions and forms are cancelled; running sessions continue). It answers `503 ServiceUnavailableError` "Directory not found" while OpenCode still has a folder loaded that was deleted since, and drops that folder as it does, so Sidecar tries again (up to five times). A rebuilt folder briefly lists no models, so the catalog is reloaded once it lists them again.
+- A run on a model OpenCode does not have fails before its first step with `session.execution.failed` `{ error: { type: "provider.no-route", message: "Model unavailable: opencode/…" } }` and no step event, so Sidecar puts it down to the session's model. The build's error tags: `provider.auth`, `provider.no-route` (also "Cannot initialize …" for a provider that is not set up), `provider.free-limit`, `provider.go-limit`, `provider.quota`, `provider.budget-limit`, `provider.chatgpt-limit`, `provider.rate-limit`, `provider.transport`, `provider.timeout`, `provider.content-filter`, `provider.invalid-request` (also context overflow) and `provider.error`.
+- **Adding an OpenAI-compatible endpoint is config-only.** `POST /api/credential` stores a credential for an existing integration, `GET /api/provider` has no create or update, and `PATCH /api/experimental/config` accepts only `shell`, so a custom provider (base URL, models) is added in `opencode.json`; **Reload config** then picks it up. `POST /api/experimental/integration/wellknown` adds a `.well-known` integration source, which is not the same thing, and is not used.
 
 ### Prompt attachments and mentions
 

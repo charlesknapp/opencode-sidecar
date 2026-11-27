@@ -15,7 +15,9 @@ import {
   type TaskRecord,
   type TaskStatus,
 } from "./currentTask";
-import { classifyError, describeForLog } from "./errors";
+import { classifyError, describeForLog, type FriendlyError } from "./errors";
+import { connectIntegration, type ConnectOutcome, type ConnectUi } from "./providerConnect";
+import { deriveProviders, integrationOf, type IntegrationInfo, type ProviderEntry } from "./providers";
 import { sessionMarkdown } from "./exportMarkdown";
 import { summarizeAnswer, validateAnswer } from "./forms";
 import { reconstructSides, type FileSides } from "./patch";
@@ -54,6 +56,7 @@ import type {
   PendingInboxItem,
   PermissionDecision,
   McpServerInfo,
+  ProvidersView,
   QuotaView,
   SavedPermission,
   SessionSummary,
@@ -183,6 +186,13 @@ export class SessionController {
   agents: AgentOption[] | null = null;
   /** Account / provider connection evidence; null = not checked yet or could not be checked. */
   account: AccountStatus | null = null;
+  /** OpenCode's active providers (which integration holds each one's sign-in); null = unknown. */
+  providers: ProviderEntry[] | null = null;
+  /**
+   * The last failed run's message by integration id, for errors a new sign-in or another
+   * model fixes. Kept until the provider is connected again.
+   */
+  readonly providerErrors = new Map<string, string>();
   /** True while the model/agent catalog for the current folder is loading. */
   catalogLoading = false;
   /** The catalog for the current folder has been published at least once. */
@@ -479,6 +489,7 @@ export class SessionController {
     this.models = null;
     this.agents = null;
     this.account = null;
+    this.providers = null;
     this.archivedSessions = null;
     this.catalogLoaded = false;
     this.watch.reset(this.store.get<StripEntry[]>(this.key("strip")));
@@ -549,7 +560,7 @@ export class SessionController {
         this.log.error("Loading agents failed", e);
         agents = null;
       }
-      const [commands, mentionAgents, skills, agentRules] = await Promise.all([
+      const [commands, mentionAgents, skills, agentRules, providers] = await Promise.all([
         this.client.listCommands(dir).catch((e: unknown) => {
           this.log.warn(`Loading commands failed: ${e instanceof Error ? e.message : String(e)}`);
           return [] as CommandInfo[];
@@ -562,6 +573,7 @@ export class SessionController {
           );
           return null;
         }),
+        this.client.listProviders(dir).catch(() => null),
       ]);
       const account = await accountP;
       const quota = await this.client.usageLimits(dir).catch((e: unknown) => {
@@ -585,6 +597,7 @@ export class SessionController {
       if (agentRules && Object.keys(agentRules).length) this.agentRules = agentRules;
       if (!commands.length) this.commandsTimer = setTimeout(() => void this.refreshCommands(1), 2000);
       this.account = account;
+      if (providers) this.providers = providers;
       this.quota = quota;
       this.quotaAt = Date.now();
       this.catalogLoaded = true;
@@ -699,6 +712,110 @@ export class SessionController {
   /** The MCP servers OpenCode has for the open folder. */
   async mcpServers(): Promise<McpServerInfo[]> {
     return this.directory ? this.client.listMcpServers(this.directory) : [];
+  }
+
+  /** OpenCode's integrations for the open folder (every provider it can connect). */
+  async integrations(): Promise<IntegrationInfo[]> {
+    if (!this.directory) throw new Error("Open a folder first.");
+    return this.client.listIntegrations(this.directory);
+  }
+
+  /** The Providers panel: connected providers with their state, and the ones to connect. */
+  async providersView(busy: ProvidersView["busy"] = null): Promise<ProvidersView> {
+    const dir = this.directory;
+    if (!dir) throw new Error("Open a folder first.");
+    const [integrations, providers] = await Promise.all([
+      this.client.listIntegrations(dir),
+      this.client.listProviders(dir).catch(() => this.providers),
+    ]);
+    if (providers) this.providers = providers;
+    return deriveProviders({
+      integrations,
+      providers,
+      models: this.models,
+      errors: this.providerErrors,
+      busy,
+    });
+  }
+
+  /**
+   * Connects a provider, or signs in to it again (`reauth`), through OpenCode's own flow.
+   * A success forgets its last error and reloads the catalog. `onName` hears the provider's name.
+   */
+  async connectProvider(
+    id: string,
+    ui: ConnectUi,
+    reauth = false,
+    onName?: (name: string) => void,
+  ): Promise<ConnectOutcome> {
+    const dir = this.directory;
+    if (!dir) return { kind: "failed", message: "Open a folder first." };
+    let integration: IntegrationInfo;
+    try {
+      integration = await this.client.getIntegration(dir, id);
+    } catch (e) {
+      return { kind: "failed", message: friendlyError(e, "OpenCode could not find this provider") };
+    }
+    onName?.(integration.name);
+    const now = integration.connections.find((c) => !c.needsAuth) ?? integration.connections[0];
+    const prefer = reauth && now && now.method !== "env" ? now.method : undefined;
+    const outcome = await connectIntegration(this.client, dir, integration, ui, prefer);
+    if (outcome.kind === "connected") {
+      this.providerErrors.delete(id);
+      this.log.info(`Connected ${id} through OpenCode`);
+      await this.refreshCatalog();
+    } else if (outcome.kind === "failed") this.log.warn(`Connecting ${id} failed: ${outcome.message}`);
+    return outcome;
+  }
+
+  /** Removes a provider's stored credentials; returns how many were removed. */
+  async disconnectProvider(id: string): Promise<number> {
+    const dir = this.directory;
+    if (!dir) return 0;
+    const integration = await this.client.getIntegration(dir, id);
+    let n = 0;
+    for (const c of integration.connections) {
+      if (c.kind !== "credential" || !c.credentialID) continue;
+      await this.client.removeCredential(c.credentialID);
+      n++;
+    }
+    this.providerErrors.delete(id);
+    this.log.info(`Disconnected ${id} (${n} credential${n === 1 ? "" : "s"} removed)`);
+    await this.refreshCatalog();
+    return n;
+  }
+
+  /** Has OpenCode reload its config (a provider added to opencode.json), then the catalog. */
+  async reloadConfig(): Promise<void> {
+    await this.client.reloadConfig();
+    // A rebuilt folder briefly lists no models, as on its first load.
+    const dir = this.directory;
+    for (let i = 0; dir && i < 10; i++) {
+      if ((await this.client.listModels(dir).catch(() => [])).length) break;
+      await delay(this.timing.modelRetryMs);
+    }
+    await this.refreshCatalog();
+  }
+
+  /** OpenCode's version and process id (`GET /api/info`). */
+  serverInfo(): Promise<{ version: string; pid: number | null }> {
+    return this.client.info();
+  }
+
+  /** What the setup check needs from OpenCode for the open folder; each part null on failure. */
+  async setupFacts(): Promise<{
+    integrations: IntegrationInfo[] | null;
+    defaultModel: string | null;
+    projectID: string | null | undefined;
+  }> {
+    const dir = this.directory;
+    if (!dir) return { integrations: null, defaultModel: null, projectID: undefined };
+    const [integrations, defaultModel, projectID] = await Promise.all([
+      this.client.listIntegrations(dir).catch(() => null),
+      this.client.defaultModel(dir).catch(() => null),
+      this.client.projectId(dir).catch(() => undefined),
+    ]);
+    return { integrations, defaultModel, projectID };
   }
 
   /** The open folder's "always allow" rules, newest first. */
@@ -2596,19 +2713,26 @@ export class SessionController {
         if (!replay) this.checkBudget(this.budget.recordCost(ev.cost));
         break;
       case "session.error": {
-        const model = this.models?.find((m) => m.key === ev.modelKey);
+        // A run that fails before its first step (no such model) names no model: it was
+        // the session's.
+        const modelKey = ev.modelKey ?? this.current?.modelKey ?? null;
+        const model = this.models?.find((m) => m.key === modelKey);
+        const providerID = model?.providerID ?? modelKey?.split("/")[0] ?? null;
+        const providerName =
+          model?.providerName ?? this.providers?.find((p) => p.id === providerID)?.name ?? providerID;
         const raw = ev.error ?? { type: "unknown", message: ev.message, status: null, body: null };
-        const friendly = classifyError(raw, {
-          modelName: model?.name ?? null,
-          providerName: model?.providerName ?? null,
-        });
+        const friendly = classifyError(raw, { modelName: model?.name ?? null, providerName });
         if (!replay) {
-          this.log.error(
-            `OpenCode run failed: ${describeForLog(raw, { providerID: model?.providerID ?? ev.modelKey?.split("/")[0] ?? null, modelKey: ev.modelKey })}`,
-          );
+          this.log.error(`OpenCode run failed: ${describeForLog(raw, { providerID, modelKey })}`);
         }
+        const provider =
+          providerID && providerName
+            ? { id: integrationOf(providerID, this.providers), name: providerName }
+            : null;
+        if (provider && !replay && PROVIDER_KINDS.has(friendly.kind))
+          this.providerErrors.set(provider.id, `${friendly.title} ${friendly.detail}`.trim());
         const actions = friendly.actions.filter(
-          (a) => a !== "retry" || (!replay && this.lastPayload !== null),
+          (a) => (a !== "retry" || (!replay && this.lastPayload !== null)) && (a !== "reauth" || provider),
         );
         const replaced: UiEvent = {
           type: "error",
@@ -2616,6 +2740,7 @@ export class SessionController {
           title: friendly.title,
           detail: friendly.detail,
           actions,
+          ...(provider && actions.includes("reauth") ? { provider } : {}),
         };
         out[0] = replaced;
         break;
@@ -2856,6 +2981,9 @@ function isInputRequest(ev: UiEvent): boolean {
     ev.type === "form.resolved"
   );
 }
+
+/** Failures a new sign-in or the provider's setup fixes, remembered for the Providers panel. */
+const PROVIDER_KINDS = new Set<FriendlyError["kind"]>(["auth", "model-not-found", "provider-setup"]);
 
 /** Events after which models, providers or connections may have changed (e.g. a sign-in). */
 const CATALOG_EVENTS = new Set([

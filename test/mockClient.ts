@@ -3,10 +3,13 @@ import type {
   EventSubscription,
   FileDiffInfo,
   FoundFile,
+  OAuthAttempt,
+  OAuthStatus,
   OpenCodeClient,
   PromptInput,
   ServerInfo,
 } from "../src/opencode/client";
+import type { IntegrationInfo, ProviderEntry } from "../src/core/providers";
 import { OpenCodeHttpError } from "../src/opencode/client";
 import type { PermissionRule } from "../src/shared/approval";
 import type {
@@ -102,6 +105,82 @@ export class MockClient implements OpenCodeClient {
     this.record("accountStatus", directory);
     if (this.accountError) throw this.accountError;
     return { ...this.account };
+  }
+  integrations: IntegrationInfo[] = [];
+  providers: ProviderEntry[] = [
+    {
+      id: "opencode-go",
+      name: "OpenCode Go",
+      integrationID: "opencode-go",
+      activation: "auto",
+      localEndpoint: null,
+    },
+    { id: "vast", name: "Vast", integrationID: "vast", activation: "auto", localEndpoint: null },
+  ];
+  /** Errors thrown by the connect calls, by method name. */
+  connectErrors = new Map<string, Error>();
+  oauthAttempt: OAuthAttempt = {
+    attemptID: "att_1",
+    url: "https://example.test/authorize",
+    instructions: "Enter code ABCD-1234",
+    mode: "auto",
+    paste: false,
+    expires: null,
+  };
+  /** Statuses `oauthStatus` returns in turn; the last one repeats. */
+  oauthStatuses: OAuthStatus[] = [{ status: "complete", message: null }];
+  private fail(method: string) {
+    const e = this.connectErrors.get(method);
+    if (e) throw e;
+  }
+  async listIntegrations(directory: string) {
+    this.record("listIntegrations", directory);
+    this.fail("listIntegrations");
+    return this.integrations;
+  }
+  async getIntegration(directory: string, id: string) {
+    this.record("getIntegration", directory, id);
+    const i = this.integrations.find((x) => x.id === id);
+    if (!i) throw new OpenCodeHttpError(404, "IntegrationNotFoundError", `Integration not found: ${id}`);
+    return i;
+  }
+  async listProviders(directory: string) {
+    this.record("listProviders", directory);
+    this.fail("listProviders");
+    return this.providers;
+  }
+  async connectKey(directory: string, integrationID: string, key: string, answer?: FormAnswer) {
+    this.record("connectKey", directory, integrationID, key, answer);
+    this.fail("connectKey");
+  }
+  async startOAuth(directory: string, integrationID: string, methodID: string, answer?: FormAnswer) {
+    this.record("startOAuth", directory, integrationID, methodID, answer);
+    this.fail("startOAuth");
+    return { ...this.oauthAttempt };
+  }
+  async oauthStatus(directory: string, integrationID: string, attemptID: string) {
+    this.record("oauthStatus", directory, integrationID, attemptID);
+    this.fail("oauthStatus");
+    return this.oauthStatuses.length > 1 ? this.oauthStatuses.shift()! : this.oauthStatuses[0];
+  }
+  async completeOAuth(directory: string, integrationID: string, attemptID: string, code: string | null) {
+    this.record("completeOAuth", directory, integrationID, attemptID, code);
+    this.fail("completeOAuth");
+  }
+  async cancelOAuth(directory: string, integrationID: string, attemptID: string) {
+    this.record("cancelOAuth", directory, integrationID, attemptID);
+  }
+  async connectExternal(directory: string, integrationID: string, methodID: string, answer?: FormAnswer) {
+    this.record("connectExternal", directory, integrationID, methodID, answer);
+    this.fail("connectExternal");
+  }
+  async removeCredential(credentialID: string) {
+    this.record("removeCredential", credentialID);
+    this.fail("removeCredential");
+  }
+  async reloadConfig() {
+    this.record("reloadConfig");
+    this.fail("reloadConfig");
   }
   async listSessions(directory: string, limit: number, archived = false) {
     if (archived) this.record("listSessions", directory, limit, true);

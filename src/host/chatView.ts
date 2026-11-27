@@ -20,16 +20,26 @@ import {
 } from "../core/context";
 import { classifyPath } from "../core/sensitive";
 import { decideNotification, type TaskNotice } from "../core/currentTask";
+import { healthMarkdown, healthReport, overall } from "../core/healthCheck";
 import { deriveOnboarding, OPENCODE_LINKS, statusBarText } from "../core/onboarding";
+import type { ConnectOutcome } from "../core/providerConnect";
+import type { IntegrationInfo, IntegrationMethod } from "../core/providers";
 import { SessionController } from "../core/sessionController";
-import { HttpOpenCodeClient, type EventSubscription } from "../opencode/client";
-import { discoverServer, startService } from "../opencode/service";
+import { HttpOpenCodeClient, opencodeDirectory, type EventSubscription } from "../opencode/client";
+import {
+  cliVersion,
+  discoverServer,
+  parseRegistration,
+  serviceFilePath,
+  startService,
+} from "../opencode/service";
 import type {
   AccountStatus,
   BudgetLevel,
   ConnectionStatus,
   ContextAttachment,
   OnboardingView,
+  ProvidersView,
   SignInState,
   UiEvent,
 } from "../shared/model";
@@ -42,6 +52,7 @@ import {
 import { CONFIG_SECTION, readConfig, readNotificationSettings } from "./config";
 import { openAgentDiffs, openAgentFileDiff, openAllDiffs, openFileDiff, type AgentSideSource } from "./diff";
 import type { Logger } from "./log";
+import { vscodeConnectUi } from "./providers";
 import type { ToolTextProvider } from "./toolText";
 import { WorkspaceTracker } from "./workspace";
 
@@ -97,6 +108,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private signInTimer: ReturnType<typeof setInterval> | undefined;
   private signInStarted = 0;
   private signInBaseline: string | null = null;
+  /** A provider connect, re-auth or disconnect in progress (one at a time). */
+  private providerBusy: ProvidersView["busy"] = null;
+  private providersPending = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -585,9 +599,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   /**
    * Runs OpenCode's own sign-in (`opencode auth login`) in a VS Code terminal. The extension
    * never sees the credentials: OpenCode stores them. "account" uses the OpenCode Console
-   * device flow; "provider" opens OpenCode's provider picker.
+   * device flow; "provider" opens OpenCode's provider picker; an integration runs that
+   * provider's method (a command, or a question only OpenCode's terminal flow can ask).
    */
-  async signIn(target: "account" | "provider" = "account"): Promise<void> {
+  async signIn(
+    target:
+      "account" | "provider" | { integration: IntegrationInfo; method: IntegrationMethod | null } = "account",
+  ): Promise<void> {
     const cli = this.findCli();
     if (!cli.found) {
       this.setConnection({ kind: "cli-not-found", searched: cli.searched });
@@ -604,12 +622,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
     const args = ["auth", "login"];
     if (target === "account") args.push("opencode", "--method", "device");
+    else if (target !== "provider") {
+      args.push(target.integration.id);
+      if (target.method?.id) args.push("--method", target.method.id);
+    }
     // A server chosen in settings is used for the login too; otherwise the background service.
     if (readConfig().serverUrl.trim() && this.connection.kind === "connected")
       args.push("--server", this.connection.url);
     this.log.info(`Starting sign-in: opencode ${args.join(" ")}`);
     const terminal = vscode.window.createTerminal({
-      name: target === "account" ? "OpenCode Sign In" : "OpenCode Providers",
+      name:
+        target === "account"
+          ? "OpenCode Sign In"
+          : target === "provider"
+            ? "OpenCode Providers"
+            : `OpenCode: ${target.integration.name}`,
       shellPath: cli.path,
       shellArgs: args,
       iconPath: new vscode.ThemeIcon("account"),
@@ -856,6 +883,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.focusPending = false;
           this.post({ type: "focusInput" });
         }
+        if (this.providersPending) {
+          this.providersPending = false;
+          this.post({ type: "showProviders" });
+        }
         return;
       case "send": {
         if (!c) return;
@@ -1085,6 +1116,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return this.signIn("account");
       case "connectProvider":
         return this.signIn("provider");
+      case "loadProviders":
+        return this.postProviders();
+      case "providerConnect":
+        return this.connectProvider(msg.id, false);
+      case "providerReauth":
+        return this.connectProvider(msg.id, true);
+      case "providerDisconnect":
+        return this.disconnectProvider(msg.id);
+      case "reloadProviders":
+        return this.reloadProviders();
+      case "checkSetup":
+        return this.checkSetup();
       case "refreshConnection":
         if (this.signInState === "cancelled" || this.signInState === "failed") this.signInState = "idle";
         return this.refreshConnection();
@@ -1143,6 +1186,182 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.log.warn(`Listing MCP servers failed: ${e instanceof Error ? e.message : String(e)}`);
       this.post({ type: "mcpServers", items: null, error: "OpenCode could not list them." });
     }
+  }
+
+  private async postProviders(): Promise<void> {
+    const c = this.controller;
+    if (!c) return this.post({ type: "providers", view: null, error: "Not connected to OpenCode." });
+    try {
+      this.post({ type: "providers", view: await c.providersView(this.providerBusy) });
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      this.log.warn(`Listing providers failed: ${why}`);
+      this.post({
+        type: "providers",
+        view: null,
+        error: c.directory ? "OpenCode could not list them." : why,
+      });
+    }
+  }
+
+  private setProviderBusy(busy: ProvidersView["busy"]): void {
+    this.providerBusy = busy;
+    void this.postProviders();
+  }
+
+  /** Opens the Providers panel in the chat (the Manage Providers command). */
+  async showProviders(): Promise<void> {
+    // A view that is still loading opens the panel once it is ready.
+    this.providersPending = !(this.view && this.webviewReady);
+    await this.focus();
+    this.post({ type: "showProviders" });
+  }
+
+  /**
+   * Connects a provider or signs in to it again through OpenCode's own flow: a browser
+   * sign-in, a masked key box or OpenCode's terminal. OpenCode stores what it gets.
+   */
+  private async connectProvider(id: string, reauth: boolean): Promise<void> {
+    const c = this.controller;
+    if (!c) return;
+    if (this.providerBusy) {
+      void vscode.window.showInformationMessage("Another provider sign-in is still running.");
+      return;
+    }
+    this.setProviderBusy({ id, text: reauth ? "Signing in again…" : "Connecting…" });
+    let outcome: ConnectOutcome;
+    let name = id;
+    try {
+      const ui = vscodeConnectUi(
+        (integration, method) => this.signIn({ integration, method }),
+        (text) => this.setProviderBusy({ id, text: text ?? "Connecting…" }),
+      );
+      outcome = await c.connectProvider(id, ui, reauth, (n) => (name = n));
+    } finally {
+      this.providerBusy = null;
+    }
+    await this.postProviders();
+    switch (outcome.kind) {
+      case "connected":
+        void vscode.window.showInformationMessage(`${name} is connected.`);
+        break;
+      case "failed":
+        void vscode.window.showWarningMessage(`${name} could not be connected: ${outcome.message}`);
+        break;
+      case "env":
+        void vscode.window.showInformationMessage(
+          `${name} connects through an environment variable: set ${outcome.names.join(" or ")}, then restart the OpenCode service so it sees it.`,
+        );
+        break;
+      default:
+        break;
+    }
+  }
+
+  private async disconnectProvider(id: string): Promise<void> {
+    const c = this.controller;
+    if (!c || this.providerBusy) return;
+    this.setProviderBusy({ id, text: "Disconnecting…" });
+    try {
+      const n = await c.disconnectProvider(id);
+      if (!n)
+        void vscode.window.showInformationMessage(
+          "Nothing to remove: it is connected through an environment variable or OpenCode's config.",
+        );
+    } catch (e) {
+      this.log.warn(`Disconnecting ${id} failed: ${e instanceof Error ? e.message : String(e)}`);
+      void vscode.window.showWarningMessage(
+        "OpenCode could not disconnect it. See the Sidecar output for details.",
+      );
+    } finally {
+      this.providerBusy = null;
+    }
+    await this.postProviders();
+  }
+
+  private async reloadProviders(): Promise<void> {
+    const c = this.controller;
+    if (!c || this.providerBusy) return;
+    this.setProviderBusy({ id: "", text: "Reloading OpenCode's config…" });
+    try {
+      await c.reloadConfig();
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      this.log.warn(`Reloading OpenCode's config failed: ${why}`);
+      // OpenCode 2.4 refuses (503) while it still has a folder loaded that was deleted since.
+      void vscode.window.showWarningMessage(
+        `OpenCode could not reload its config: ${why.split(/\r?\n/)[0].replace(/^[\w.]+Error: /, "")}`,
+      );
+    } finally {
+      this.providerBusy = null;
+    }
+    await this.postProviders();
+  }
+
+  /**
+   * "Check OpenCode setup": the program, the service, sign-in, models, providers and, on
+   * Windows, PATH and the folder's drive letter, as a Markdown report in an editor tab.
+   */
+  async checkSetup(): Promise<void> {
+    const report = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Checking OpenCode setup…" },
+      () => this.setupReport(),
+    );
+    const doc = await vscode.workspace.openTextDocument({ language: "markdown", content: report.markdown });
+    await vscode.window.showTextDocument(doc, { preview: false });
+    const pick = await vscode.window.showInformationMessage(
+      report.level === "ok" ? "OpenCode setup looks fine." : "The setup check found things to look at.",
+      "Copy Report",
+    );
+    if (pick === "Copy Report") await vscode.env.clipboard.writeText(report.markdown);
+  }
+
+  /** Gathers the setup check's facts (read-only: nothing is started or changed). */
+  async setupReport(): Promise<{ markdown: string; level: ReturnType<typeof overall> }> {
+    const cfg = readConfig();
+    const cli = this.findCli();
+    const version = cli.found ? await cliVersion(cli.path) : null;
+    const reg = parseRegistration(
+      await fs.promises.readFile(serviceFilePath(), "utf8").catch(() => undefined),
+    );
+    const c = this.controller;
+    let server: { url: string; version: string; pid: number | null } | null = null;
+    let serverError: string | undefined;
+    if (c && this.connection.kind === "connected") {
+      try {
+        const info = await c.serverInfo();
+        server = { url: this.connection.url, version: info.version, pid: info.pid };
+      } catch (e) {
+        serverError = e instanceof Error ? e.message : String(e);
+      }
+    } else
+      serverError = this.connection.kind === "error" ? this.connection.message : "Sidecar is not connected.";
+    if (server && c) await c.refreshCatalog();
+    const facts = server && c ? await c.setupFacts() : null;
+    const folder = this.workspace.current.active?.path ?? null;
+    const sections = healthReport({
+      platform: process.platform,
+      cli,
+      cliVersion: version?.version ?? null,
+      cliError: version && !version.version ? version.output.split(/\r?\n/)[0] : undefined,
+      service: reg ? { url: reg.url, pid: reg.pid ?? null } : null,
+      serverSetting: cfg.serverUrl,
+      server,
+      serverError,
+      folder: folder ? { path: folder, sent: opencodeDirectory(folder) } : null,
+      projectID: facts?.projectID,
+      account: c?.account ?? null,
+      integrations: facts?.integrations ?? null,
+      providers: c?.providers ?? null,
+      models: c?.models ?? null,
+      defaultModel: facts?.defaultModel ?? null,
+      providerErrors: c?.providerErrors ?? new Map(),
+      pathDirs: (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":").filter(Boolean),
+    });
+    const sidecar = String((this.context.extension.packageJSON as { version?: string }).version ?? "");
+    const markdown = healthMarkdown(sections, { when: new Date(), sidecar });
+    this.log.info(`Setup check: ${overall(sections)}`);
+    return { markdown, level: overall(sections) };
   }
 
   /** Sends the usage menu what fills the context and today's usage; a part that fails is left out. */
@@ -1587,6 +1806,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         command: this.statusItem.command,
       }),
       signInState: () => this.signInState,
+      setupReport: () => this.setupReport(),
       focusPending: () => this.focusPending,
       tap: (fn: (events: UiEvent[]) => void) => {
         this.taps.add(fn);

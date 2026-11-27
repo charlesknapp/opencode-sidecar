@@ -19,6 +19,8 @@ import type {
   MentionCandidate,
   SavedPermission,
   PromptMention,
+  ProviderRow,
+  ProvidersView,
   QuotaMeter,
   StripStatus,
   SubagentView,
@@ -208,6 +210,9 @@ const ICON_PATHS: Record<string, string[]> = {
   ],
   chev: ["M4 6l4 4 4-4"],
   close: ["M4 4l8 8M12 4l-8 8"],
+  // Providers: a plug. The setup check: a tick.
+  plug: ["M6 2.5v3M10 2.5v3", "M4.5 5.5h7v2.5a3.5 3.5 0 0 1-7 0z", "M8 11.5v2"],
+  check: ["M3 8.5l3.2 3.2L13 4.8"],
   search: ["M11.5 7a4.5 4.5 0 1 1-9 0a4.5 4.5 0 1 1 9 0", "M10.3 10.3L14 14"],
   file: ["M4 2.5h5l3 3v8a.5.5 0 0 1-.5.5h-7.5a.5.5 0 0 1-.5-.5v-10.5a.5.5 0 0 1 .5-.5z", "M9 2.5v3h3"],
   selection: ["M3 4h10M3 8h6M3 12h8", "F:M12 9.5h1.5v4H12z"],
@@ -2365,6 +2370,17 @@ function commandsMenu(): MenuEntry[] {
       testid: "permission-rules",
       disabled: state?.connection.kind !== "connected",
     }),
+    item("Providers…", () => openProviders(), {
+      icon: "plug",
+      sub: "Connect, sign in again or disconnect model providers",
+      testid: "providers",
+      disabled: state?.connection.kind !== "connected",
+    }),
+    item("Check OpenCode setup", () => send({ type: "checkSetup" }), {
+      icon: "check",
+      sub: "The program, service, sign-in, models and providers in one report",
+      testid: "check-setup",
+    }),
     item("Sidecar settings…", () => send({ type: "openSettings" }), {
       icon: "settings",
       sub: "Open Sidecar's settings in VS Code",
@@ -2849,8 +2865,276 @@ function openRulesEditor(): void {
   (form.hidden ? doneBtn : patternIn).focus();
 }
 
+// -------------------------------------------------------------- providers
+//
+// The Providers panel: the providers OpenCode is connected to and how each is doing, and
+// a search over every provider OpenCode can connect. Connect, Re-authenticate and
+// Disconnect are run by the host through OpenCode's own sign-in; nothing secret reaches
+// the webview.
+
+/** undefined while loading; null when OpenCode could not list them. */
+let providersView: ProvidersView | null | undefined;
+let providersError = "";
+let providersPanel: { el: HTMLElement; paint: () => void } | null = null;
+/** At most this many search results are drawn (OpenCode knows hundreds of providers). */
+const PROVIDER_RESULTS = 40;
+
+const PROVIDER_STATES: Record<ProviderRow["state"], string> = {
+  connected: "Connected",
+  "needs-auth": "Needs sign-in",
+  error: "Error",
+};
+
+function openProviders(): void {
+  if (providersPanel) {
+    send({ type: "loadProviders" });
+    return;
+  }
+  closePopovers();
+  providersView = undefined;
+  send({ type: "loadProviders" });
+  const before = document.activeElement as HTMLElement | null;
+  // Built once, so what is typed survives the list being redrawn.
+  const search = h("input", {
+    className: "rule-in grow",
+    type: "search",
+    "aria-label": "Search providers",
+    placeholder: "Search providers",
+    "data-testid": "providers-search",
+  }) as HTMLInputElement;
+  search.addEventListener("input", () => paint());
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      availableList.querySelector<HTMLButtonElement>("button:not(:disabled)")?.click();
+    }
+  });
+  const status = h("p", { className: "banner info", role: "status", "data-testid": "providers-busy" });
+  const connectedList = h("ul", { className: "rules-list", "data-testid": "providers-connected" });
+  const connectedNote = h("p", { className: "rules-note" });
+  const availableList = h("ul", { className: "rules-list", "data-testid": "providers-available" });
+  const availableNote = h("p", { className: "rules-note", "data-testid": "providers-more" });
+  const close = () => {
+    providersPanel = null;
+    document.removeEventListener("keydown", onKey, true);
+    backdrop.remove();
+    if (before?.isConnected) before.focus();
+  };
+  const reloadBtn = h(
+    "button",
+    {
+      className: "btn subtle",
+      "data-testid": "providers-reload",
+      "data-tip": "Have OpenCode read its config again (after editing opencode.json)",
+      onclick: () => send({ type: "reloadProviders" }),
+    },
+    "Reload config",
+  );
+  const checkBtn = h(
+    "button",
+    {
+      className: "btn subtle",
+      "data-testid": "providers-check",
+      onclick: () => send({ type: "checkSetup" }),
+    },
+    "Check setup",
+  );
+  const doneBtn = h("button", { className: "btn", "data-testid": "providers-close", onclick: close }, "Done");
+  const dialog = h(
+    "div",
+    {
+      className: "modal rules-editor providers-panel",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "providers-title",
+      "data-testid": "providers-panel",
+      tabindex: "-1",
+    },
+    h("h2", { id: "providers-title" }, "Providers"),
+    h(
+      "p",
+      { className: "rules-note" },
+      "OpenCode signs in and stores the keys. Sidecar never sees or keeps them.",
+    ),
+    status,
+    h("h3", {}, "Connected"),
+    connectedList,
+    connectedNote,
+    h("h3", {}, "Connect a provider"),
+    h("div", { className: "rule-form" }, search),
+    availableList,
+    availableNote,
+    h("div", { className: "modal-foot providers-foot" }, reloadBtn, checkBtn, doneBtn),
+  );
+  const backdrop = h(
+    "div",
+    {
+      className: "modal-backdrop",
+      onmousedown: (e: Event) => {
+        if (e.target === backdrop) close();
+      },
+    },
+    dialog,
+  );
+  const onKey = (e: KeyboardEvent) => {
+    if (dialogOpen) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (search.value && document.activeElement === search) {
+        search.value = "";
+        paint();
+      } else close();
+    } else if (e.key === "Tab") {
+      const f = Array.from(dialog.querySelectorAll<HTMLElement>("button, input")).filter(
+        (x) => !(x as HTMLButtonElement).disabled && !x.hidden,
+      );
+      const i = f.indexOf(document.activeElement as HTMLElement);
+      e.preventDefault();
+      f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length]?.focus();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+
+  async function disconnect(r: ProviderRow): Promise<void> {
+    const pick = await confirmDialog({
+      title: `Disconnect ${r.name}?`,
+      body: "OpenCode removes the key or sign-in it stored for this provider. Its models stop working until you connect it again.",
+      choices: [{ value: "yes", label: "Disconnect", danger: true, testid: "provider-disconnect-confirm" }],
+    });
+    if (pick === "yes") send({ type: "providerDisconnect", id: r.id });
+  }
+
+  function paint(): void {
+    const v = providersView;
+    // A redrawn row's button had the focus: it goes to the same button of the new row.
+    const had = document.activeElement as HTMLElement | null;
+    const key =
+      had && (connectedList.contains(had) || availableList.contains(had))
+        ? `${had.closest<HTMLElement>("[data-id]")?.dataset.id ?? ""} ${had.dataset.testid ?? ""}`
+        : null;
+    const busy = v?.busy ?? null;
+    status.hidden = !busy;
+    status.textContent = busy?.text ?? "";
+    reloadBtn.disabled = checkBtn.disabled = !!busy && busy.id === "";
+    if (v === undefined) {
+      connectedList.replaceChildren();
+      availableList.replaceChildren();
+      connectedNote.textContent = "Loading…";
+      availableNote.textContent = "";
+      return;
+    }
+    if (v === null) {
+      connectedList.replaceChildren();
+      availableList.replaceChildren();
+      connectedNote.textContent = `Couldn't load them: ${providersError || "OpenCode did not answer."}`;
+      availableNote.textContent = "";
+      return;
+    }
+    connectedList.replaceChildren(
+      ...v.connected.map((r) =>
+        h(
+          "li",
+          { className: `rule provider s-${r.state}`, "data-testid": "provider-row", "data-id": r.id },
+          h(
+            "div",
+            { className: "provider-head" },
+            h("span", { className: "provider-name", dir: "auto" }, r.name),
+            h(
+              "span",
+              { className: `provider-state s-${r.state}`, "data-testid": "provider-state" },
+              PROVIDER_STATES[r.state],
+            ),
+          ),
+          h(
+            "div",
+            { className: "provider-meta" },
+            [r.via, `${r.models} model${r.models === 1 ? "" : "s"}`, r.local ? "on this machine" : ""]
+              .filter(Boolean)
+              .join(" · "),
+          ),
+          r.error
+            ? h("div", { className: "provider-error", "data-testid": "provider-error", dir: "auto" }, r.error)
+            : null,
+          r.canReauth || r.canDisconnect
+            ? h(
+                "div",
+                { className: "provider-actions" },
+                r.canReauth
+                  ? smallBtn(
+                      r.state === "needs-auth" ? "Sign in again" : "Re-authenticate",
+                      "provider-reauth",
+                      () => send({ type: "providerReauth", id: r.id }),
+                      !!busy,
+                    )
+                  : null,
+                r.canDisconnect
+                  ? smallBtn("Disconnect", "provider-disconnect", () => void disconnect(r), !!busy)
+                  : null,
+              )
+            : null,
+        ),
+      ),
+    );
+    connectedNote.textContent = v.connected.length
+      ? ""
+      : "No provider is connected yet. Connect one below, or use OpenCode's free models.";
+    const q = search.value.trim().toLowerCase();
+    const matches = q
+      ? v.available.filter((c) => c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q))
+      : v.available.filter((c) => c.popular);
+    availableList.replaceChildren(
+      ...matches.slice(0, PROVIDER_RESULTS).map((c) =>
+        h(
+          "li",
+          { className: "rule provider choice", "data-testid": "provider-choice", "data-id": c.id },
+          h(
+            "div",
+            { className: "provider-head" },
+            h("span", { className: "provider-name", dir: "auto" }, c.name),
+            h("span", { className: "provider-meta" }, c.methods),
+          ),
+          smallBtn("Connect", "provider-connect", () => send({ type: "providerConnect", id: c.id }), !!busy),
+        ),
+      ),
+    );
+    availableNote.textContent = !q
+      ? `Popular providers. Search all ${v.available.length}.`
+      : !matches.length
+        ? `No provider matches “${search.value.trim()}”.`
+        : matches.length > PROVIDER_RESULTS
+          ? `${matches.length - PROVIDER_RESULTS} more match. Keep typing to narrow them down.`
+          : "";
+    if (key)
+      queueMicrotask(() => {
+        if (had?.isConnected) return;
+        const [id, testid] = key.split(" ");
+        const row = dialog.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`);
+        const same = row?.querySelector<HTMLButtonElement>(`[data-testid="${CSS.escape(testid)}"]`);
+        (same && !same.disabled ? same : search).focus();
+      });
+  }
+
+  document.body.append(backdrop);
+  providersPanel = { el: backdrop, paint };
+  paint();
+  search.focus();
+}
+
 function modelMenuOptions(): MenuOptions {
-  return { width: "box", title: "Select a model", maxHeight: 320, footer: modelSliders() };
+  return {
+    width: "box",
+    title: "Select a model",
+    maxHeight: 320,
+    footer: [
+      ...modelSliders(),
+      item("Manage providers…", () => openProviders(), {
+        icon: "plug",
+        testid: "manage-providers",
+        disabled: state?.connection.kind !== "connected",
+      }),
+    ],
+  };
 }
 
 /**
@@ -4395,6 +4679,15 @@ function linkBtn(label: string, link: OfficialLink): HTMLElement {
   );
 }
 
+/** An onboarding button that opens the Providers panel. */
+function panelBtn(label: string, primary: boolean, testid: string): HTMLElement {
+  return h(
+    "button",
+    { className: primary ? "btn primary" : "btn", "data-testid": testid, onclick: () => openProviders() },
+    label,
+  );
+}
+
 function renderOnboarding(s: ViewState): HTMLElement {
   const ob = s.onboarding;
   const conn = s.connection;
@@ -4453,6 +4746,7 @@ function renderOnboarding(s: ViewState): HTMLElement {
       body = [conn.kind === "error" ? conn.message : "OpenCode did not respond."];
       actions = [
         actionBtn("Retry", { type: "retry" }, true, "onb-check"),
+        actionBtn("Check setup", { type: "checkSetup" }, false, "onb-check-setup"),
         actionBtn("Show Logs", { type: "showLogs" }),
       ];
       break;
@@ -4469,10 +4763,7 @@ function renderOnboarding(s: ViewState): HTMLElement {
           ? "No models are available yet. Sign in to your OpenCode account, or connect another provider in OpenCode."
           : "OpenCode reports that your OpenCode account sign-in has expired, and no models are available.",
       ];
-      actions = [
-        ...signInButtons(true),
-        actionBtn("Connect another provider", { type: "connectProvider" }, false, "onb-provider"),
-      ];
+      actions = [...signInButtons(true), panelBtn("Connect another provider", false, "onb-provider")];
       extra = [
         h(
           "p",
@@ -4486,7 +4777,7 @@ function renderOnboarding(s: ViewState): HTMLElement {
       title = "No models are available yet.";
       body = ["Configure a provider in OpenCode or use an OpenCode Go model."];
       actions = [
-        actionBtn("Configure models", { type: "connectProvider" }, true, "onb-provider"),
+        panelBtn("Connect a provider", true, "onb-provider"),
         actionBtn("Refresh", { type: "refreshConnection" }, false, "onb-refresh"),
       ];
       extra = [
@@ -4506,6 +4797,7 @@ function renderOnboarding(s: ViewState): HTMLElement {
       ];
       actions = [
         actionBtn("Refresh", { type: "refreshConnection" }, true, "onb-refresh"),
+        actionBtn("Check setup", { type: "checkSetup" }, false, "onb-check-setup"),
         actionBtn("Show Logs", { type: "showLogs" }),
       ];
       break;
@@ -6239,21 +6531,38 @@ function renderItem(item: TranscriptItem): HTMLElement {
               "div",
               { className: "actions" },
               ...item.actions.map((a) =>
-                a === "changeModel"
-                  ? h(
-                      "button",
-                      { className: "btn", onclick: () => send({ type: "focusModelPicker" }) },
-                      t("changeModel"),
-                    )
-                  : h(
-                      "button",
-                      {
-                        className: "btn",
-                        disabled: !!state?.busy,
-                        onclick: () => send({ type: "retryLast" }),
-                      },
-                      t("retry"),
-                    ),
+                a === "reauth"
+                  ? item.provider
+                    ? h(
+                        "button",
+                        {
+                          className: "btn",
+                          "data-testid": "error-reauth",
+                          onclick: () => send({ type: "providerReauth", id: item.provider!.id }),
+                        },
+                        `${t("reauth")} ${item.provider.name}`,
+                      )
+                    : null
+                  : a === "changeModel"
+                    ? h(
+                        "button",
+                        {
+                          className: "btn",
+                          "data-testid": "error-change-model",
+                          onclick: () => send({ type: "focusModelPicker" }),
+                        },
+                        // Beside a sign-in, the other way out: a model from another provider.
+                        t(item.actions.includes("reauth") ? "chooseModel" : "changeModel"),
+                      )
+                    : h(
+                        "button",
+                        {
+                          className: "btn",
+                          disabled: !!state?.busy,
+                          onclick: () => send({ type: "retryLast" }),
+                        },
+                        t("retry"),
+                      ),
               ),
             )
           : null,
@@ -7806,6 +8115,14 @@ window.addEventListener("message", (e: MessageEvent) => {
       else if (aside) asideShown = false;
       aside = msg.aside;
       renderAside();
+      break;
+    case "showProviders":
+      openProviders();
+      break;
+    case "providers":
+      providersView = msg.view;
+      providersError = msg.error ?? "";
+      providersPanel?.paint();
       break;
     case "showHistory":
       if (!sessionsOpen) {

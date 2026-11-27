@@ -4035,6 +4035,71 @@ body.vscode-high-contrast-light .p-approval {
   font-size: 12px;
 }
 
+/* The Providers panel: a row per provider, its state, how it is connected and its actions. */
+.rule.provider {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+.rule.provider.choice {
+  flex-direction: row;
+  align-items: center;
+}
+.provider-head {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+.provider-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.provider-state {
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.provider-state.s-connected {
+  color: var(--vscode-testing-iconPassed, var(--vscode-charts-green, var(--vscode-foreground)));
+}
+.provider-state.s-needs-auth {
+  color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+}
+.provider-state.s-error,
+.provider-error {
+  color: var(--vscode-errorForeground, var(--err));
+}
+.provider-meta {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.provider-error {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.provider-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.modal-foot.providers-foot {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.providers-panel .banner {
+  margin: 0;
+}
+.providers-panel .banner:empty,
+.providers-panel .banner[hidden] {
+  display: none;
+}
+
 /* "Always allow commands like this…" under the permission dock's answers. */
 .like-link {
   align-self: flex-start;

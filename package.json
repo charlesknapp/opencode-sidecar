@@ -106,6 +106,16 @@
         "category": "Sidecar"
       },
       {
+        "command": "opencodeSidecar.manageProviders",
+        "title": "Manage Providers",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.checkSetup",
+        "title": "Check OpenCode Setup",
+        "category": "Sidecar"
+      },
+      {
         "command": "opencodeSidecar.newSession",
         "title": "New Session",
         "category": "Sidecar",

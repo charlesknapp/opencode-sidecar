@@ -28,6 +28,7 @@ import type {
   PermissionDecision,
   PromptMention,
   PromptPaste,
+  ProvidersView,
   QuotaView,
   SessionSummary,
   SkillOption,
@@ -140,6 +141,10 @@ export type HostMessage =
   | { type: "savedPermissions"; items: SavedPermission[] | null; error?: string }
   /** The folder's MCP servers; null with `error` when OpenCode could not list them. */
   | { type: "mcpServers"; items: McpServerInfo[] | null; error?: string }
+  /** Open the Providers panel (the Manage Providers command). */
+  | { type: "showProviders" }
+  /** The Providers panel; null with `error` when OpenCode could not list them. */
+  | { type: "providers"; view: ProvidersView | null; error?: string }
   /** For the usage menu: what fills the context, and today's usage in the folder's project. */
   | { type: "usageDetails"; context: ContextBreakdown | null; today: UsageStats | null }
   /** The side question (`/btw`) card; null when it is closed. */
@@ -173,6 +178,18 @@ export type WebviewMessage =
   | { type: "deleteSession"; id: string }
   | { type: "exportSession" }
   | { type: "loadMcpServers" }
+  /** The Providers panel opened (or wants a fresh list). */
+  | { type: "loadProviders" }
+  /** Connect a provider through OpenCode's sign-in (`id`: OpenCode's integration). */
+  | { type: "providerConnect"; id: string }
+  /** Sign in to a connected provider again (from the panel or an error card). */
+  | { type: "providerReauth"; id: string }
+  /** Remove a provider's stored credentials (the webview has asked for confirmation). */
+  | { type: "providerDisconnect"; id: string }
+  /** Have OpenCode reload its config (`POST /api/location/reload`). */
+  | { type: "reloadProviders" }
+  /** Run "Check OpenCode setup". */
+  | { type: "checkSetup" }
   /** The usage menu opened: send what fills the context and today's usage. */
   | { type: "loadUsageDetails" }
   /** A finished code block: insert it at the cursor of the last editor, or open it in a new one. */
@@ -335,6 +352,9 @@ const isImageUri = (v: unknown, max: number): boolean =>
 const isDim = (v: unknown): boolean =>
   v === undefined || (typeof v === "number" && Number.isInteger(v) && v > 0 && v < 100_000);
 
+/** OpenCode's integration and provider ids: `anthropic`, `302ai`, `amazon-bedrock`, … */
+const isProviderId = (v: unknown): boolean => isStr(v, 200) && /^[\w.:@/-]+$/.test(v as string);
+
 const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   ready: () => true,
   send: (m) =>
@@ -359,6 +379,12 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   deleteSession: (m) => isStr(m.id),
   exportSession: () => true,
   loadMcpServers: () => true,
+  loadProviders: () => true,
+  providerConnect: (m) => isProviderId(m.id),
+  providerReauth: (m) => isProviderId(m.id),
+  providerDisconnect: (m) => isProviderId(m.id),
+  reloadProviders: () => true,
+  checkSetup: () => true,
   loadUsageDetails: () => true,
   insertCode: (m) => typeof m.text === "string" && m.text.length <= MAX_COPY,
   openCode: (m) =>
@@ -471,6 +497,9 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   setSessionRules: ["rules"],
   allowLike: ["requestId", "patterns", "scope"],
   deleteSession: ["id"],
+  providerConnect: ["id"],
+  providerReauth: ["id"],
+  providerDisconnect: ["id"],
   insertCode: ["text"],
   openCode: ["text", "lang"],
   resolveRevert: ["action"],

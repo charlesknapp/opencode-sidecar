@@ -1,5 +1,8 @@
 // Turns OpenCode/provider errors into short, human-readable messages while
-// keeping the technical details for the output channel.
+// keeping the technical details for the output channel. OpenCode 2.4 tags a run's
+// error (`Session.StructuredError.type`): `provider.auth`, `provider.no-route` (no such
+// model, or the provider is not set up), `provider.free-limit`, … Tags are checked
+// before the message text, which providers word differently.
 
 import type { ErrorAction, RawError } from "../shared/model";
 import { redact } from "./redact";
@@ -11,6 +14,7 @@ export interface FriendlyError {
     | "rate-limit"
     | "auth"
     | "model-not-found"
+    | "provider-setup"
     | "context-length"
     | "overloaded"
     | "network"
@@ -31,6 +35,8 @@ export interface ErrorContext {
 
 interface Rule {
   kind: FriendlyError["kind"];
+  /** OpenCode's error tags that decide the kind without looking at the text. */
+  types?: string[];
   test: (text: string, status: number | null, type: string) => boolean;
   title: (who: string) => string;
   actions: ErrorAction[];
@@ -39,6 +45,7 @@ interface Rule {
 const RULES: Rule[] = [
   {
     kind: "funds",
+    types: ["provider.budget-limit", "provider.model-budget-limit"],
     test: (t, s) =>
       s === 402 ||
       /insufficient (account )?(funds|balance|credit)|payment required|out of credits|credit balance/i.test(
@@ -49,6 +56,13 @@ const RULES: Rule[] = [
   },
   {
     kind: "quota",
+    types: [
+      "provider.quota",
+      "provider.free-limit",
+      "provider.go-limit",
+      "provider.chatgpt-limit",
+      "provider.chatgpt-workspace-limit",
+    ],
     test: (t) =>
       /quota (exceeded|exhausted)|usage limit|limit reached for|exceeded your (current )?quota|monthly limit/i.test(
         t,
@@ -58,19 +72,22 @@ const RULES: Rule[] = [
   },
   {
     kind: "rate-limit",
+    types: ["provider.rate-limit"],
     test: (t, s) => s === 429 || /rate.?limit|too many requests/i.test(t),
     title: (who) => `${who} is rate-limiting requests.`,
     actions: ["retry", "changeModel"],
   },
   {
     kind: "auth",
+    types: ["provider.auth"],
     test: (t, s) =>
       s === 401 ||
       s === 403 ||
-      /invalid (api )?key|unauthori[sz]ed|authentication|forbidden|not authenticated/i.test(t),
-    title: (who) =>
-      `${who} rejected the credentials. Check the provider sign-in in OpenCode (\`opencode auth\`).`,
-    actions: ["changeModel", "retry"],
+      /invalid (api )?key|incorrect api key|unauthori[sz]ed|authentication|forbidden|not authenticated|token (has )?expired|expired token|authorization failed/i.test(
+        t,
+      ),
+    title: (who) => `${who} rejected the credentials. Sign in again, or choose another model.`,
+    actions: ["reauth", "changeModel", "retry"],
   },
   {
     kind: "context-length",
@@ -82,11 +99,23 @@ const RULES: Rule[] = [
   },
   {
     kind: "model-not-found",
-    test: (t, s) =>
+    test: (t, s, type) =>
+      (type === "provider.no-route" &&
+        /model unavailable|no model is available|variant unavailable/i.test(t)) ||
       (s === 404 && /model/i.test(t)) ||
       /model .*(not found|does not exist|unavailable|not supported)|unknown model/i.test(t),
     title: (who) => `${who} does not offer this model right now.`,
-    actions: ["changeModel"],
+    actions: ["changeModel", "reauth"],
+  },
+  {
+    // The rest of `provider.no-route`: the provider cannot be used as configured.
+    kind: "provider-setup",
+    types: ["provider.unknown"],
+    test: (t, _s, type) =>
+      type === "provider.no-route" ||
+      /cannot initialize|unsupported package|required to resolve the provider endpoint/i.test(t),
+    title: (who) => `${who} is not set up correctly in OpenCode.`,
+    actions: ["reauth", "changeModel"],
   },
   {
     kind: "overloaded",
@@ -100,6 +129,7 @@ const RULES: Rule[] = [
   },
   {
     kind: "network",
+    types: ["provider.transport"],
     test: (t, _s, type) =>
       /transport/.test(type) ||
       /connectionrefused|econnrefused|enotfound|unable to connect|network error|fetch failed|socket hang up/i.test(
@@ -110,12 +140,14 @@ const RULES: Rule[] = [
   },
   {
     kind: "timeout",
+    types: ["provider.timeout"],
     test: (t) => /timed? ?out|timeout/i.test(t),
     title: (who) => `${who} did not respond in time.`,
     actions: ["retry"],
   },
   {
     kind: "content-filter",
+    types: ["provider.content-filter"],
     test: (t) => /content.?filter|safety system|flagged/i.test(t),
     title: (who) => `${who} declined the request (content filter).`,
     actions: ["retry", "changeModel"],
@@ -133,16 +165,15 @@ export function classifyError(err: RawError, ctx: ErrorContext): FriendlyError {
   const who = ctx.modelName
     ? `${ctx.modelName}${ctx.providerName ? ` (${ctx.providerName})` : ""}`
     : (ctx.providerName ?? "The model provider");
-  for (const rule of RULES) {
-    if (rule.test(text, err.status, err.type)) {
-      return {
-        kind: rule.kind,
-        title: rule.title(who),
-        detail: safeMessage(err.message),
-        actions: rule.actions,
-      };
-    }
-  }
+  const friendly = (rule: Rule): FriendlyError => ({
+    kind: rule.kind,
+    title: rule.title(who),
+    detail: safeMessage(err.message),
+    actions: rule.actions,
+  });
+  const tagged = RULES.find((r) => r.types?.includes(err.type));
+  if (tagged) return friendly(tagged);
+  for (const rule of RULES) if (rule.test(text, err.status, err.type)) return friendly(rule);
   return {
     kind: "unknown",
     title: `The request failed${ctx.modelName ? ` (${ctx.modelName})` : ""}.`,

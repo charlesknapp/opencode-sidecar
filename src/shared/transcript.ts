@@ -325,7 +325,14 @@ export class Transcript {
         ];
       case "error":
         return [
-          this.upsert({ kind: "error", id: ev.id, title: ev.title, detail: ev.detail, actions: ev.actions }),
+          this.upsert({
+            kind: "error",
+            id: ev.id,
+            title: ev.title,
+            detail: ev.detail,
+            actions: ev.actions,
+            ...(ev.provider ? { provider: ev.provider } : {}),
+          }),
         ];
       case "form.requested": {
         const id = `form:${ev.form.id}`;

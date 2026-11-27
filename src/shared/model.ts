@@ -318,6 +318,45 @@ export interface McpServerInfo {
   error?: string;
 }
 
+/**
+ * A provider in the Providers panel: how OpenCode reaches it, never its credentials or
+ * connection labels. `id` is OpenCode's integration id (a provider id for one set up
+ * only in OpenCode's config).
+ */
+export interface ProviderRow {
+  id: string;
+  name: string;
+  state: "connected" | "needs-auth" | "error";
+  /** How it is connected: "OAuth", "API key", "Environment variable OPENAI_API_KEY", … */
+  via: string;
+  /** The last problem, in plain English: OpenCode's sign-in note or the last failed run. */
+  error: string | null;
+  models: number;
+  /** OpenCode has a sign-in method for it that Sidecar can run again. */
+  canReauth: boolean;
+  /** It has stored credentials (an environment variable or config cannot be removed here). */
+  canDisconnect: boolean;
+  /** Its endpoint is on this machine (Ollama, LM Studio, …). */
+  local?: boolean;
+}
+
+/** A provider OpenCode can connect, for the panel's search. */
+export interface ProviderChoice {
+  id: string;
+  name: string;
+  /** Its sign-in methods, e.g. "OAuth · API key". */
+  methods: string;
+  popular?: boolean;
+}
+
+export interface ProvidersView {
+  connected: ProviderRow[];
+  /** Every provider not connected yet, popular ones first. */
+  available: ProviderChoice[];
+  /** A connect, re-auth or disconnect in progress, with what it waits for. */
+  busy: { id: string; text: string } | null;
+}
+
 /** An OpenCode skill, which a prompt can mention as `@id`. */
 export interface SkillOption {
   id: string;
@@ -489,7 +528,15 @@ export type TranscriptItem =
     }
   | { kind: "notice"; id: string; level: "error" | "info"; text: string }
   | { kind: "form"; id: string; form: FormRequest; status: FormStatus; answer: FormAnswer | null }
-  | { kind: "error"; id: string; title: string; detail: string; actions: ErrorAction[] }
+  | {
+      kind: "error";
+      id: string;
+      title: string;
+      detail: string;
+      actions: ErrorAction[];
+      /** With the `reauth` action: the provider to sign in to again. */
+      provider?: ErrorProvider;
+    }
   /**
    * The models a turn ran on, under its last entry: its steps, the tokens they generated,
    * the generation speed (tokens a second while the model streamed) and the cost.
@@ -641,7 +688,14 @@ export type FormStatus = "pending" | "sending" | "answered" | "cancelled" | "exp
 
 // ------------------------------------------------------------------ errors
 
-export type ErrorAction = "changeModel" | "retry";
+/** `reauth`: run the provider's sign-in again (the error names the provider). */
+export type ErrorAction = "changeModel" | "retry" | "reauth";
+
+/** The provider an error card offers to sign in to again (OpenCode's integration). */
+export interface ErrorProvider {
+  id: string;
+  name: string;
+}
 
 // ------------------------------------------------------------------ budget
 
@@ -753,7 +807,14 @@ export type UiEvent =
       sessionID?: string;
     }
   | { type: "session.error"; message: string; error: RawError | null; modelKey: string | null }
-  | { type: "error"; id: string; title: string; detail: string; actions: ErrorAction[] }
+  | {
+      type: "error";
+      id: string;
+      title: string;
+      detail: string;
+      actions: ErrorAction[];
+      provider?: ErrorProvider;
+    }
   | {
       type: "inbox.enqueued";
       id: string;

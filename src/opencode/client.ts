@@ -23,6 +23,7 @@ import type {
   UsageStats,
 } from "../shared/model";
 import type { PromptPayload } from "../core/context";
+import { parseIntegration, parseProvider, type IntegrationInfo, type ProviderEntry } from "../core/providers";
 import { parseRules, type PermissionRule } from "../shared/approval";
 import { modelKey, toPermissionRequest } from "./events";
 import { SseParser } from "./sse";
@@ -62,6 +63,25 @@ export interface FoundFile {
   type: "file" | "directory";
 }
 
+/** An OAuth sign-in OpenCode started: the page to open and how it finishes. */
+export interface OAuthAttempt {
+  attemptID: string;
+  url: string;
+  /** What to tell the user (a device code to enter, …). */
+  instructions: string;
+  /** auto: OpenCode notices when it is done; code: the user pastes a code from the page. */
+  mode: "auto" | "code";
+  /** auto: the redirect URL can also be pasted, when the browser cannot reach OpenCode. */
+  paste: boolean;
+  /** When the attempt expires (epoch ms), if OpenCode says. */
+  expires: number | null;
+}
+
+export interface OAuthStatus {
+  status: "pending" | "complete" | "failed" | "expired";
+  message: string | null;
+}
+
 export interface EventSubscription {
   dispose(): void;
 }
@@ -94,6 +114,41 @@ export interface OpenCodeClient {
   runShell(id: string, command: string): Promise<void>;
   /** Connection states from OpenCode's integration list; never labels or credentials. */
   accountStatus(directory: string): Promise<AccountStatus>;
+  /** OpenCode's integrations: each provider's sign-in methods and connection states, no credentials. */
+  listIntegrations(directory: string): Promise<IntegrationInfo[]>;
+  /** One integration (404 `IntegrationNotFoundError` for an unknown id). */
+  getIntegration(directory: string, id: string): Promise<IntegrationInfo>;
+  /** Active providers, without their settings, headers or body (they can hold keys). */
+  listProviders(directory: string): Promise<ProviderEntry[]>;
+  /** Hands an API key to OpenCode, which checks and stores it. Sidecar keeps no copy. */
+  connectKey(directory: string, integrationID: string, key: string, answer?: FormAnswer): Promise<void>;
+  /** Starts an OAuth sign-in; the user finishes it in the browser. */
+  startOAuth(
+    directory: string,
+    integrationID: string,
+    methodID: string,
+    answer?: FormAnswer,
+  ): Promise<OAuthAttempt>;
+  oauthStatus(directory: string, integrationID: string, attemptID: string): Promise<OAuthStatus>;
+  /** Finishes a code sign-in with the code (or, for `paste`, the redirect URL) from the browser. */
+  completeOAuth(
+    directory: string,
+    integrationID: string,
+    attemptID: string,
+    code: string | null,
+  ): Promise<void>;
+  cancelOAuth(directory: string, integrationID: string, attemptID: string): Promise<void>;
+  /** Connects through credentials OpenCode finds itself (an AWS profile, …). */
+  connectExternal(
+    directory: string,
+    integrationID: string,
+    methodID: string,
+    answer?: FormAnswer,
+  ): Promise<void>;
+  /** Removes a stored credential (Disconnect). */
+  removeCredential(credentialID: string): Promise<void>;
+  /** Rebuilds every loaded location, so config changes apply (`POST /api/location/reload`). */
+  reloadConfig(): Promise<void>;
   /** Root sessions of a folder: active ones, or with `archived` the archived ones. */
   listSessions(directory: string, limit: number, archived?: boolean): Promise<SessionSummary[]>;
   /** Copies a session into a new one: the history before `before`, or all of it. */
@@ -568,6 +623,143 @@ export class HttpOpenCodeClient implements OpenCodeClient {
   async accountStatus(directory: string): Promise<AccountStatus> {
     const d = rec(await this.request("GET", "/api/integration", { query: this.loc(directory) }));
     return parseAccountStatus(d.data);
+  }
+
+  async listIntegrations(directory: string): Promise<IntegrationInfo[]> {
+    const d = rec(await this.request("GET", "/api/integration", { query: this.loc(directory) }));
+    if (!Array.isArray(d.data)) throw new Error("Unexpected integration list");
+    return d.data.map(parseIntegration).filter((i): i is IntegrationInfo => i !== null);
+  }
+
+  async getIntegration(directory: string, id: string): Promise<IntegrationInfo> {
+    const d = rec(
+      await this.request("GET", `/api/integration/${encodeURIComponent(id)}`, { query: this.loc(directory) }),
+    );
+    const info = parseIntegration(d.data);
+    if (!info) throw new Error("Unexpected integration");
+    return info;
+  }
+
+  async listProviders(directory: string): Promise<ProviderEntry[]> {
+    const d = rec(await this.request("GET", "/api/provider", { query: this.loc(directory) }));
+    const list = Array.isArray(d.data) ? d.data : [];
+    return list.map(parseProvider).filter((p): p is ProviderEntry => p !== null);
+  }
+
+  private integrationPath(id: string, rest: string): string {
+    return `/api/integration/${encodeURIComponent(id)}/connect/${rest}`;
+  }
+
+  async connectKey(
+    directory: string,
+    integrationID: string,
+    key: string,
+    answer?: FormAnswer,
+  ): Promise<void> {
+    await this.request("POST", this.integrationPath(integrationID, "key"), {
+      query: this.loc(directory),
+      body: answer ? { key, answer } : { key },
+      timeoutMs: 60_000,
+    });
+  }
+
+  async startOAuth(
+    directory: string,
+    integrationID: string,
+    methodID: string,
+    answer?: FormAnswer,
+  ): Promise<OAuthAttempt> {
+    const d = rec(
+      await this.request("POST", this.integrationPath(integrationID, "oauth"), {
+        query: this.loc(directory),
+        body: answer ? { methodID, answer } : { methodID },
+        timeoutMs: 60_000,
+      }),
+    );
+    const a = rec(d.data);
+    const attemptID = str(a.attemptID);
+    const url = str(a.url);
+    if (!attemptID || !url) throw new Error("OpenCode did not return a sign-in page");
+    return {
+      attemptID,
+      url,
+      instructions: str(a.instructions) ?? "",
+      mode: a.mode === "code" ? "code" : "auto",
+      paste: a.paste === true,
+      expires: num(rec(a.time).expires),
+    };
+  }
+
+  async oauthStatus(directory: string, integrationID: string, attemptID: string): Promise<OAuthStatus> {
+    const d = rec(
+      await this.request(
+        "GET",
+        this.integrationPath(integrationID, `oauth/${encodeURIComponent(attemptID)}`),
+        {
+          query: this.loc(directory),
+        },
+      ),
+    );
+    const a = rec(d.data);
+    const status =
+      a.status === "complete" || a.status === "failed" || a.status === "expired" ? a.status : "pending";
+    return { status, message: str(a.message) };
+  }
+
+  async completeOAuth(
+    directory: string,
+    integrationID: string,
+    attemptID: string,
+    code: string | null,
+  ): Promise<void> {
+    await this.request(
+      "POST",
+      this.integrationPath(integrationID, `oauth/${encodeURIComponent(attemptID)}/complete`),
+      { query: this.loc(directory), body: { code }, timeoutMs: 60_000 },
+    );
+  }
+
+  async cancelOAuth(directory: string, integrationID: string, attemptID: string): Promise<void> {
+    await this.request(
+      "DELETE",
+      this.integrationPath(integrationID, `oauth/${encodeURIComponent(attemptID)}`),
+      {
+        query: this.loc(directory),
+      },
+    );
+  }
+
+  async connectExternal(
+    directory: string,
+    integrationID: string,
+    methodID: string,
+    answer?: FormAnswer,
+  ): Promise<void> {
+    await this.request("POST", this.integrationPath(integrationID, "external"), {
+      query: this.loc(directory),
+      body: answer ? { methodID, answer } : { methodID },
+      timeoutMs: 60_000,
+    });
+  }
+
+  async removeCredential(credentialID: string): Promise<void> {
+    await this.request("DELETE", `/api/credential/${encodeURIComponent(credentialID)}`);
+  }
+
+  async reloadConfig(): Promise<void> {
+    // OpenCode answers once every location has been rebuilt. OpenCode 2.4.2 refuses (503)
+    // while it has a folder loaded that was deleted since, and drops that folder as it does,
+    // so a few more tries get past each such folder.
+    for (let i = 0; ; i++) {
+      try {
+        await this.request("POST", "/api/location/reload", { timeoutMs: 120_000 });
+        return;
+      } catch (e) {
+        const gone =
+          e instanceof OpenCodeHttpError && e.status === 503 && /Directory not found/.test(e.message);
+        if (!gone || i >= 4) throw e;
+      }
+    }
   }
 
   async listSessions(directory: string, limit: number, archived = false): Promise<SessionSummary[]> {

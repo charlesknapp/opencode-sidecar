@@ -24,6 +24,8 @@ const EN = {
   workspaceChanges: "Workspace changes",
   agentDiffUnavailable: "Agent-only diff unavailable",
   changeModel: "Change model",
+  chooseModel: "Choose another model",
+  reauth: "Re-authenticate",
   retry: "Retry",
   subagents: "Subagents",
   subagent: "Subagent",

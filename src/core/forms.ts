@@ -185,7 +185,8 @@ export function validateAnswer(
         if (field.pattern) {
           let re: RegExp | null;
           try {
-            re = new RegExp(`^(?:${field.pattern})$`, "u");
+            // Unanchored, as in JSON Schema: OpenCode's own `\S` means "not only spaces".
+            re = new RegExp(field.pattern, "u");
           } catch {
             re = null; // an invalid pattern from the server is not enforced locally
           }
