@@ -149,6 +149,11 @@ export interface OpenCodeClient {
   removeCredential(credentialID: string): Promise<void>;
   /** Rebuilds every loaded location, so config changes apply (`POST /api/location/reload`). */
   reloadConfig(): Promise<void>;
+  /**
+   * One stateless generation (no session, nothing stored): the model's text. Without
+   * `model`, OpenCode's default model.
+   */
+  generateText(prompt: string, model?: ModelRef): Promise<string>;
   /** Root sessions of a folder: active ones, or with `archived` the archived ones. */
   listSessions(directory: string, limit: number, archived?: boolean): Promise<SessionSummary[]>;
   /** Copies a session into a new one: the history before `before`, or all of it. */
@@ -310,6 +315,8 @@ export class OpenCodeHttpError extends Error {
     readonly status: number,
     readonly tag: string | null,
     message: string,
+    /** A provider error's `reason` (`rate_limit`, `authentication`, …), when OpenCode gives one. */
+    readonly reason: string | null = null,
   ) {
     super(message);
     this.name = "OpenCodeHttpError";
@@ -489,6 +496,7 @@ export class HttpOpenCodeClient implements OpenCodeClient {
         res.status,
         str(body._tag),
         str(body.message) ?? `OpenCode request failed (${method} ${path}: HTTP ${res.status})`,
+        str(body.reason),
       );
     }
     return json;
@@ -744,6 +752,19 @@ export class HttpOpenCodeClient implements OpenCodeClient {
 
   async removeCredential(credentialID: string): Promise<void> {
     await this.request("DELETE", `/api/credential/${encodeURIComponent(credentialID)}`);
+  }
+
+  async generateText(prompt: string, model?: ModelRef): Promise<string> {
+    // A model call: allow as long as a slow free model may take to answer.
+    const d = rec(
+      await this.request("POST", "/api/experimental/generate/text", {
+        body: model ? { prompt, model: modelBody(model) } : { prompt },
+        timeoutMs: 120_000,
+      }),
+    );
+    const text = str(rec(d.data).text);
+    if (text === null) throw new Error("OpenCode returned no text.");
+    return text;
   }
 
   async reloadConfig(): Promise<void> {

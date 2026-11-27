@@ -35,6 +35,8 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 | Questions                                  | A tabbed form with options, an Other answer and descriptions                                        |
 | Commands and skills                        | The `/` palette with OpenCode's commands (yours too), `@skill` and `@agent` mentions                |
 | Context                                    | Files, folders and selections, `@` mentions found by OpenCode's search, pasted images and text      |
+| Problems                                   | **Fix with OpenCode** on errors and warnings; a file's or the whole folder's problems as one chip   |
+| Source Control                             | **Write commit message with OpenCode** for the staged changes, into the commit box (never commits)  |
 | Rewind                                     | Rewind with or without code, and Restore or Apply a rewind staged in another client                 |
 | Commands, shell, compaction                | Type `/` for OpenCode's commands, `!command`, `/compact`                                            |
 | Side questions                             | `/btw`: ask in a hidden fork while the agent works, then send the answer to the session or close it |
@@ -102,7 +104,11 @@ OpenCode is a capable agent. Sidecar is built so you can see and steer everythin
 | Ctrl/Cmd+F           | The chat                           | Find in the conversation (Enter / Shift+Enter, Esc) |
 | Cmd+Alt+O (macOS)    | Anywhere                           | Focus the chat                                      |
 
-On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctrl+Alt types characters on many keyboard layouts). The Command Palette also has **Sidecar: New Session**, **Stop**, **Show History** and **Export Session to Markdown**; bind any of them in Keyboard Shortcuts.
+On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctrl+Alt types characters on many keyboard layouts). Sidecar binds no other key in VS Code: the keys above work inside the chat only, so Ctrl+P, Ctrl+K, Ctrl+Escape and the rest stay VS Code's. The Command Palette also has **Sidecar: New Session**, **Stop**, **Show History**, **Export Session to Markdown**, the problem fixes and the commit message; bind any of them in Keyboard Shortcuts.
+
+- **Fix with OpenCode.** On an error or warning, the light bulb (Ctrl+. / Cmd+.) and the Problems view's quick fixes offer **Fix with OpenCode**: the problem goes into the message box as a chip, with **Fix these problems.** typed for you if the box is empty, so you can add to it before sending. The prompt names the file relative to the folder, the line and column, the severity, the source and code (`ts(2322)`), the message and a few lines of code around it. **+ → Fix problems in this file** (or **Sidecar: Fix Problems in This File**) takes every error and warning of the editor's file; **Fix all problems in the workspace** takes the open folder's, grouped by file, errors first, up to 50, and the chip and the prompt say when there were more (_50 of 73 problems_). Files that look sensitive (`.env`, keys) are left out of the folder-wide list. VS Code offers extensions no menu in the Problems view itself, so it is the quick fix there.
+- **Follow the editor.** With `opencodeSidecar.autoContext` on (off by default; also **/ → Follow the editor**), the active editor's selection, or its file when nothing is selected, sits in the message box as a dashed chip marked _editor_ that follows you from file to file. It is sent only if the chip is still there when you send; × leaves it out until you move to another file or select other lines. Only the active editor counts, never your other tabs, and files outside the folder or that look sensitive are skipped.
+- **Commit messages.** **Write commit message with OpenCode** (the sparkle in the Source Control title bar, **Commit message** in the agent changes strip, or the palette) writes a message for the staged changes, or for the agent's changes when nothing is staged, into the Git commit box. It follows your repository's style (the last ten subjects are shown to the model as examples) and uses the model selected in the chat through OpenCode's one-off generation, so nothing is added to the conversation. Large diffs are trimmed (lockfiles left out, at most about 12,000 characters). A message already in the box is only replaced after you agree, and nothing is ever committed. If the model's free limit is reached, the message says so.
 
 - **Approval modes.** The badge in the header (**Ask**, **Balanced**, **Auto**, or **Default** with no Sidecar rules) opens a menu with one line per mode. **Ask** asks before every edit, command and web request. **Balanced** lets reads, searches and edits in the folder run, and asks for commands, web requests and files outside the folder. **Auto** lets everything run but blocks destructive commands (`rm -rf`, `git push --force`, `git reset --hard`, `git clean -f`, `Remove-Item -Recurse`, `rmdir /s`); switching to it asks once, with _Don't ask again_. **Apply to** picks this session or this folder (new sessions in the folder start in the mode). Modes are OpenCode permission rules on the session, after the agent's own: an agent's blocks stay (Plan still never edits), as do its exceptions such as asking before reading `.env` files, and subagents started afterwards inherit them. The badge reads the rules back from OpenCode, so a change made in another client shows too. OpenCode's config files are never changed.
 - **Permission rules.** **Permission rules…** (in the badge's menu and the **/** palette) lists the session's rules, the mode's read-only and your own (action, pattern and Allow, Ask or Deny) to add, edit or delete, and the folder's _always allowed_ rules OpenCode saved, to edit or remove. Patterns are OpenCode's: `*` matches anything and `npm test *` also matches `npm test`. In a permission request, **Always allow commands like this…** suggests a pattern (`npm test -- --grep foo` → `npm test *`, `Get-ChildItem -Path src` → `Get-ChildItem *`), shows whether it covers the request, and saves it for the session or, when OpenCode offers _always_, for the folder.
@@ -131,17 +137,20 @@ On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctr
 
 ### Commands
 
-| Command                       | What it does                                                     |
-| ----------------------------- | ---------------------------------------------------------------- |
-| Sidecar: Focus Chat           | Reveal the chat and focus the message box                        |
-| Sidecar: Refresh Connection   | Re-check OpenCode, account, providers, models and agents         |
-| Sidecar: Sign in to OpenCode  | Run OpenCode's own sign-in in a terminal                         |
-| Sidecar: Manage Providers     | Open the Providers panel                                         |
-| Sidecar: Check OpenCode Setup | Check the program, service, sign-in, models and providers        |
-| Sidecar: New Session          | Start a fresh conversation                                       |
-| Sidecar: Add Current File     | Attach the active editor's file                                  |
-| Sidecar: Add Selection        | Attach the selected lines; also in the editor's right-click menu |
-| Sidecar: Stop                 | Cancel the running task                                          |
+| Command                                     | What it does                                                     |
+| ------------------------------------------- | ---------------------------------------------------------------- |
+| Sidecar: Focus Chat                         | Reveal the chat and focus the message box                        |
+| Sidecar: Refresh Connection                 | Re-check OpenCode, account, providers, models and agents         |
+| Sidecar: Sign in to OpenCode                | Run OpenCode's own sign-in in a terminal                         |
+| Sidecar: Manage Providers                   | Open the Providers panel                                         |
+| Sidecar: Check OpenCode Setup               | Check the program, service, sign-in, models and providers        |
+| Sidecar: New Session                        | Start a fresh conversation                                       |
+| Sidecar: Add Current File                   | Attach the active editor's file                                  |
+| Sidecar: Add Selection                      | Attach the selected lines; also in the editor's right-click menu |
+| Sidecar: Fix Problems in This File          | Attach the editor's file's errors and warnings                   |
+| Sidecar: Fix All Problems in the Workspace  | Attach the folder's errors and warnings (up to 50)               |
+| Sidecar: Write Commit Message with OpenCode | Fill the Git commit box for the staged changes                   |
+| Sidecar: Stop                               | Cancel the running task                                          |
 
 ### Settings
 
@@ -159,6 +168,7 @@ On Windows and Linux, add your own shortcut for `opencodeSidecar.focusChat` (Ctr
 | `opencodeSidecar.cacheWarmMinutes`                 | `5`        | Your provider's prompt-cache lifetime for the clock; `0` hides it.                                                                          |
 | `opencodeSidecar.showUsage`                        | `true`     | Show context, cost and step figures.                                                                                                        |
 | `opencodeSidecar.sessionStrip`                     | `true`     | Show the strip of open sessions under the header (once two or more sessions are on it).                                                     |
+| `opencodeSidecar.autoContext`                      | `false`    | Show the active editor's selection (or file) as a chip that follows the editor; sent only while the chip is there. Never other tabs.        |
 | `opencodeSidecar.showStatusBarItem`                | `true`     | Show the Sidecar item in the Status Bar.                                                                                                    |
 | `opencodeSidecar.budget.default`                   | `medium`   | Budget level for workspaces without a saved choice.                                                                                         |
 | `opencodeSidecar.budget.small/medium/large/custom` | see above  | `{ "maxCost": USD, "maxSteps": n }`; `0` disables that metric.                                                                              |

@@ -850,3 +850,40 @@ describe("workspace change events during load (0.2.1 fix)", () => {
     );
   });
 });
+
+describe("commit messages: the agent's patches and a stateless generation", () => {
+  it("hands out the agent's patches per file", async () => {
+    const { c, client } = await running();
+    client.diff = [
+      { file: "a.txt", patch: "@@ -1,1 +1,2 @@\n a\n+b\n", additions: 1, deletions: 0, status: "modified" },
+      { file: "n.txt", patch: "@@ -0,0 +1,1 @@\n+n\n", additions: 1, deletions: 0, status: "added" },
+    ];
+    await c.refreshChanges();
+    assert.deepEqual(
+      c.agentPatches().map((p) => p.path),
+      ["a.txt", "n.txt"],
+    );
+    assert.match(c.agentPatches()[0].patch, /\+b/);
+  });
+
+  it("generates with the selected model and variant, outside the session", async () => {
+    const { c, client } = await running();
+    await c.selectModel("vast/qwen");
+    await c.selectVariant("high");
+    const prompts = client.callsTo("prompt").length;
+    client.generated = "Docs: a line";
+    assert.equal(await c.generateText("write it"), "Docs: a line");
+    assert.deepEqual(client.callsTo("generateText").at(-1)?.args, [
+      "write it",
+      { providerID: "vast", id: "qwen", variant: "high" },
+    ]);
+    assert.equal(client.callsTo("prompt").length, prompts, "nothing is sent to the session");
+    client.generated = new OpenCodeHttpError(
+      502,
+      "ProviderRequestError",
+      "Free usage limit reached.",
+      "rate_limit",
+    );
+    await assert.rejects(() => c.generateText("again"), /Free usage limit/);
+  });
+});

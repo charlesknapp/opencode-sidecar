@@ -62,6 +62,90 @@ describe("extension manifest", () => {
     ]);
   });
 
+  it("every keybinding has a when clause and takes no core VS Code shortcut", () => {
+    // Core bindings an extension must never take (the official OpenCode extension was
+    // criticised for binding Ctrl+P-style keys). Sidecar's own keys live inside the webview.
+    const core = new Set([
+      "ctrl+p",
+      "cmd+p",
+      "ctrl+shift+p",
+      "cmd+shift+p",
+      "ctrl+e",
+      "cmd+e",
+      "ctrl+k",
+      "cmd+k",
+      "ctrl+b",
+      "cmd+b",
+      "ctrl+j",
+      "cmd+j",
+      "ctrl+l",
+      "cmd+l",
+      "ctrl+i",
+      "cmd+i",
+      "ctrl+escape",
+      "cmd+escape",
+      "ctrl+shift+e",
+      "cmd+shift+e",
+      "ctrl+shift+f",
+      "cmd+shift+f",
+      "ctrl+shift+g",
+      "ctrl+shift+x",
+      "cmd+shift+x",
+      "ctrl+shift+i",
+      "cmd+shift+i",
+      "ctrl+shift+l",
+      "cmd+shift+l",
+      "ctrl+alt+i",
+      "cmd+alt+i",
+      "ctrl+`",
+      "ctrl+n",
+      "cmd+n",
+      "ctrl+w",
+      "cmd+w",
+      "ctrl+s",
+      "cmd+s",
+      "ctrl+.",
+      "cmd+.",
+      "ctrl+space",
+      "ctrl+/",
+      "cmd+/",
+      "f1",
+      "f2",
+      "f5",
+      "f12",
+      "alt+enter",
+    ]);
+    for (const kb of pkg.contributes.keybindings as Array<Record<string, string>>) {
+      assert.ok(kb.when?.trim(), `${kb.command} needs a when clause`);
+      for (const k of [kb.key, kb.mac, kb.win, kb.linux].filter(Boolean))
+        assert.ok(!core.has(k.toLowerCase()), `${kb.command} takes ${k}`);
+    }
+  });
+
+  it("contributes the problem fixes, the light bulb's command (hidden) and the commit message", () => {
+    for (const c of [
+      "opencodeSidecar.fixWithOpenCode",
+      "opencodeSidecar.fixFileProblems",
+      "opencodeSidecar.fixWorkspaceProblems",
+      "opencodeSidecar.writeCommitMessage",
+    ])
+      assert.ok(commands.includes(c), c);
+    const palette = pkg.contributes.menus.commandPalette as Array<{ command: string; when: string }>;
+    assert.equal(palette.find((m) => m.command === "opencodeSidecar.fixWithOpenCode")?.when, "false");
+    assert.deepEqual(pkg.contributes.menus["scm/title"], [
+      { command: "opencodeSidecar.writeCommitMessage", when: "scmProvider == git", group: "navigation@9" },
+    ]);
+    // VS Code has no Problems view menu for extensions ("problems/context" is not a
+    // contribution point); the Problems view shows the light bulb's quick fix instead.
+    assert.equal(pkg.contributes.menus["problems/context"], undefined);
+  });
+
+  it("the editor context setting is off by default", () => {
+    const p = pkg.contributes.configuration.properties["opencodeSidecar.autoContext"];
+    assert.equal(p.type, "boolean");
+    assert.equal(p.default, false);
+  });
+
   it("activates after startup (for the Status Bar item) without a startup-blocking event", () => {
     assert.deepEqual(pkg.activationEvents, ["onStartupFinished"]);
     const p = pkg.contributes.configuration.properties["opencodeSidecar.showStatusBarItem"];

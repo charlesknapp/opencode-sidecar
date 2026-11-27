@@ -25,6 +25,11 @@ export interface GitRepositoryState {
 export interface GitRepository {
   rootUri: vscode.Uri;
   state: GitRepositoryState;
+  /** The Source Control view's commit message box. */
+  inputBox: { value: string };
+  /** `git diff`, or with `cached` `git diff --cached` (the staged changes). */
+  diff(cached?: boolean): Promise<string>;
+  log(options?: { maxEntries?: number }): Promise<Array<{ message: string }>>;
 }
 
 export interface GitAPI {

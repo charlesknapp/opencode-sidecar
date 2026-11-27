@@ -149,7 +149,34 @@ export type ContextAttachment =
       endLine: number;
       text: string;
       languageId: string;
-    };
+    }
+  /**
+   * Errors and warnings from VS Code's Problems, grouped by file. `total` is how many
+   * there were before the list was capped, so the prompt can say what was left out.
+   */
+  | { kind: "problems"; id: string; files: ProblemFile[]; total: number };
+
+/** One diagnostic, with 1-based lines and columns and a few lines of code around it. */
+export interface ProblemItem {
+  severity: "error" | "warning";
+  message: string;
+  /** VS Code's diagnostic source (`ts`, `eslint`) and code (`2322`), when set. */
+  source?: string;
+  code?: string;
+  line: number;
+  column: number;
+  endLine: number;
+  /** The lines around the problem, the first being line `start`. */
+  excerpt?: { start: number; lines: string[] };
+}
+
+export interface ProblemFile {
+  /** Relative to the open folder with `/` separators, or the absolute path outside it. */
+  relPath: string;
+  absPath: string;
+  languageId: string;
+  problems: ProblemItem[];
+}
 
 export interface FileChange {
   path: string;

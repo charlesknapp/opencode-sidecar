@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { ChatViewProvider, FOCUS_COMMAND, VIEW_ID } from "./host/chatView";
 import { AGENT_SCHEME, AgentDocumentProvider, EMPTY_SCHEME, EmptyDocumentProvider } from "./host/diff";
 import { Logger } from "./host/log";
+import { FIX_COMMAND, FixWithOpenCodeActions } from "./host/problems";
 import { TOOL_TEXT_SCHEME, ToolTextProvider } from "./host/toolText";
 
 let shutdown: (() => Promise<void>) | undefined;
@@ -35,6 +36,22 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("opencodeSidecar.stop", () => provider.stop()),
     vscode.commands.registerCommand("opencodeSidecar.showHistory", () => provider.showHistory()),
     vscode.commands.registerCommand("opencodeSidecar.exportSession", () => provider.exportSession()),
+    // "Fix with OpenCode" in the light bulb for errors and warnings, in every language.
+    vscode.languages.registerCodeActionsProvider(
+      [{ scheme: "file" }, { scheme: "untitled" }],
+      new FixWithOpenCodeActions(),
+      { providedCodeActionKinds: FixWithOpenCodeActions.kinds },
+    ),
+    vscode.commands.registerCommand(FIX_COMMAND, (uri?: vscode.Uri, range?: vscode.Range) =>
+      provider.fixWithOpenCode(uri, range),
+    ),
+    vscode.commands.registerCommand("opencodeSidecar.fixFileProblems", () => provider.fixFileProblems()),
+    vscode.commands.registerCommand("opencodeSidecar.fixWorkspaceProblems", () =>
+      provider.fixWorkspaceProblems(),
+    ),
+    vscode.commands.registerCommand("opencodeSidecar.writeCommitMessage", (arg?: unknown) =>
+      provider.writeCommitMessage(arg),
+    ),
   );
   shutdown = () => provider.shutdown();
   log.info("Sidecar activated");

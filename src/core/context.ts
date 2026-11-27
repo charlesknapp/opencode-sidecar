@@ -4,10 +4,12 @@
 //   reads and inlines them itself, exactly like an @file mention in its TUI.
 // - Selections are sent inline as a fenced snippet with path + line range, so
 //   only the selected lines are transmitted, never the whole file.
+// - Problems (VS Code diagnostics) are sent inline too, see ./problems.ts.
 
 import { pathToFileURL } from "node:url";
 import type { ContextAttachment } from "../shared/model";
 import type { AttachmentChip } from "../shared/protocol";
+import { formatProblems, problemsChip } from "./problems";
 
 export const MAX_SELECTION_CHARS = 60_000;
 
@@ -72,6 +74,7 @@ export function basename(p: string): string {
 }
 
 export function chipFor(a: ContextAttachment): AttachmentChip {
+  if (a.kind === "problems") return { id: a.id, ...problemsChip(a), kind: "problems" };
   if (a.kind === "file") return { id: a.id, label: basename(a.relPath), detail: a.relPath };
   if (a.kind === "image")
     return a.thumb
@@ -180,6 +183,8 @@ export function buildPrompt(
       if (seen.has(a.uri)) continue;
       seen.add(a.uri);
       files.push({ uri: a.uri, name: a.name });
+    } else if (a.kind === "problems") {
+      snippets.push(formatProblems(a));
     } else {
       snippets.push(formatSelection(a));
     }

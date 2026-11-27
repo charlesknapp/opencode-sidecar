@@ -3,6 +3,7 @@ import type {
   EventSubscription,
   FileDiffInfo,
   FoundFile,
+  ModelRef,
   OAuthAttempt,
   OAuthStatus,
   OpenCodeClient,
@@ -177,6 +178,13 @@ export class MockClient implements OpenCodeClient {
   async removeCredential(credentialID: string) {
     this.record("removeCredential", credentialID);
     this.fail("removeCredential");
+  }
+  /** What `generateText` answers; an Error is thrown instead. */
+  generated: string | Error = "Fix: a change";
+  async generateText(prompt: string, model?: ModelRef) {
+    this.record("generateText", prompt, model);
+    if (this.generated instanceof Error) throw this.generated;
+    return this.generated;
   }
   async reloadConfig() {
     this.record("reloadConfig");

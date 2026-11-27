@@ -44,9 +44,11 @@ export interface AttachmentChip {
   id: string;
   label: string;
   detail: string;
-  /** Images show a small preview (`thumb`, a data: URI) or an image icon. */
-  kind?: "image";
+  /** Images show a small preview (`thumb`, a data: URI) or an image icon; problems a warning icon. */
+  kind?: "image" | "problems";
   thumb?: string;
+  /** The editor's selection or file, following the editor (`opencodeSidecar.autoContext`). */
+  auto?: boolean;
 }
 
 export interface ViewState {
@@ -97,6 +99,8 @@ export interface ViewState {
     statusWords?: boolean;
     /** The session strip above the conversation (default on). */
     sessionStrip?: boolean;
+    /** The editor's selection or file follows the editor as a chip (default off). */
+    autoContext?: boolean;
   };
   /** OpenCode's slash commands for this folder (empty when unavailable). */
   commands: CommandInfo[];
@@ -129,6 +133,8 @@ export type HostMessage =
   | { type: "showHistory" }
   | { type: "copyResult"; requestId: string; ok: boolean }
   | { type: "restoreInput"; text: string }
+  /** Text for an empty message box (such as "Fix these problems."); typed text is kept. */
+  | { type: "suggestInput"; text: string }
   | { type: "formError"; formId: string; error: string }
   | { type: "focusModel" }
   | { type: "subagentTranscript"; sessionID: string; items: TranscriptItem[] }
@@ -227,10 +233,14 @@ export type WebviewMessage =
   | { type: "addSelection" }
   /** Search the workspace for a file to attach (the + menu's last entry). */
   | { type: "searchFiles" }
+  /** Attach the errors and warnings of the editor's file, or of the whole open folder. */
+  | { type: "fixProblems"; scope: "file" | "workspace" }
+  /** Write a commit message for the staged (or the agent's) changes into the Git commit box. */
+  | { type: "writeCommitMessage" }
   /** Open a tool call's command, output or subagent prompt in a read-only editor tab. */
   | { type: "openToolText"; itemId: string; part: "in" | "out" | "prompt" }
   /** Sidecar settings flipped from the / menu. */
-  | { type: "setPref"; key: "stickyPrompt" | "statusWords"; value: boolean }
+  | { type: "setPref"; key: "stickyPrompt" | "statusWords" | "autoContext"; value: boolean }
   | { type: "setPref"; key: "activity"; value: "detailed" | "grouped" }
   | { type: "openSettings" }
   /** The / menu opened: reload OpenCode's commands. */
@@ -419,9 +429,12 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   addCurrentFile: () => true,
   addSelection: () => true,
   searchFiles: () => true,
+  fixProblems: (m) => m.scope === "file" || m.scope === "workspace",
+  writeCommitMessage: () => true,
   openToolText: (m) => isStr(m.itemId) && (m.part === "in" || m.part === "out" || m.part === "prompt"),
   setPref: (m) =>
-    ((m.key === "stickyPrompt" || m.key === "statusWords") && typeof m.value === "boolean") ||
+    ((m.key === "stickyPrompt" || m.key === "statusWords" || m.key === "autoContext") &&
+      typeof m.value === "boolean") ||
     (m.key === "activity" && (m.value === "detailed" || m.value === "grouped")),
   openSettings: () => true,
   refreshCommands: () => true,
@@ -509,6 +522,7 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   selectAgent: ["id"],
   selectRoot: ["path"],
   removeAttachment: ["id"],
+  fixProblems: ["scope"],
   respondPermission: ["requestId", "decision", "message"],
   openFile: ["path"],
   copy: ["text", "requestId"],

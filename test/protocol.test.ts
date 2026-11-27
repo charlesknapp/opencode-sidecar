@@ -198,3 +198,27 @@ describe("editor tabs and settings from the chat", () => {
       assert.equal(parseWebviewMessage(bad), undefined, JSON.stringify(bad));
   });
 });
+
+describe("problems, editor context and commit messages from the chat", () => {
+  it("accepts the two problem scopes, the commit message and the editor context switch", () => {
+    for (const ok of [
+      { type: "fixProblems", scope: "file" },
+      { type: "fixProblems", scope: "workspace" },
+      { type: "writeCommitMessage" },
+      { type: "setPref", key: "autoContext", value: true },
+      { type: "removeAttachment", id: "auto:c:\\repo\\a.ts#1-2" },
+    ])
+      assert.ok(parseWebviewMessage(ok), JSON.stringify(ok));
+  });
+
+  it("rejects other scopes, extra fields and a non-boolean switch", () => {
+    for (const bad of [
+      { type: "fixProblems", scope: "folder" },
+      { type: "fixProblems" },
+      { type: "fixProblems", scope: "file", path: "/etc/passwd" },
+      { type: "writeCommitMessage", message: "x" },
+      { type: "setPref", key: "autoContext", value: "on" },
+    ])
+      assert.equal(parseWebviewMessage(bad), undefined, JSON.stringify(bad));
+  });
+});

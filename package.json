@@ -132,6 +132,27 @@
         "category": "Sidecar"
       },
       {
+        "command": "opencodeSidecar.fixWithOpenCode",
+        "title": "Fix with OpenCode",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.fixFileProblems",
+        "title": "Fix Problems in This File",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.fixWorkspaceProblems",
+        "title": "Fix All Problems in the Workspace",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.writeCommitMessage",
+        "title": "Write Commit Message with OpenCode",
+        "category": "Sidecar",
+        "icon": "$(sparkle)"
+      },
+      {
         "command": "opencodeSidecar.stop",
         "title": "Stop",
         "category": "Sidecar"
@@ -166,6 +187,31 @@
           "command": "opencodeSidecar.addSelection",
           "when": "editorHasSelection",
           "group": "opencodeSidecar@1"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "opencodeSidecar.writeCommitMessage",
+          "when": "scmProvider == git",
+          "group": "navigation@9"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "opencodeSidecar.fixWithOpenCode",
+          "when": "false"
+        },
+        {
+          "command": "opencodeSidecar.fixFileProblems",
+          "when": "editorIsOpen"
+        },
+        {
+          "command": "opencodeSidecar.fixWorkspaceProblems",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "opencodeSidecar.writeCommitMessage",
+          "when": "config.git.enabled && workspaceFolderCount > 0"
         }
       ]
     },
@@ -251,6 +297,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Show the strip of open sessions above the chat: the sessions you opened lately in this folder and any that are working or waiting for you, each with its status. It appears once two or more sessions are on it."
+        },
+        "opencodeSidecar.autoContext": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show the active editor's selection, or its file when nothing is selected, as a chip in the message box that follows the editor. It is sent with your message only while the chip is there; remove it to leave it out. Other open tabs are never included."
         },
         "opencodeSidecar.showStatusBarItem": {
           "type": "boolean",

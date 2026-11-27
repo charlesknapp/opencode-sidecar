@@ -2966,6 +2966,19 @@ export class SessionController {
     return reconstructSides(p.patch, p.status);
   }
 
+  /** The agent's changes in the open session, one patch per file (OpenCode's snapshot diff). */
+  agentPatches(): Array<{ path: string; patch: string }> {
+    return [...this.patches].map(([path, p]) => ({ path, patch: p.patch }));
+  }
+
+  /**
+   * Text from the selected model, generated outside any session (OpenCode's stateless
+   * generate call), so nothing is added to the conversation or its costs.
+   */
+  generateText(prompt: string): Promise<string> {
+    return this.client.generateText(prompt, this.modelRef());
+  }
+
   /** Back-compat for v0.1 callers: agent-attributed files (empty when unavailable). */
   get changes(): FileChange[] {
     return this.agentChanges.status === "ok" ? this.agentChanges.files : [];

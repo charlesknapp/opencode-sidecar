@@ -2329,6 +2329,133 @@ describe(
       assert.deepEqual(await lastSent("removeAttachment"), { type: "removeAttachment", id: "a1" });
     });
 
+    it("fixes the file's or the workspace's problems from + and /, and shows them as one chip", async () => {
+      for (const [menu, testid, scope] of [
+        ["add-context", "menu-fix-file", "file"],
+        ["add-context", "menu-fix-workspace", "workspace"],
+        ["commands-button", "command-fix-file", "file"],
+        ["commands-button", "command-fix-workspace", "workspace"],
+      ]) {
+        await clearSent();
+        await page.click(`[data-testid="${menu}"]`);
+        await page.click(`[data-testid="${testid}"]`);
+        assert.deepEqual(await lastSent("fixProblems"), { type: "fixProblems", scope }, testid);
+      }
+      await host({
+        type: "state",
+        state: baseState({
+          attachments: [
+            {
+              id: "p1",
+              label: "50 of 73 problems · 12 files",
+              detail: "33 errors, 17 warnings in 12 files (first 50 of 73)\nsrc/a.ts\nsrc/b.ts",
+              kind: "problems",
+            },
+          ],
+        }),
+      });
+      const chip = '[data-testid="problems-chip"]';
+      assert.equal(await text(`${chip} .chip-label`), "50 of 73 problems · 12 files");
+      assert.ok(await page.$(`${chip} .i-warn`), "a warning icon");
+      assert.match((await page.$eval(chip, (c) => (c as HTMLElement).dataset.tip)) ?? "", /first 50 of 73/);
+      // The host suggests the words; an empty box takes them, typed text is kept.
+      await host({ type: "suggestInput", text: "Fix these problems." });
+      assert.equal(
+        await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).value),
+        "Fix these problems.",
+      );
+      assert.equal(await page.evaluate(() => document.activeElement?.tagName), "TEXTAREA");
+      await page.$eval("textarea", (t) => ((t as HTMLTextAreaElement).value = ""));
+      await page.keyboard.type("Only the type errors");
+      await host({ type: "suggestInput", text: "Fix these problems." });
+      assert.equal(
+        await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).value),
+        "Only the type errors",
+      );
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("send"), { type: "send", text: "Only the type errors" });
+      await page.click(`${chip} .chip-x`);
+      assert.deepEqual(await lastSent("removeAttachment"), { type: "removeAttachment", id: "p1" });
+    });
+
+    it("the editor context chip follows the editor, is marked as such and can be removed", async () => {
+      const auto = (label: string, detail: string) =>
+        baseState({
+          attachments: [
+            { id: "a1", label: "notes.md", detail: "docs/notes.md" },
+            { id: `auto:/w/my-app/${detail}`, label, detail, auto: true },
+          ],
+          prefs: { stickyPrompt: true, cacheWarmMinutes: 5, activity: "detailed", autoContext: true },
+        });
+      await host({ type: "state", state: auto("app.ts", "src/app.ts") });
+      const chip = '[data-testid="auto-chip"]';
+      assert.equal(await text(`${chip} .chip-label`), "app.ts");
+      assert.equal(await text(`${chip} .chip-detail`), "editor");
+      assert.ok(await page.$(`${chip} .i-file`));
+      assert.match(
+        (await page.$eval(chip, (c) => (c as HTMLElement).dataset.tip)) ?? "",
+        /Follows the editor/,
+      );
+      assert.equal(
+        await page.$eval(chip, (c) => getComputedStyle(c).borderTopStyle),
+        "dashed",
+        "told apart from chips you added",
+      );
+      // A selection in the editor: the same chip now stands for the lines.
+      await host({ type: "state", state: auto("app.ts:3-9", "src/app.ts lines 3-9") });
+      assert.equal(await text(`${chip} .chip-label`), "app.ts:3-9");
+      assert.ok(await page.$(`${chip} .i-selection`));
+      assert.equal(
+        await page.$$eval(".chips .chip", (c) => c.length),
+        2,
+        "one editor chip, never other tabs",
+      );
+      await page.click(`${chip} .chip-x`);
+      assert.deepEqual(await lastSent("removeAttachment"), {
+        type: "removeAttachment",
+        id: "auto:/w/my-app/src/app.ts lines 3-9",
+      });
+      await host({ type: "state", state: baseState() });
+      assert.equal(await page.$(chip), null);
+      // Narrow panel: the chips wrap and nothing scrolls sideways.
+      await page.setViewport({ width: 300, height: 700 });
+      await host({ type: "state", state: auto("a-very-long-component-file-name.tsx:120-180", "src/x.tsx") });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        true,
+      );
+      // The / menu switches it.
+      await page.click('[data-testid="commands-button"]');
+      assert.equal(
+        await page.$eval('[data-testid="pref-auto-context"]', (b) => b.getAttribute("aria-checked")),
+        "true",
+      );
+      await page.click('[data-testid="pref-auto-context"]');
+      assert.deepEqual(await lastSent("setPref"), { type: "setPref", key: "autoContext", value: false });
+    });
+
+    it("the agent changes strip writes a commit message (in a Git repository only)", async () => {
+      const changes = {
+        agentChanges: {
+          status: "ok" as const,
+          files: [{ path: "a.txt", additions: 1, deletions: 0, status: "modified" as const }],
+        },
+      };
+      await host({ type: "state", state: baseState(changes) });
+      const btn = '[data-testid="write-commit-message"]';
+      assert.equal(await text(btn), "Commit message");
+      assert.match(
+        (await page.$eval(btn, (b) => (b as HTMLElement).dataset.tip)) ?? "",
+        /Nothing is committed/,
+      );
+      await page.click(btn);
+      assert.deepEqual(await lastSent("writeCommitMessage"), { type: "writeCommitMessage" });
+      const noRepo = baseState(changes);
+      noRepo.workspace = { ...noRepo.workspace, repoRoot: null, repoKind: "not-git" };
+      await host({ type: "state", state: noRepo });
+      assert.equal(await page.$(btn), null);
+    });
+
     it("budget stopped card offers Continue once / Increase budget / Start new session", async () => {
       await host({
         type: "transcript",

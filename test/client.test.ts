@@ -432,3 +432,56 @@ describe("HTTP OpenCode client", () => {
     ]);
   });
 });
+
+describe("HTTP OpenCode client: stateless generation", () => {
+  it("posts the prompt and model to generate/text and returns the text", async () => {
+    const { fn, captured } = mockFetch({
+      "POST /api/experimental/generate/text": () => json({ data: { text: "Fix: a bug" } }),
+    });
+    const c = new HttpOpenCodeClient({ url: "http://127.0.0.1:1", authorization: AUTH }, fn);
+    assert.equal(
+      await c.generateText("hi", { providerID: "opencode", id: "big-pickle", variant: "high" }),
+      "Fix: a bug",
+    );
+    assert.deepEqual(captured[0].body, {
+      prompt: "hi",
+      model: { providerID: "opencode", id: "big-pickle", variant: "high" },
+    });
+    assert.ok(!captured[0].url.includes("location"), "not scoped to a folder");
+    await c.generateText("hi");
+    assert.deepEqual(captured[1].body, { prompt: "hi" }, "OpenCode's default model");
+  });
+
+  it("keeps a provider error's reason (the free limit comes as 502 rate_limit)", async () => {
+    const { fn } = mockFetch({
+      "POST /api/experimental/generate/text": () =>
+        json(
+          {
+            _tag: "ProviderRequestError",
+            providerID: "opencode",
+            reason: "rate_limit",
+            message: "Free usage limit reached.",
+            status: 429,
+            retryAfterMs: 1000,
+          },
+          502,
+        ),
+    });
+    const c = new HttpOpenCodeClient({ url: "http://127.0.0.1:1" }, fn);
+    await assert.rejects(
+      () => c.generateText("hi"),
+      (e: unknown) =>
+        e instanceof OpenCodeHttpError &&
+        e.status === 502 &&
+        e.tag === "ProviderRequestError" &&
+        e.reason === "rate_limit" &&
+        e.message === "Free usage limit reached.",
+    );
+  });
+
+  it("refuses a reply without text", async () => {
+    const { fn } = mockFetch({ "POST /api/experimental/generate/text": () => json({ data: {} }) });
+    const c = new HttpOpenCodeClient({ url: "http://127.0.0.1:1" }, fn);
+    await assert.rejects(() => c.generateText("hi"), /no text/);
+  });
+});

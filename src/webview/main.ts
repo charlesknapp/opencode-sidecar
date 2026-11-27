@@ -539,6 +539,14 @@ plusBtn.addEventListener("click", () =>
         detail: "or paste",
         testid: "menu-image",
       }),
+      item("Fix problems in this file", () => send({ type: "fixProblems", scope: "file" }), {
+        icon: "warn",
+        testid: "menu-fix-file",
+      }),
+      item("Fix all problems in the workspace", () => send({ type: "fixProblems", scope: "workspace" }), {
+        icon: "warn",
+        testid: "menu-fix-workspace",
+      }),
       item("Mention a file, agent or skill", () => startMention(), {
         icon: "at",
         detail: "@",
@@ -2223,6 +2231,24 @@ function commandsMenu(): MenuEntry[] {
       sub: "Find a file in this folder to attach",
       disabled: !connected,
     }),
+    item("Fix problems in this file", () => send({ type: "fixProblems", scope: "file" }), {
+      icon: "warn",
+      sub: "Attach the errors and warnings VS Code reports for the editor's file",
+      disabled: !connected,
+      testid: "command-fix-file",
+    }),
+    item("Fix all problems in the workspace", () => send({ type: "fixProblems", scope: "workspace" }), {
+      icon: "warn",
+      sub: "Attach every error and warning in this folder (up to 50)",
+      disabled: !connected,
+      testid: "command-fix-workspace",
+    }),
+    toggle(
+      "Follow the editor",
+      !!s?.prefs.autoContext,
+      () => send({ type: "setPref", key: "autoContext", value: !state?.prefs.autoContext }),
+      "pref-auto-context",
+    ),
     item(
       "Bookmarks…",
       () => {
@@ -7621,6 +7647,19 @@ function renderChanges(s: ViewState) {
           },
           t("reviewAll"),
         ),
+        s.workspace.repoRoot
+          ? h(
+              "button",
+              {
+                className: "link-btn changes-action",
+                "data-testid": "write-commit-message",
+                onclick: () => send({ type: "writeCommitMessage" }),
+                "data-tip":
+                  "Write a commit message with OpenCode for the staged changes (or the agent's changes when nothing is staged) into the Source Control commit box. Nothing is committed.",
+              },
+              "Commit message",
+            )
+          : null,
       ),
       changesOpen ? fileList(ac.files, "openAgentDiff") : null,
     );
@@ -7788,12 +7827,31 @@ function renderComposer(s: ViewState) {
     ...s.attachments.map((a) =>
       h(
         "span",
-        { className: "chip" + (a.kind === "image" ? " img" : ""), "data-tip": a.detail },
+        {
+          className:
+            "chip" +
+            (a.kind === "image" ? " img" : "") +
+            (a.kind === "problems" ? " problems" : "") +
+            (a.auto ? " auto" : ""),
+          "data-tip": a.auto
+            ? `${a.detail}\nFollows the editor. Sent with your message while it is here.`
+            : a.detail,
+          "data-testid": a.auto ? "auto-chip" : a.kind === "problems" ? "problems-chip" : undefined,
+        },
         a.thumb
           ? h("img", { className: "chip-thumb", src: a.thumb, alt: "" })
-          : icon(a.kind === "image" ? "image" : /:\d/.test(a.label) ? "selection" : "file"),
+          : icon(
+              a.kind === "image"
+                ? "image"
+                : a.kind === "problems"
+                  ? "warn"
+                  : /:\d/.test(a.label)
+                    ? "selection"
+                    : "file",
+            ),
         h("span", { className: "chip-label" }, a.label),
         a.kind === "image" ? h("span", { className: "chip-detail" }, a.detail.split(" · ")[0]) : null,
+        a.auto ? h("span", { className: "chip-detail" }, "editor") : null,
         h(
           "button",
           {
@@ -8137,6 +8195,17 @@ window.addEventListener("message", (e: MessageEvent) => {
     case "focusModel":
       modelBtn.focus();
       if (!modelBtn.disabled) openMenu(modelBtn, modelMenu(), modelMenuOptions());
+      break;
+    case "suggestInput":
+      // Only an empty box takes the suggestion: what the user typed stays.
+      if (!input.value.trim()) {
+        input.value = msg.text;
+        draft = input.value;
+        persist();
+        autosize();
+      }
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
       break;
     case "restoreInput": {
       // A message the host handed back keeps its chips; text from the chat (a rewound or

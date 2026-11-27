@@ -51,6 +51,7 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | Context messages ✓           | `GET /api/session/{id}/context` (the messages after the last compaction; for what fills the context)                  |
 | Usage limits ✓               | `GET /api/experimental/usage/limits?location[directory]=` (`data: null` unless signed in to an OpenCode workspace)    |
 | Usage stats ✓                | `GET /api/experimental/session/stats?from=&project=&tools=none` (today's cost in the project)                         |
+| One-off generation ✓         | `POST /api/experimental/generate/text` `{ prompt, model? }` → `{ data: { text } }` (commit messages; no session)      |
 | Shell (`!command`) ✓         | `POST /api/session/{id}/shell` `{ command }`                                                                          |
 | Permissions ✓                | `GET …/permission`, `POST …/permission/{requestID}/reply` `{ decision, message? }`                                    |
 | Folder's project ✓           | `GET /api/location?location[directory]=` (its `project.id`; `C:\` and `c:\` are different projects)                   |
@@ -84,6 +85,11 @@ Checked against the live service (2.4.2), its OpenAPI document and its build, wi
 - **Images** are file entries too: a `file://` URI, or a base64 `data:image/…` URI that OpenCode stores inline (as its terminal UI does for pasted images). A model's `capabilities.input` lists `"image"` when it accepts them.
 - **Pasted text** held as a chip is part of `text`: the webview sends it beside the message with its `[Pasted text #n]` token, and the host puts it in at the token after trimming the typed text and finding the `@` mentions (whose offsets move past it), so it reaches OpenCode exactly as pasted. OpenCode stores prompt text byte for byte (checked live, CRLF included); Sidecar sends line endings as `\n`, as the message box does for anything pasted into it.
 - **Subagents** go in `agents: [{ name, mention }]` and **skills** in `skills: [{ id, mention }]`.
+- **Problems** (Fix with OpenCode) and **selections** are part of `text`: a heading OpenCode's model reads as context and Sidecar's transcript folds back into a chip (`Problems from VS Code (1 error in src/a.ts):` or `Selected code from …`), then one fenced block. Problems name the file relative to the folder with `/`, `line L:C` or `lines A-B`, the severity, `source(code)` and the message, each with the code around it and `>` on its lines. The editor context (`autoContext`) is an ordinary file or selection attachment, added at send time only while its chip is there.
+
+### Commit messages
+
+"Write commit message with OpenCode" uses `POST /api/experimental/generate/text`, which runs one generation from the server's base configuration and stores nothing, with the chat's selected model as `model: { providerID, id, variant? }`. `POST /api/session/{id}/generate` would also leave the history alone, but its tokens and cost count toward the session, so it is not used. The diff comes from VS Code's Git extension (`repository.diff(true)`, the staged changes), or from the agent's patches in OpenCode's session diff when nothing is staged; the style examples from `repository.log`. The message goes into `repository.inputBox.value`; nothing is committed. Checked live (2.4.2): an unknown model is `404 ModelNotFoundError` with `providerID` and `modelID`; a missing `prompt` is `400 InvalidRequestError`; the free limit is `502 ProviderRequestError` with `reason: "rate_limit"`, `status: 429` and `retryAfterMs`, which Sidecar reports as the model's usage limit.
 
 ### Staged rewinds
 

@@ -2759,6 +2759,7 @@ kbd {
   line-height: 1.4;
   box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
   pointer-events: none;
+  white-space: pre-line;
 }
 
 /* "Working…" under the timeline while the agent runs. */
@@ -2867,6 +2868,14 @@ kbd {
 }
 .chip.static {
   padding-right: 6px;
+}
+/* The editor context follows the editor: a dashed border tells it from chips you added. */
+.chip.auto {
+  border-style: dashed;
+  background: transparent;
+}
+.chip.problems .i {
+  color: var(--vscode-editorWarning-foreground, var(--muted));
 }
 /* Images: a small preview, then the name and the size in pixels. */
 .chip-thumb {

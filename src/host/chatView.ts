@@ -9,7 +9,9 @@ import * as vscode from "vscode";
 import { languageFor } from "../shared/languages";
 import { pathToFileURL } from "node:url";
 import type { BookmarkView, MentionCandidate, PromptMention } from "../shared/model";
+import { autoAttachment, autoKey, isAutoId, type EditorSnapshot } from "../core/autoContext";
 import { discoverExecutable } from "../core/cliDiscovery";
+import { buildCommitPrompt, cleanCommitMessage, splitGitDiff } from "../core/commitMessage";
 import {
   chipFor,
   dataUriBytes,
@@ -18,6 +20,7 @@ import {
   validateSelection,
   type ResolvedMention,
 } from "../core/context";
+import { groupProblems, MAX_PROBLEMS, type FoundProblem } from "../core/problems";
 import { classifyPath } from "../core/sensitive";
 import { decideNotification, type TaskNotice } from "../core/currentTask";
 import { healthMarkdown, healthReport, overall } from "../core/healthCheck";
@@ -25,7 +28,12 @@ import { deriveOnboarding, OPENCODE_LINKS, statusBarText } from "../core/onboard
 import type { ConnectOutcome } from "../core/providerConnect";
 import type { IntegrationInfo, IntegrationMethod } from "../core/providers";
 import { SessionController } from "../core/sessionController";
-import { HttpOpenCodeClient, opencodeDirectory, type EventSubscription } from "../opencode/client";
+import {
+  HttpOpenCodeClient,
+  OpenCodeHttpError,
+  opencodeDirectory,
+  type EventSubscription,
+} from "../opencode/client";
 import {
   cliVersion,
   discoverServer,
@@ -45,13 +53,16 @@ import type {
 } from "../shared/model";
 import {
   parseWebviewMessage,
+  type AttachmentChip,
   type HostMessage,
   type ViewState,
   type WebviewMessage,
 } from "../shared/protocol";
 import { CONFIG_SECTION, readConfig, readNotificationSettings } from "./config";
 import { openAgentDiffs, openAgentFileDiff, openAllDiffs, openFileDiff, type AgentSideSource } from "./diff";
+import { getGitApi, type GitAPI, type GitRepository } from "./gitApi";
 import type { Logger } from "./log";
+import { addExcerpts, documentProblems, workspaceProblems } from "./problems";
 import { vscodeConnectUi } from "./providers";
 import type { ToolTextProvider } from "./toolText";
 import { WorkspaceTracker } from "./workspace";
@@ -86,6 +97,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private controller: SessionController | undefined;
   private subscription: EventSubscription | undefined;
   private attachments: ContextAttachment[] = [];
+  /** The editor context chip the user removed (its file or lines), until the editor moves on. */
+  private autoDismissed: string | null = null;
+  private autoTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Words for the message box, sent when the chat is ready (it may still be loading). */
+  private suggestPending: string | null = null;
   private pendingEvents: UiEvent[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   /** Live events of the open subagent conversation, batched like `pendingEvents`. */
@@ -140,6 +156,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         const dir = info.active?.path ?? null;
         if (this.controller && this.controller.directory !== dir) void this.controller.setDirectory(dir);
         this.postState();
+      }),
+    );
+    // The editor context chip follows the active editor (only with autoContext on).
+    const followEditor = (delay: number) => {
+      if (!readConfig().autoContext || this.autoTimer) return;
+      this.autoTimer = setTimeout(() => {
+        this.autoTimer = undefined;
+        this.postState();
+      }, delay);
+    };
+    this.disposables.push(
+      vscode.window.onDidChangeActiveTextEditor(() => followEditor(0)),
+      vscode.window.onDidChangeTextEditorSelection((e) => {
+        if (e.textEditor === vscode.window.activeTextEditor) followEditor(150);
       }),
     );
     this.disposables.push(
@@ -301,7 +331,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       currentSession: c?.current ? { id: c.current.id, title: c.currentTitle() ?? "Untitled session" } : null,
       busy: c?.busy ?? false,
       stopping: c?.stopping ?? false,
-      attachments: this.attachments.map(chipFor),
+      attachments: this.chips(),
       agentChanges: c?.agentChanges ?? { status: "none" },
       workspaceChanges:
         this.workspace.current.uncommitted === null ? null : { count: this.workspace.current.uncommitted },
@@ -327,6 +357,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       subagents: c?.subagentViews() ?? [],
       viewingSubagent: c?.viewingSubagent() ?? null,
       prefs: {
+        autoContext: cfg.autoContext,
         stickyPrompt: cfg.stickyPrompt,
         statusWords: cfg.statusWords,
         cacheWarmMinutes: cfg.cacheWarmMinutes,
@@ -729,7 +760,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     await vscode.window.showTextDocument(doc, { preview: false });
   }
 
-  private addAttachment(a: Exclude<ContextAttachment, { kind: "image" }>): void {
+  private addAttachment(a: Extract<ContextAttachment, { kind: "file" | "selection" }>): void {
     const duplicate = this.attachments.some((x) =>
       a.kind === "file"
         ? x.kind === "file" && x.absPath === a.absPath
@@ -821,6 +852,197 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     await this.focus();
   }
 
+  // ------------------------------------------------------ editor context
+
+  /** The active editor for the editor context chip: a file on disk, never another tab. */
+  private editorSnapshot(): EditorSnapshot | null {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.uri.scheme !== "file") return null;
+    const absPath = editor.document.uri.fsPath;
+    const relPath = this.relativeToActive(absPath);
+    const snap: EditorSnapshot = {
+      absPath,
+      relPath,
+      languageId: editor.document.languageId,
+      sensitive: !!relPath && !!classifyPath(relPath),
+    };
+    const sel = editor.selection;
+    if (!sel.isEmpty) {
+      const endLine =
+        sel.end.character === 0 && sel.end.line > sel.start.line ? sel.end.line - 1 : sel.end.line;
+      snap.selection = {
+        startLine: sel.start.line + 1,
+        endLine: endLine + 1,
+        text: editor.document.getText(sel),
+      };
+    }
+    return snap;
+  }
+
+  /** The editor context to send, or null (setting off, chip removed, nothing open). */
+  private autoContext(): ContextAttachment | null {
+    if (!readConfig().autoContext) return null;
+    const snap = this.editorSnapshot();
+    // A removed chip comes back once the editor shows another file or other lines.
+    if (this.autoDismissed && (!snap || autoKey(snap) !== this.autoDismissed)) this.autoDismissed = null;
+    return autoAttachment(snap, this.autoDismissed, this.attachments);
+  }
+
+  private chips(): AttachmentChip[] {
+    const auto = this.autoContext();
+    const chips = this.attachments.map(chipFor);
+    return auto ? [...chips, { ...chipFor(auto), auto: true }] : chips;
+  }
+
+  // ------------------------------------------------------------ problems
+
+  /** Puts problems in the message box as one chip (replacing an earlier one) and focuses it. */
+  private async attachProblems(found: FoundProblem[], context?: number): Promise<void> {
+    const { files, total } = groupProblems(found, MAX_PROBLEMS);
+    addExcerpts(files, context);
+    this.attachments = this.attachments.filter((a) => a.kind !== "problems");
+    this.attachments.push({ kind: "problems", id: crypto.randomUUID(), files, total });
+    this.postState();
+    // A chat that is still loading gets the words once it is ready.
+    if (this.view && this.webviewReady) this.post({ type: "suggestInput", text: "Fix these problems." });
+    else this.suggestPending = "Fix these problems.";
+    await this.focus();
+  }
+
+  /** How the prompt names a document: relative to the open folder, else its path or name. */
+  private problemPath(uri: vscode.Uri): string {
+    if (uri.scheme !== "file") return path.posix.basename(uri.path) || uri.toString();
+    return this.relativeToActive(uri.fsPath) ?? uri.fsPath;
+  }
+
+  /** "Fix with OpenCode" on a diagnostic: the problems touching `range` in `uri`. */
+  async fixWithOpenCode(uri?: vscode.Uri, range?: vscode.Range): Promise<void> {
+    await this.workspace.start();
+    const target = uri instanceof vscode.Uri ? uri : vscode.window.activeTextEditor?.document.uri;
+    if (!target) return this.fixFileProblems();
+    const rel = this.problemPath(target);
+    const found = documentProblems(target, rel, range instanceof vscode.Range ? range : undefined);
+    if (!found.length) {
+      void vscode.window.showInformationMessage("OpenCode: there are no errors or warnings there.");
+      return;
+    }
+    if (!(await this.confirmSensitive(rel))) return;
+    await this.attachProblems(found);
+  }
+
+  async fixFileProblems(): Promise<void> {
+    await this.workspace.start();
+    const doc = vscode.window.activeTextEditor?.document;
+    if (!doc) {
+      void vscode.window.showInformationMessage("OpenCode: open a file in the editor first.");
+      return;
+    }
+    const rel = this.problemPath(doc.uri);
+    const found = documentProblems(doc.uri, rel);
+    if (!found.length) {
+      void vscode.window.showInformationMessage(`OpenCode: ${rel} has no errors or warnings.`);
+      return;
+    }
+    if (!(await this.confirmSensitive(rel))) return;
+    await this.attachProblems(found);
+  }
+
+  async fixWorkspaceProblems(): Promise<void> {
+    await this.workspace.start();
+    const root = this.workspace.current.active?.path;
+    if (!root) {
+      void vscode.window.showInformationMessage("OpenCode: open a folder first.");
+      return;
+    }
+    const { problems, skipped } = workspaceProblems(root);
+    if (skipped) this.log.info(`Fix problems: left out ${skipped} file(s) that look sensitive`);
+    if (!problems.length) {
+      void vscode.window.showInformationMessage(
+        "OpenCode: VS Code reports no errors or warnings in this folder.",
+      );
+      return;
+    }
+    // One line on each side keeps a long list readable.
+    await this.attachProblems(problems, 1);
+  }
+
+  // ------------------------------------------------------- commit message
+
+  /** The repository a Source Control title passed, else the open folder's, else the only one. */
+  private commitRepository(git: GitAPI, arg?: unknown): GitRepository | null {
+    const root = arg && typeof arg === "object" && "rootUri" in arg ? arg.rootUri : null;
+    if (root instanceof vscode.Uri) return git.getRepository(root);
+    const repoRoot = this.workspace.current.repoRoot;
+    const active = repoRoot ? git.getRepository(vscode.Uri.file(repoRoot)) : null;
+    return active ?? (git.repositories.length === 1 ? git.repositories[0] : null);
+  }
+
+  /**
+   * Writes a commit message for the staged changes, or the agent's when nothing is
+   * staged, into the Source Control commit box. It never commits. The model is asked
+   * outside any session, so the conversation and its costs are not touched.
+   */
+  async writeCommitMessage(arg?: unknown): Promise<void> {
+    await this.workspace.start();
+    const git = this.workspace.gitApi ?? (await getGitApi());
+    const repo = git ? this.commitRepository(git, arg) : null;
+    if (!repo) {
+      void vscode.window.showInformationMessage("OpenCode: open a Git repository first.");
+      return;
+    }
+    await this.ensureStarted();
+    const c = this.controller;
+    if (!c || this.connection.kind !== "connected") {
+      void vscode.window.showWarningMessage("OpenCode is not connected. Open the Sidecar panel to connect.");
+      return;
+    }
+    let sections = splitGitDiff(await repo.diff(true).catch(() => ""));
+    let source: "staged" | "agent" = "staged";
+    if (!sections.length) {
+      sections = c.agentPatches();
+      source = "agent";
+    }
+    if (!sections.length) {
+      void vscode.window.showInformationMessage(
+        "OpenCode: nothing is staged and the agent made no changes. Stage the changes to describe first.",
+      );
+      return;
+    }
+    if (repo.inputBox.value.trim()) {
+      const pick = await vscode.window.showWarningMessage(
+        "Replace the message in the commit box?",
+        "Replace",
+      );
+      if (pick !== "Replace") return;
+    }
+    const recent = await repo
+      .log({ maxEntries: 20 })
+      .then((l) => l.map((x) => x.message))
+      .catch(() => [] as string[]);
+    const prompt = buildCommitPrompt({ sections, recent, source });
+    let reply: string;
+    try {
+      reply = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.SourceControl, title: "Writing commit message…" },
+        () => c.generateText(prompt),
+      );
+    } catch (e) {
+      this.log.warn(`Commit message failed: ${e instanceof Error ? e.message : String(e)}`);
+      void vscode.window.showWarningMessage(`OpenCode could not write a commit message: ${commitError(e)}`);
+      return;
+    }
+    const message = cleanCommitMessage(reply);
+    if (!message) {
+      void vscode.window.showWarningMessage(
+        "OpenCode could not write a commit message: the reply was empty.",
+      );
+      return;
+    }
+    repo.inputBox.value = message;
+    this.log.info(`Commit message written for the ${source} changes (${sections.length} file(s))`);
+    await vscode.commands.executeCommand("workbench.view.scm");
+  }
+
   /** "+ Context" menu: native quick pick, keyboard accessible. */
   private async pickFile(): Promise<void> {
     const root = this.workspace.current.active?.path;
@@ -883,6 +1105,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.focusPending = false;
           this.post({ type: "focusInput" });
         }
+        if (this.suggestPending) {
+          this.post({ type: "suggestInput", text: this.suggestPending });
+          this.suggestPending = null;
+        }
         if (this.providersPending) {
           this.providersPending = false;
           this.post({ type: "showProviders" });
@@ -895,7 +1121,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.post({ type: "restoreInput", text: msg.text });
           return;
         }
-        const attachments = this.attachments;
+        // The editor context goes only if its chip is still there now.
+        const auto = this.autoContext();
+        const attachments = auto ? [...this.attachments, auto] : this.attachments;
         const sent = await c.send(msg.text, attachments, msg.delivery, mentions, msg.pastes ?? []);
         if (sent) {
           this.attachments = [];
@@ -1008,9 +1236,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         await vscode.commands.executeCommand("workbench.action.openSettings", "opencodeSidecar");
         return;
       case "removeAttachment":
-        this.attachments = this.attachments.filter((a) => a.id !== msg.id);
+        if (isAutoId(msg.id)) this.autoDismissed = msg.id.slice("auto:".length);
+        else this.attachments = this.attachments.filter((a) => a.id !== msg.id);
         this.postState();
         return;
+      case "fixProblems":
+        return msg.scope === "file" ? this.fixFileProblems() : this.fixWorkspaceProblems();
+      case "writeCommitMessage":
+        return this.writeCommitMessage();
       case "rewind":
         return this.rewind(msg.messageID, msg.files);
       case "renameSession":
@@ -1782,6 +2015,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     clearTimeout(this.flushTimer);
     clearTimeout(this.stateTimer);
     clearTimeout(this.asideTimer);
+    clearTimeout(this.autoTimer);
     for (const d of this.disposables) d.dispose();
   }
 
@@ -1792,6 +2026,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       connection: () => this.connection,
       workspace: () => this.workspace.current,
       attachments: () => this.attachments,
+      autoContext: () => this.autoContext(),
       viewState: () => this.viewState(),
       handle: (msg: WebviewMessage) => this.handle(msg),
       ensureStarted: () => this.ensureStarted(),
@@ -1814,6 +2049,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       },
     };
   }
+}
+
+/** Why a generation failed, in plain words: the free limit and missing models are common. */
+function commitError(e: unknown): string {
+  if (e instanceof OpenCodeHttpError) {
+    if (e.reason === "rate_limit")
+      return `the model's usage limit is reached (${e.message}). Try again later or pick another model.`;
+    if (e.reason === "authentication") return "the provider needs you to sign in again.";
+    if (e.tag === "ModelNotFoundError" || e.tag === "ProviderNotFoundError")
+      return `${e.message}. Pick another model in the chat.`;
+    return e.message;
+  }
+  if (e instanceof Error && e.name === "TimeoutError") return "the model took too long to answer.";
+  return e instanceof Error ? e.message : String(e);
 }
 
 /** Fingerprint of the connection evidence, used to notice when a sign-in completed. */

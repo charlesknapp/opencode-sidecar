@@ -420,6 +420,76 @@ async function pastedText(api: TestApi): Promise<void> {
   await approvalModes(api);
   await usageAndCosts(api);
   await providerSetup(api);
+  await problemsAndCommit(api);
+}
+
+// ===================================================== problems and commit messages
+
+/**
+ * "Fix with OpenCode" on a TypeScript error sends the diagnostic to OpenCode, and "Write
+ * Commit Message with OpenCode" fills the Git commit box without adding to the session.
+ */
+async function problemsAndCommit(api: TestApi): Promise<void> {
+  const root = api.workspace().active!.path;
+  const file = path.join(root, "broken.ts");
+  fs.writeFileSync(file, 'export const total: number = "zero";\n');
+  const uri = vscode.Uri.file(file);
+  await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+  const diag = await waitFor(
+    "TypeScript diagnostic",
+    () => vscode.languages.getDiagnostics(uri).find((d) => d.severity === vscode.DiagnosticSeverity.Error),
+    90_000,
+  );
+  const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>(
+    "vscode.executeCodeActionProvider",
+    uri,
+    diag.range,
+  );
+  const fix = actions?.find((a) => a.title === "Fix with OpenCode");
+  check(
+    "Light bulb offers Fix with OpenCode",
+    !!fix?.command,
+    (actions ?? []).map((a) => a.title).join(", "),
+  );
+  await vscode.commands.executeCommand(
+    fix?.command?.command ?? "opencodeSidecar.fixWithOpenCode",
+    ...(fix?.command?.arguments ?? [uri, diag.range]),
+  );
+  const chip = api.viewState().attachments.find((a) => a.kind === "problems");
+  check("Problems chip in the message box", !!chip, chip?.label ?? "none");
+  await api.handle({ type: "newSession" });
+  const since = events.length;
+  await api.handle({ type: "send", text: "Fix these problems. Change only broken.ts." });
+  await waitIdle(api, since);
+  const sid = api.controller()?.current?.id;
+  const stored = sid ? await storedMessages(sid) : [];
+  const user = String(stored.find((m) => m.type === "user")?.text ?? "");
+  check(
+    "The diagnostic reached OpenCode (file, line, ts(2322), message, code)",
+    /Problems from VS Code \(1 error in broken\.ts\)/.test(user) &&
+      /line 1:\d+, error ts\(2322\): Type 'string' is not assignable to type 'number'/.test(user) &&
+      user.includes('> 1 | export const total: number = "zero";'),
+    user.slice(0, 300),
+  );
+  check("The chip is cleared after sending", !api.attachments().some((a) => a.kind === "problems"));
+
+  // Commit message: stage the file and ask; the commit box is filled, nothing is committed.
+  execFileSync("git", ["add", "broken.ts"], { cwd: root });
+  const git = vscode.extensions.getExtension("vscode.git")!.exports.getAPI(1);
+  const repo = git.getRepository(uri);
+  repo.inputBox.value = "";
+  const before = sid ? (await storedMessages(sid)).length : 0;
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root }).toString().trim();
+  await vscode.commands.executeCommand("opencodeSidecar.writeCommitMessage", repo);
+  const message = String(repo.inputBox.value);
+  check("Commit message written into the Git commit box", message.trim().length > 0, message.slice(0, 120));
+  check("No code fences in the commit message", !message.includes("```"));
+  check(
+    "Nothing committed, nothing added to the session",
+    execFileSync("git", ["rev-parse", "HEAD"], { cwd: root }).toString().trim() === head &&
+      (sid ? (await storedMessages(sid)).length : 0) === before,
+  );
+  execFileSync("git", ["reset", "-q", "broken.ts"], { cwd: root });
 }
 
 // ============================================================ providers and setup check

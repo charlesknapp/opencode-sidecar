@@ -24,6 +24,8 @@ export interface SidebarConfig {
   activity: "detailed" | "grouped";
   /** The strip of open sessions above the conversation. */
   sessionStrip: boolean;
+  /** The active editor's selection or file as a chip that follows the editor (off by default). */
+  autoContext: boolean;
 }
 
 export const CONFIG_SECTION = "opencodeSidecar";
@@ -86,5 +88,6 @@ export function readConfig(): SidebarConfig {
     })(),
     activity: c.get<string>("activity", "detailed") === "grouped" ? "grouped" : "detailed",
     sessionStrip: c.get<boolean>("sessionStrip", true),
+    autoContext: c.get<boolean>("autoContext", false),
   };
 }
