@@ -1,5 +1,6 @@
 import {
   answer,
+  changes,
   edit,
   grep,
   hostState,
@@ -97,6 +98,7 @@ export function createDemo({ post, after, now }: Deps) {
           ? subagentRows(story.subagents, story.subagentsStarted, now())
           : [],
         steps: story.items.filter((item) => item.kind === "tool").length,
+        ...changes(story.items),
       }),
     })
     post({ type: "transcript", items: story.items })

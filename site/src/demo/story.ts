@@ -101,6 +101,20 @@ export const hostState = ({ now, ...extra }: Json & { now: number }): Json => ({
   skills: [],
   revert: null,
   archivedSessions: null,
+  costs: null,
+  quota: null,
+  strip: [],
+  // Balanced: edits run, the shell command in the story still asks.
+  approval: {
+    mode: "balanced",
+    folderMode: null,
+    modeRules: [],
+    rules: [],
+    actions: ["edit", "read", "shell", "webfetch"],
+    session: true,
+    busy: false,
+    confirmAuto: true,
+  },
   onboarding: {
     stage: "ready",
     checklist: {
@@ -408,6 +422,31 @@ export const summary: Json = {
       status: "added",
     },
   ],
+}
+
+/** The agent changes strip with Review all, once the agent has edited something. */
+export const changes = (items: readonly Json[]): Json => {
+  const all = summary.files as readonly { path: string }[]
+  const files = items.some((item) => item.id === "ts")
+    ? all
+    : items.some((item) => item.id === "e1")
+      ? all.slice(0, 1)
+      : []
+  if (files.length === 0) return {}
+  return {
+    agentChanges: { status: "ok", files },
+    review: {
+      files: Object.fromEntries(
+        files.map(({ path }) => [
+          path,
+          { undecided: 1, kept: 0, undone: 0, changed: 0, fileOnly: false },
+        ])
+      ),
+      undecided: files.length,
+      kept: 0,
+      undone: 0,
+    },
+  }
 }
 
 export const answer = (testsRan: boolean): Json => ({
