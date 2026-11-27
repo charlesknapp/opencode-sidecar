@@ -4679,6 +4679,10 @@ describe(
         "/review\nreview changes",
         "/compact\nSummarize the conversation to free context",
         "/btw\nAsk a side question without adding it to this session",
+        "/models\nSwitch the model for this session",
+        "/new\nStart a fresh conversation in this folder",
+        "/sessions\nOpen, search or restore earlier sessions",
+        "/export\nOpen this session as a Markdown document",
       ]);
       await page.keyboard.type("rev");
       assert.deepEqual(await rows(), ["/review\nreview changes"]);
@@ -4697,6 +4701,36 @@ describe(
       // Mid-message, a slash is just text.
       await page.keyboard.type("see a/b");
       assert.equal(await page.$eval('[data-testid="mention-menu"]', (l) => (l as HTMLElement).hidden), true);
+    });
+
+    it("/models and the other TUI built-ins run Sidecar's action, unless OpenCode has the command (#1)", async () => {
+      const value = () => page.$eval("textarea", (t) => (t as HTMLTextAreaElement).value);
+      const menuOpen = () => page.$('[data-testid="menu"]').then((m) => !!m);
+      await page.click("textarea");
+      await page.keyboard.type("/mod");
+      await page.keyboard.press("Enter");
+      assert.equal(await value(), "", "picking a built-in runs it rather than filling it in");
+      assert.ok(await menuOpen(), "the model menu opens");
+      assert.match(await text('[data-testid="menu"]'), /Qwen3\.7 Plus/);
+      await page.keyboard.press("Escape");
+      // Typed out in full, Enter runs it too, and nothing goes to OpenCode.
+      await page.click("textarea");
+      await clearSent();
+      await page.keyboard.type("/new");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("newSession"), { type: "newSession" });
+      assert.equal(await lastSent("runCommand"), undefined);
+      assert.equal(await lastSent("send"), undefined);
+      // OpenCode's own command of that name wins.
+      await host({
+        type: "state",
+        state: baseState({ commands: [...baseState().commands, { name: "new", description: "custom new" }] }),
+      });
+      await clearSent();
+      await page.keyboard.type("/new");
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await lastSent("runCommand"), { type: "runCommand", name: "new", text: "" });
+      assert.equal(await lastSent("newSession"), undefined);
     });
 
     it("Escape closes the @ list without stopping the agent, and a deleted token is not sent", async () => {

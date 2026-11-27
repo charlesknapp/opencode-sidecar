@@ -1150,8 +1150,10 @@ function submit(flip = false) {
   const full = expandPastes(text);
   const cmd = /^\/([\w.:/-]+)(?:\s+([\s\S]*))?$/.exec(full.trim());
   const known = cmd && (state.commands ?? []).some((c) => c.name === cmd[1]);
+  const builtin = cmd && !cmd[2]?.trim() ? builtinCommand(cmd[1]) : undefined;
   // /btw is Sidecar's side question, unless OpenCode has a command of that name.
-  if (cmd && cmd[1] === "btw" && !known) {
+  if (builtin) builtin.run();
+  else if (cmd && cmd[1] === "btw" && !known) {
     if (cmd[2]?.trim()) askAside(cmd[2]);
     else openAside(true);
   } else if (cmd && known)
@@ -2108,7 +2110,49 @@ function commandAtCaret(): { query: string } | null {
   return m ? { query: m[1] } : null;
 }
 
-/** OpenCode's commands (and Compact) matching `query`: names that start with it first. */
+/**
+ * The TUI's own commands that Sidecar has an action for. OpenCode's server does not list
+ * them, so they are added here; a command of the same name from OpenCode wins.
+ */
+const BUILTIN_COMMANDS: { name: string; description: string; enabled: () => boolean; run: () => void }[] = [
+  {
+    name: "models",
+    description: "Switch the model for this session",
+    enabled: () => !modelBtn.disabled,
+    run: () => openMenu(modelBtn, modelMenu(), modelMenuOptions()),
+  },
+  {
+    name: "new",
+    description: "Start a fresh conversation in this folder",
+    enabled: () => true,
+    run: () => send({ type: "newSession" }),
+  },
+  {
+    name: "sessions",
+    description: "Open, search or restore earlier sessions",
+    enabled: () => true,
+    run: () => {
+      sessionsOpen = true;
+      bookmarksOpen = false;
+      send({ type: "refreshSessions" });
+      render();
+    },
+  },
+  {
+    name: "export",
+    description: "Open this session as a Markdown document",
+    enabled: () => !!state?.currentSession,
+    run: () => send({ type: "exportSession" }),
+  },
+];
+
+/** The built-in command called `name`, when OpenCode has none of that name and it can run now. */
+function builtinCommand(name: string): (typeof BUILTIN_COMMANDS)[number] | undefined {
+  if ((state?.commands ?? []).some((c) => c.name === name)) return undefined;
+  return BUILTIN_COMMANDS.find((b) => b.name === name && b.enabled());
+}
+
+/** OpenCode's commands (and Sidecar's built-ins) matching `query`: names that start with it first. */
 function commandSuggestions(query: string): Suggestion[] {
   const q = query.toLowerCase();
   const cmds = (state?.commands ?? []).filter((c) => c.name !== "compact");
@@ -2116,6 +2160,8 @@ function commandSuggestions(query: string): Suggestion[] {
     cmds.push({ name: "compact", description: "Summarize the conversation to free context" });
   if (!cmds.some((c) => c.name === "btw"))
     cmds.push({ name: "btw", description: "Ask a side question without adding it to this session" });
+  for (const b of BUILTIN_COMMANDS)
+    if (builtinCommand(b.name)) cmds.push({ name: b.name, description: b.description });
   const rank = (c: CommandInfo) => {
     const name = c.name.toLowerCase();
     if (name === q) return -1;
@@ -2235,6 +2281,14 @@ function pickMention(i: number): void {
   const m = mention;
   const c = m?.items[i];
   if (!m || !c) return;
+  const builtin = c.kind === "command" ? builtinCommand(c.value) : undefined;
+  if (builtin && !input.value.slice(input.selectionStart).trim()) {
+    // A built-in takes no arguments: run it now rather than filling in its name.
+    input.value = "";
+    closeMention();
+    input.dispatchEvent(new Event("input"));
+    return builtin.run();
+  }
   if (c.kind === "command") input.setRangeText(`/${c.value} `, 0, input.selectionStart, "end");
   else {
     const token = `@${c.value}${c.kind === "folder" ? "/" : ""}`;
