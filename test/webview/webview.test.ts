@@ -3594,7 +3594,7 @@ describe(
       ]);
       assert.match(
         await text('[data-testid="agents-import-banner"]'),
-        /Found 3 Roo Code modes in \.roomodes, Roo Code \(global\)\./,
+        /Found 3 Roo Code or Kilo Code modes in \.roomodes, Roo Code \(global\)\./,
       );
       await clearSent();
       await page.click('[data-id="docs"] [data-testid="agent-open"]');
@@ -3989,7 +3989,7 @@ describe(
       await host({ type: "agentResult", ok: true });
       assert.ok(await page.$('[data-testid="agents-list"]'));
       // Nothing to import: the reason, and no Import button.
-      await page.click('[data-testid="agents-import"]');
+      await page.click('[data-testid="agents-import-open"]');
       await host({ type: "agentImport", preview: null, error: "No Roo Code or Kilo Code modes found." });
       assert.match(await text('[data-testid="import-note"]'), /No Roo Code or Kilo Code modes found/);
       assert.equal(await page.$('[data-testid="import-run"]'), null);
@@ -4037,7 +4037,7 @@ describe(
         await page.click('[data-id="docs"] [data-testid="agent-edit"]');
         assert.deepEqual(await fits(), ok, "form");
         await page.keyboard.press("Escape");
-        await page.click('[data-testid="agents-import"]');
+        await page.click('[data-testid="agents-import-open"]');
         await host({ type: "agentImport", preview: PREVIEW });
         assert.deepEqual(await fits(), ok, "import");
       });
@@ -4100,6 +4100,22 @@ describe(
       assert.equal(await page.$eval('[data-testid="history-more"]', (e) => (e as HTMLElement).hidden), true);
     });
 
+    it("a new session's page says what is sent and points to / and @", async () => {
+      await host({ type: "transcript", items: [] });
+      await host({ type: "state", state: baseState({ currentSession: null }) });
+      assert.match(await text(".empty"), /only the files and selections you attach/);
+      assert.equal(
+        await text('[data-testid="empty-tips"]'),
+        "Type / for commands and settings, @ to mention a file, agent or skill.",
+      );
+      // With the editor context on, it says that the editor's file goes along.
+      await host({
+        type: "state",
+        state: baseState({ currentSession: null, prefs: { ...baseState().prefs, autoContext: true } }),
+      });
+      assert.match(await text(".empty"), /open file or selection goes along/);
+    });
+
     it("messages that did not load: the reason, Retry, and a read-only box, at 300px", async () => {
       await page.setViewport({ width: 300, height: 700 });
       await host({ type: "transcript", items: [] });
@@ -4118,6 +4134,8 @@ describe(
         await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).placeholder),
         "Read-only until the messages load",
       );
+      // No "Ask OpenCode anything" above it: the session is read-only.
+      assert.equal(await page.$eval(".empty", (e) => (e as HTMLElement).hidden), true);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
       await clearSent();
       await page.focus('[data-testid="history-retry"]');
@@ -4868,6 +4886,10 @@ describe(
         "/new\nStart a fresh conversation in this folder",
         "/sessions\nOpen, search or restore earlier sessions",
         "/export\nOpen this session as a Markdown document",
+        "/agents\nCreate, edit or import agents",
+        "/providers\nConnect, sign in again or disconnect model providers",
+        "/mcp\nMCP servers: their state; connect, sign in or add one",
+        "/permissions\nPermission rules: what the agent may do without asking",
       ]);
       await page.keyboard.type("rev");
       assert.deepEqual(await rows(), ["/review\nreview changes"]);
@@ -4916,6 +4938,26 @@ describe(
       await page.keyboard.press("Enter");
       assert.deepEqual(await lastSent("runCommand"), { type: "runCommand", name: "new", text: "" });
       assert.equal(await lastSent("newSession"), undefined);
+    });
+
+    it("/providers, /agents, /mcp and /permissions open their panels", async () => {
+      for (const [cmd, testid, msg] of [
+        ["/providers", "providers-panel", "loadProviders"],
+        ["/agents", "agents-panel", "loadAgents"],
+        ["/mcp", "mcp-panel", "loadMcpServers"],
+        ["/permissions", "rules-editor", "loadSavedPermissions"],
+      ]) {
+        await page.click("textarea");
+        await clearSent();
+        await page.keyboard.type(cmd);
+        await page.keyboard.press("Enter");
+        assert.ok(await lastSent(msg), `${cmd} asks for ${msg}`);
+        assert.ok(await page.$(`[data-testid="${testid}"]`), `${cmd} opens ${testid}`);
+        assert.equal(await lastSent("runCommand"), undefined);
+        assert.equal(await page.$eval("textarea", (t) => (t as HTMLTextAreaElement).value), "");
+        await page.keyboard.press("Escape");
+        assert.equal(await page.$(`[data-testid="${testid}"]`), null, `Escape closes ${testid}`);
+      }
     });
 
     it("Escape closes the @ list without stopping the agent, and a deleted token is not sent", async () => {
@@ -6827,6 +6869,20 @@ describe(
         b.map((x) => x.getAttribute("tabindex")),
       );
       assert.ok(tabbable.every((t) => t === "-1"));
+      // The strip is one Tab stop: the focused tab; the others are reached with the arrows.
+      const stops = () =>
+        page.$$eval('[data-testid="strip-tab"]', (b) =>
+          b
+            .filter((x) => (x as HTMLElement).tabIndex === 0)
+            .map((x) => x.closest<HTMLElement>(".strip-tab")!.dataset.id),
+        );
+      assert.deepEqual(await stops(), ["ses_4"]);
+      await page.keyboard.press("ArrowLeft");
+      assert.deepEqual(await stops(), ["ses_2"]);
+      // Without the focus in it, the open session's tab is the stop.
+      await page.focus("textarea");
+      await host({ type: "state", state: baseState({ strip: STRIP.slice(0, 3) }) });
+      assert.deepEqual(await stops(), ["ses_1"]);
     });
 
     for (const width of [300, 400, 520]) {

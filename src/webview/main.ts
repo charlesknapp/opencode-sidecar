@@ -2159,6 +2159,31 @@ const BUILTIN_COMMANDS: { name: string; description: string; enabled: () => bool
     enabled: () => !!state?.currentSession,
     run: () => send({ type: "exportSession" }),
   },
+  // The panels of the / menu's Settings, so typing finds them too.
+  {
+    name: "agents",
+    description: "Create, edit or import agents",
+    enabled: () => state?.connection.kind === "connected",
+    run: () => openAgents(),
+  },
+  {
+    name: "providers",
+    description: "Connect, sign in again or disconnect model providers",
+    enabled: () => state?.connection.kind === "connected",
+    run: () => openProviders(),
+  },
+  {
+    name: "mcp",
+    description: "MCP servers: their state; connect, sign in or add one",
+    enabled: () => state?.connection.kind === "connected",
+    run: () => openMcpServers(),
+  },
+  {
+    name: "permissions",
+    description: "Permission rules: what the agent may do without asking",
+    enabled: () => state?.connection.kind === "connected",
+    run: () => openRulesEditor(),
+  },
 ];
 
 /** The built-in command called `name`, when OpenCode has none of that name and it can run now. */
@@ -4036,7 +4061,7 @@ function openAgents(o: { import?: boolean } = {}): void {
           h(
             "span",
             {},
-            `Found ${n} Roo Code mode${n === 1 ? "" : "s"} in ${v.importable.sources.join(", ")}.`,
+            `Found ${n} Roo Code or Kilo Code mode${n === 1 ? "" : "s"} in ${v.importable.sources.join(", ")}.`,
           ),
           smallBtn(
             `Import ${n} mode${n === 1 ? "" : "s"} as agents…`,
@@ -4067,16 +4092,19 @@ function openAgents(o: { import?: boolean } = {}): void {
         },
         "New agent",
       ),
-      h(
-        "button",
-        {
-          className: "btn subtle",
-          "data-testid": "agents-import",
-          disabled: !v || !!v.busy,
-          onclick: () => showImport(),
-        },
-        "Import modes…",
-      ),
+      // The banner above offers the import when modes were found; one entry point is enough.
+      v?.importable
+        ? ""
+        : h(
+            "button",
+            {
+              className: "btn subtle",
+              "data-testid": "agents-import",
+              disabled: !v || !!v.busy,
+              onclick: () => showImport(),
+            },
+            "Import modes…",
+          ),
       h(
         "button",
         {
@@ -5568,6 +5596,20 @@ const STRIP_STATUS: Record<StripStatus, { label: string; tip: string } | null> =
 let stripSignature = "";
 let stripCurrent: string | null = null;
 
+/**
+ * The strip is one Tab stop (the focused tab, else the open session's); the arrow keys
+ * move between its tabs.
+ */
+function rovingStrip(): void {
+  const tabs = Array.from(stripEl.querySelectorAll<HTMLButtonElement>(".strip-open"));
+  const stop =
+    tabs.find((b) => b === document.activeElement) ??
+    tabs.find((b) => b.hasAttribute("aria-current")) ??
+    tabs[0];
+  for (const b of tabs) b.tabIndex = b === stop ? 0 : -1;
+}
+stripEl.addEventListener("focusin", () => rovingStrip());
+
 /** Moves the focus between the strip's tabs (←/→, Home, End); Delete takes one off. */
 stripEl.addEventListener("keydown", (e) => {
   const tabs = Array.from(stripEl.querySelectorAll<HTMLButtonElement>(".strip-open"));
@@ -5665,6 +5707,7 @@ function renderStrip(s: ViewState): void {
     const again = rows.find((r) => r.dataset.id === focusId) ?? rows[Math.min(focusAt, rows.length - 1)];
     again?.querySelector<HTMLElement>(".strip-open")?.focus();
   }
+  rovingStrip();
   // The open session's tab is scrolled into view when it changes.
   const current = tabs.find((t) => t.current)?.id ?? null;
   if (current !== stripCurrent) {
@@ -6066,13 +6109,22 @@ function renderEmpty(s: ViewState) {
     if (transcript.items.length === 0)
       content = [h("p", { className: "muted" }, "Checking OpenCode models and account…")];
   } else if (stage === "ready") {
-    if (transcript.items.length === 0)
+    // A session whose messages did not load is read-only: its card says why, not "Ask".
+    const unread = !!s.history?.error && !!s.currentSession;
+    if (transcript.items.length === 0 && !unread)
       content = [
         h("h2", {}, "Ask OpenCode anything"),
         h(
           "p",
           { className: "muted" },
-          "Context is explicit: only the files and selections you attach are sent along with your message.",
+          s.prefs.autoContext
+            ? "The open file or selection goes along while its chip is in the box. Attach more with +."
+            : "Context is explicit: only the files and selections you attach are sent along with your message.",
+        ),
+        h(
+          "p",
+          { className: "muted", "data-testid": "empty-tips" },
+          "Type / for commands and settings, @ to mention a file, agent or skill.",
         ),
       ];
   } else content = [renderOnboarding(s)];
