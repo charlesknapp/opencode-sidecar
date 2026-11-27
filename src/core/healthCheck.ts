@@ -176,8 +176,7 @@ function accountSection(i: HealthInput): HealthSection {
 function providerSection(i: HealthInput): HealthSection {
   const checks: HealthCheck[] = [];
   if (!i.server) return { title: "Providers", checks: [info("Not checked: OpenCode is not reachable.")] };
-  if (!i.integrations)
-    return { title: "Providers", checks: [warn("OpenCode's integrations could not be read.")] };
+  if (!i.integrations) return { title: "Providers", checks: [warn("The provider list could not be read.")] };
   const names = new Map(i.integrations.map((x) => [x.id, x.name]));
   for (const x of i.integrations) {
     if (!x.connections.length) continue;

@@ -716,7 +716,7 @@ async function agentReview(api: TestApi, edits: "agent" | "between-turns" = "age
 
 /**
  * Read-only: the Providers panel lists the scenario model's provider with its models, a run
- * that fails on a model OpenCode does not have gets Choose another model and Re-authenticate,
+ * that fails on a model OpenCode does not have gets Choose another model and Sign in again,
  * and the setup check reaches the service. Nothing is connected, changed or removed.
  */
 async function providerSetup(api: TestApi): Promise<void> {
@@ -750,7 +750,7 @@ async function providerSetup(api: TestApi): Promise<void> {
       .slice(mark)
       .find((i): i is Extract<TranscriptItem, { kind: "error" }> => i.kind === "error");
     check(
-      "Error card: Choose another model and Re-authenticate the provider",
+      "Error card: Choose another model and Sign in again to the provider",
       !!card && card.actions.includes("changeModel") && card.actions.includes("reauth") && !!card.provider,
       JSON.stringify(card),
     );
@@ -1189,7 +1189,7 @@ async function askAside(api: TestApi): Promise<void> {
     10_000,
   ).catch(() => undefined);
   check(
-    "Send to main queues the answer while the agent works",
+    "Add to session queues the answer while the agent works",
     api.viewState().pending.some((p) => p.delivery === "queue" && /pineapple/i.test(p.text)),
     JSON.stringify(api.viewState().pending.map((p) => [p.delivery, p.text.slice(0, 40)])),
   );

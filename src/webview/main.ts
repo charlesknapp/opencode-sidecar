@@ -957,7 +957,7 @@ const asideMainBtn = h(
     "data-tip": "Add this answer to the session as a message (queued while the agent works)",
     onclick: () => send({ type: "asideToMain" }),
   },
-  "Send to main",
+  "Add to session",
 );
 asideEl.append(
   h(
@@ -1044,7 +1044,7 @@ function renderAside(): void {
   const last = [...turns].reverse().find((tn) => tn.done && tn.answer.trim());
   asideMainBtn.hidden = !last;
   asideMainBtn.disabled = !connected || !!last?.sent;
-  asideMainBtn.textContent = last?.sent ? "Sent to main" : "Send to main";
+  asideMainBtn.textContent = last?.sent ? "Added to session" : "Add to session";
 }
 
 let asideSignature = "";
@@ -2662,9 +2662,9 @@ let instructionsError = "";
 let instructionsPanel: { paint: () => void } | null = null;
 
 const INSTRUCTION_STATES: Record<InstructionRow["state"], string> = {
-  loaded: "Read",
+  loaded: "In use",
   missing: "Not created",
-  shadowed: "Not read",
+  shadowed: "Not used",
   pattern: "Pattern",
   url: "URL",
 };
@@ -3021,9 +3021,7 @@ function openMcpServers(): void {
     else if (m.status === "failed") out.push(cmd("Retry", "mcp-retry", "mcpConnect"));
     else if (m.status === "needs_auth")
       out.push(
-        m.integrationID
-          ? cmd("Authenticate", "mcp-auth", "mcpAuth")
-          : cmd("Retry", "mcp-retry", "mcpConnect"),
+        m.integrationID ? cmd("Sign in", "mcp-auth", "mcpAuth") : cmd("Retry", "mcp-retry", "mcpConnect"),
       );
     if (m.runtime) out.push(smallBtn("Remove", "mcp-remove", () => void remove(m), busy));
     return out;
@@ -3148,7 +3146,7 @@ function openApprovalMenu(): void {
     width: 340,
     align: "end",
     title: state?.approval.session === false ? "Approval for the next session" : "Approval",
-    maxHeight: 360,
+    maxHeight: 420,
     footer: [
       slider(
         "Apply to",
@@ -3183,7 +3181,9 @@ function approvalMenu(): MenuEntry[] {
   if (ap.mode === "custom")
     out.push(note("This session's rules match no mode. Picking one keeps your own rules after it."));
   out.push(
-    note("An agent's own blocks stay: Plan still never edits. This folder: new sessions start in the mode."),
+    note(
+      "Agents keep their own limits: Plan still never edits. With This folder, new sessions here start in the mode too.",
+    ),
     sep(),
     item("Permission rules…", () => openRulesEditor(), {
       icon: "allowed",
@@ -3440,7 +3440,7 @@ function openRulesEditor(): void {
         ruleRow(r, "session-rule", [
           smallBtn("Edit", "rule-edit", editRow(i), busy || !ap.session),
           smallBtn(
-            "Delete",
+            "Remove",
             "rule-delete",
             () => {
               if (ruleEditing === i) resetForm();
@@ -3548,7 +3548,7 @@ function openRulesEditor(): void {
 // -------------------------------------------------------------- providers
 //
 // The Providers panel: the providers OpenCode is connected to and how each is doing, and
-// a search over every provider OpenCode can connect. Connect, Re-authenticate and
+// a search over every provider OpenCode can connect. Connect, Sign in again and
 // Disconnect are run by the host through OpenCode's own sign-in; nothing secret reaches
 // the webview.
 
@@ -3742,7 +3742,7 @@ function openProviders(): void {
                 { className: "provider-actions" },
                 r.canReauth
                   ? smallBtn(
-                      r.state === "needs-auth" ? "Sign in again" : "Re-authenticate",
+                      "Sign in again",
                       "provider-reauth",
                       () => send({ type: "providerReauth", id: r.id }),
                       !!busy,
@@ -4821,11 +4821,13 @@ function costEntries(s: ViewState): MenuEntry[] {
       }),
     });
   }
-  const totals: string[] = [];
-  if (c.other !== null) totals.push(`${formatCost(c.other)} for titles and compaction`);
-  if (c.total !== null && c.session !== null && c.total !== c.session)
-    totals.push(`with subagents ${formatCost(c.total)}`);
-  if (totals.length) out.push(note(`Session ${costCell(c.session)}: ${totals.join(", ")}.`));
+  // "Session $0.08, of which $0.004 for titles and compaction; $0.09 with subagents."
+  const of = c.other !== null ? `, of which ${formatCost(c.other)} for titles and compaction` : "";
+  const subs =
+    c.total !== null && c.session !== null && c.total !== c.session
+      ? `; ${formatCost(c.total)} with subagents`
+      : "";
+  if (of || subs) out.push(note(`Session ${costCell(c.session)}${of}${subs}.`));
   if (c.byAgent.some((r) => r.total !== undefined && r.total !== r.cost))
     out.push(note("(…): with the subagents it started."));
   if ([...c.byModel, ...c.byAgent].some((r) => r.cost === null))
@@ -8067,7 +8069,7 @@ function renderItem(item: TranscriptItem): HTMLElement {
                           "data-testid": "error-reauth",
                           onclick: () => send({ type: "providerReauth", id: item.provider!.id }),
                         },
-                        `${t("reauth")} ${item.provider.name}`,
+                        `Sign in to ${item.provider.name} again`,
                       )
                     : null
                   : a === "changeModel"

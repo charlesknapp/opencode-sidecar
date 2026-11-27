@@ -878,7 +878,10 @@ describe(
         ["↳ general", "—", "$0.02"],
       ]);
       const menu = await text('[data-testid="menu"]');
-      assert.match(menu, /Session \$0\.06: \$0\.01 for titles and compaction, with subagents \$0\.09\./);
+      assert.match(
+        menu,
+        /Session \$0\.06, of which \$0\.01 for titles and compaction; \$0\.09 with subagents\./,
+      );
       assert.match(menu, /— : OpenCode reported no cost for these steps\./);
       assert.match(menu, /Loading…/);
       // Nothing known yet: no tables, no empty headings.
@@ -1464,7 +1467,7 @@ describe(
       );
       // OpenCode's answer comes back as state.
       await host({ type: "state", state: withRules([OWN_RULE]) });
-      assert.deepEqual(await rows("session-rule"), ["Allow shell npm test * Edit Delete"]);
+      assert.deepEqual(await rows("session-rule"), ["Allow shell npm test * Edit Remove"]);
       await page.click('[data-testid="rule-edit"]');
       assert.equal(await text('[data-testid="rule-save"]'), "Save rule");
       await page.$eval('[data-testid="rule-pattern"]', (i) => ((i as HTMLInputElement).value = ""));
@@ -2677,7 +2680,7 @@ describe(
       assert.ok(await lastSent("retryLast"));
     });
 
-    it("an auth error card offers Re-authenticate <Provider> and Choose another model", async () => {
+    it("an auth error card offers Sign in to <Provider> again and Choose another model", async () => {
       await host({
         type: "transcript",
         items: [
@@ -2702,7 +2705,7 @@ describe(
         cards.map((c) => Array.from(c.querySelectorAll("button")).map((b) => b.textContent)),
       );
       assert.deepEqual(labels, [
-        ["Re-authenticate OpenAI", "Choose another model", "Retry"],
+        ["Sign in to OpenAI again", "Choose another model", "Retry"],
         ["Choose another model"],
       ]);
       await clearSent();
@@ -2784,9 +2787,9 @@ describe(
       await host({ type: "providers", view: PROVIDERS });
       assert.deepEqual(await rowsOf("provider-row"), [
         "GitHub Copilot Needs sign-in OAuth · 0 models Your GitHub sign-in expired. Sign in again Disconnect",
-        "Anthropic Error Environment variable ANTHROPIC_API_KEY · 12 models Claude Sonnet (Anthropic) rejected the credentials. Sign in again, or choose another model. Re-authenticate",
+        "Anthropic Error Environment variable ANTHROPIC_API_KEY · 12 models Claude Sonnet (Anthropic) rejected the credentials. Sign in again, or choose another model. Sign in again",
         "Ollama Connected OpenCode config · 1 model · on this machine",
-        "OpenAI Connected API key · 30 models Re-authenticate Disconnect",
+        "OpenAI Connected API key · 30 models Sign in again Disconnect",
       ]);
       assert.match(await text('[data-testid="providers-panel"]'), /Sidecar never sees or keeps them/);
       assert.equal(
@@ -3135,10 +3138,10 @@ describe(
       await host({ type: "instructions", view: INSTRUCTIONS });
       assert.deepEqual(await instructionRows(), [
         "~/.config/opencode/AGENTS.md Not created Create…",
-        "~/.claude/CLAUDE.md Read Open",
-        "CLAUDE.md Read Open",
+        "~/.claude/CLAUDE.md In use Open",
+        "CLAUDE.md In use Open",
         "AGENTS.md Not created Creating it makes OpenCode stop reading CLAUDE.md here Create AGENTS.md…",
-        "docs/rules.md Read From opencode.json Open",
+        "docs/rules.md In use From opencode.json Open",
         ".cursor/rules/*.md Pattern From opencode.json",
       ]);
       const headings = await page.$$eval('[data-testid="instructions-panel"] h3', (hs) =>
@@ -3284,7 +3287,7 @@ describe(
       assert.deepEqual(await mcpRows(), [
         "GitHub Connected github Disconnect",
         "db Failed Connection closed: MCP server process exited with code 3 Retry",
-        "remo Needs sign-in Unauthorized Authenticate",
+        "remo Needs sign-in Unauthorized Sign in",
         "plain Needs sign-in Unauthorized Retry",
         "off Disabled Connect",
         "slow Connecting…",
@@ -6617,7 +6620,7 @@ describe(
         type: "aside",
         aside: asideView([asideTurn({ answer: "It exports **login**.", done: true, sent: true })]),
       });
-      assert.equal(await text('[data-testid="aside-to-main"]'), "Sent to main");
+      assert.equal(await text('[data-testid="aside-to-main"]'), "Added to session");
       assert.equal(
         await page.$eval('[data-testid="aside-to-main"]', (b) => (b as HTMLButtonElement).disabled),
         true,

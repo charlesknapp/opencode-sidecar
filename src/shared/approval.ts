@@ -33,8 +33,8 @@ export const MODE_LABELS: Record<ApprovalState, string> = {
 /** One line each, shown in the menu: what the mode's rules do. */
 export const MODE_LINES: Record<ApprovalMode | "default", string> = {
   ask: "Asks before every edit, command and web request.",
-  balanced: "Reads, searches and edits in the folder run; commands, web requests and files outside it ask.",
-  auto: "Everything runs without asking; rm -rf, force pushes and other destructive commands are blocked.",
+  balanced: "Reads and edits in the folder run; commands, web requests and outside files ask.",
+  auto: "Nothing asks; destructive commands are blocked (rm -rf, force push).",
   default: "No Sidecar rules: the agent's own OpenCode rules decide.",
 };
 

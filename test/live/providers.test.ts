@@ -202,7 +202,7 @@ describe("live: provider setup", () => {
     assert.ok(models.length > 0, "the test folder has its models again");
   });
 
-  it("a run on a model OpenCode does not have shows Choose another model and Re-authenticate", async (t) => {
+  it("a run on a model OpenCode does not have shows Choose another model and Sign in again", async (t) => {
     const c = live(t);
     if (!c) return;
     // No model is called: OpenCode fails the run before its first step.
