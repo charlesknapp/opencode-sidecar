@@ -46,6 +46,7 @@ import type {
   BudgetLevel,
   ConnectionStatus,
   ContextAttachment,
+  McpBusy,
   OnboardingView,
   ProvidersView,
   SignInState,
@@ -128,6 +129,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private signInBaseline: string | null = null;
   /** A provider connect, re-auth or disconnect in progress (one at a time). */
   private providerBusy: ProvidersView["busy"] = null;
+  /** What the MCP panel waits for; the panel's list is sent again on OpenCode's MCP events once it opened. */
+  private mcpBusy: McpBusy | null = null;
+  private mcpWatched = false;
+  private mcpTimer: ReturnType<typeof setTimeout> | undefined;
   private providersPending = false;
   /** The Agents panel's files, saves and imports. */
   private readonly agents: AgentsHost;
@@ -556,6 +561,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         },
         onSubagentEvents: (sessionID, events) => this.queueSubagentEvents(sessionID, events),
         onAsideChanged: () => this.queueAside(),
+        onMcpChanged: () => this.queueMcp(),
       },
       this.log,
       () => {
@@ -1203,7 +1209,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       case "openCode":
         return this.openCode(msg.text, msg.lang);
       case "loadMcpServers":
+        this.mcpWatched = true;
         return this.postMcpServers();
+      case "mcpConnect":
+        return this.mcpAction(msg.name, "Connecting…", (n) => c?.connectMcp(n));
+      case "mcpDisconnect":
+        return this.mcpAction(msg.name, "Disconnecting…", (n) => c?.disconnectMcp(n));
+      case "mcpRemove":
+        return this.mcpAction(msg.name, "Removing…", (n) => c?.removeMcp(n));
+      case "mcpAuth":
+        return this.authenticateMcp(msg.name);
+      case "mcpAdd":
+        return this.addMcp(msg.name, msg.target);
+      case "reloadMcp":
+        return this.reloadMcp();
       case "loadUsageDetails":
         return this.postUsageDetails();
       case "exportSession":
@@ -1473,11 +1492,111 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const c = this.controller;
     if (!c) return this.post({ type: "mcpServers", items: null, error: "Not connected to OpenCode." });
     try {
-      this.post({ type: "mcpServers", items: await c.mcpServers() });
+      this.post({ type: "mcpServers", items: await c.mcpServers(), busy: this.mcpBusy });
     } catch (e) {
       this.log.warn(`Listing MCP servers failed: ${e instanceof Error ? e.message : String(e)}`);
-      this.post({ type: "mcpServers", items: null, error: "OpenCode could not list them." });
+      this.post({
+        type: "mcpServers",
+        items: null,
+        error: "OpenCode could not list them.",
+        busy: this.mcpBusy,
+      });
     }
+  }
+
+  /** OpenCode reported an MCP server's state changed: the panel's list follows (debounced). */
+  private queueMcp(): void {
+    if (!this.mcpWatched || this.mcpTimer) return;
+    this.mcpTimer = setTimeout(() => {
+      this.mcpTimer = undefined;
+      void this.postMcpServers();
+    }, 200);
+  }
+
+  private setMcpBusy(busy: McpBusy | null): void {
+    this.mcpBusy = busy;
+    void this.postMcpServers();
+  }
+
+  /** Connect, Disconnect, Retry or Remove: one at a time, the list sent again after it. */
+  private async mcpAction(
+    name: string,
+    text: string,
+    run: (name: string) => Promise<void> | undefined,
+  ): Promise<void> {
+    if (!this.controller || this.mcpBusy) return;
+    this.setMcpBusy({ name, text });
+    try {
+      await run(name);
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      this.log.warn(`MCP server ${name}: ${why}`);
+      void vscode.window.showWarningMessage(`OpenCode could not do that for ${name}: ${why}`);
+    } finally {
+      this.mcpBusy = null;
+    }
+    await this.postMcpServers();
+  }
+
+  /** Signs in to an MCP server through OpenCode's OAuth (the providers' flow), then reconnects it. */
+  private async authenticateMcp(name: string): Promise<void> {
+    const c = this.controller;
+    if (!c || this.mcpBusy) return;
+    this.setMcpBusy({ name, text: "Signing in…" });
+    let outcome: ConnectOutcome;
+    try {
+      const ui = vscodeConnectUi(
+        (integration, method) => this.signIn({ integration, method }),
+        (text) => this.setMcpBusy({ name, text: text ?? "Signing in…" }),
+      );
+      outcome = await c.authenticateMcp(name, ui);
+    } catch (e) {
+      outcome = { kind: "failed", message: e instanceof Error ? e.message : String(e) };
+    } finally {
+      this.mcpBusy = null;
+    }
+    await this.postMcpServers();
+    if (outcome.kind === "connected") void vscode.window.showInformationMessage(`${name} is connected.`);
+    else if (outcome.kind === "failed")
+      void vscode.window.showWarningMessage(`${name} could not be signed in: ${outcome.message}`);
+  }
+
+  private async addMcp(name: string, target: string): Promise<void> {
+    const c = this.controller;
+    if (!c) return this.post({ type: "mcpAddResult", ok: false, error: "Not connected to OpenCode." });
+    if (this.mcpBusy)
+      return this.post({ type: "mcpAddResult", ok: false, error: "Wait for the last change to finish." });
+    this.setMcpBusy({ name, text: "Adding…" });
+    let error: string | undefined;
+    try {
+      await c.addMcp(name, target);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      this.log.warn(`Adding MCP server ${name} failed: ${error}`);
+    } finally {
+      this.mcpBusy = null;
+    }
+    this.post(error ? { type: "mcpAddResult", ok: false, error } : { type: "mcpAddResult", ok: true });
+    await this.postMcpServers();
+  }
+
+  /** Reload config from the MCP panel: the providers' reload (retried past deleted folders). */
+  private async reloadMcp(): Promise<void> {
+    const c = this.controller;
+    if (!c || this.mcpBusy) return;
+    this.setMcpBusy({ name: "", text: "Reloading OpenCode's config…" });
+    try {
+      await c.reloadConfig();
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      this.log.warn(`Reloading OpenCode's config failed: ${why}`);
+      void vscode.window.showWarningMessage(
+        `OpenCode could not reload its config: ${why.split(/\r?\n/)[0].replace(/^[\w.]+Error: /, "")}`,
+      );
+    } finally {
+      this.mcpBusy = null;
+    }
+    await this.postMcpServers();
   }
 
   private async postProviders(): Promise<void> {

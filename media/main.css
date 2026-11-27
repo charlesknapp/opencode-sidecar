@@ -4123,6 +4123,9 @@ body.vscode-high-contrast-light .p-approval {
 .provider-state.s-needs-auth {
   color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
 }
+.provider-state.s-muted {
+  color: var(--muted);
+}
 .provider-state.s-error,
 .provider-error {
   color: var(--vscode-errorForeground, var(--err));

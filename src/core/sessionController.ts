@@ -17,6 +17,7 @@ import {
 } from "./currentTask";
 import { classifyError, describeForLog, type FriendlyError } from "./errors";
 import { connectIntegration, type ConnectOutcome, type ConnectUi } from "./providerConnect";
+import { mcpNameError, parseMcpTarget } from "../shared/mcp";
 import { deriveProviders, integrationOf, type IntegrationInfo, type ProviderEntry } from "./providers";
 import type { AgentDetail, ConfigSources } from "./agents";
 import { sessionMarkdown } from "./exportMarkdown";
@@ -108,6 +109,8 @@ export interface ControllerSink {
   onSubagentEvents?(sessionID: string, events: UiEvent[]): void;
   /** The side question (`/btw`) changed: opened, streamed, answered or closed (null). */
   onAsideChanged?(aside: AsideView | null): void;
+  /** An MCP server of the open folder connected, failed or needs a sign-in (from any client). */
+  onMcpChanged?(): void;
 }
 
 /** What the sidebar shows for the Current / Last Task. */
@@ -319,6 +322,8 @@ export class SessionController {
   private approvalBusy = false;
   /** Actions of the folder's saved rules, for the rule editor's picker. */
   private savedActions: string[] = [];
+  /** MCP servers added from Sidecar for this OpenCode run, by folder. */
+  private readonly mcpAdded = new Map<string, Set<string>>();
 
   constructor(
     private readonly client: OpenCodeClient,
@@ -336,6 +341,8 @@ export class SessionController {
       /** How long a saved agent file may take to show in OpenCode's list, and how often to look. */
       agentWaitMs?: number;
       agentPollMs?: number;
+      /** How often an MCP server's state is read while it connects after a sign-in. */
+      mcpPollMs?: number;
       /** Clock for subagent timing (tests). */
       now?: () => number;
     } = { debounceMs: 400, stopCheckMs: 15_000, modelRetryMs: 1500 },
@@ -721,7 +728,94 @@ export class SessionController {
   /** Loads this folder's archived sessions for the history's Archived view. */
   /** The MCP servers OpenCode has for the open folder. */
   async mcpServers(): Promise<McpServerInfo[]> {
-    return this.directory ? this.client.listMcpServers(this.directory) : [];
+    const dir = this.directory;
+    if (!dir) return [];
+    const list = await this.client.listMcpServers(dir);
+    const added = this.mcpAdded.get(dir);
+    // A server Sidecar added that OpenCode no longer lists (a reload, a restart) is forgotten.
+    if (added) for (const n of added) if (!list.some((m) => m.name === n)) added.delete(n);
+    return list.map((m) => (added?.has(m.name) ? { ...m, runtime: true } : m));
+  }
+
+  /** Connects (or retries) an MCP server for this OpenCode run. */
+  async connectMcp(name: string): Promise<void> {
+    if (!this.directory) return;
+    await this.client.connectMcp(this.directory, name);
+    this.log.info(`Connected MCP server ${name}`);
+  }
+
+  /** Disconnects an MCP server until it is connected again. */
+  async disconnectMcp(name: string): Promise<void> {
+    if (!this.directory) return;
+    await this.client.disconnectMcp(this.directory, name);
+    this.log.info(`Disconnected MCP server ${name}`);
+  }
+
+  /** Adds an MCP server for this OpenCode run only (nothing is written to OpenCode's config). */
+  async addMcp(name: string, target: string): Promise<void> {
+    const dir = this.directory;
+    if (!dir) throw new Error("Open a folder first.");
+    const parsed = parseMcpTarget(target);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const taken = (await this.client.listMcpServers(dir)).map((m) => m.name);
+    const bad = mcpNameError(name, taken);
+    if (bad) throw new Error(bad);
+    await this.client.addMcp(dir, name, parsed.config);
+    let added = this.mcpAdded.get(dir);
+    if (!added) this.mcpAdded.set(dir, (added = new Set()));
+    added.add(name);
+    this.log.info(`Added MCP server ${name} for this OpenCode run (${parsed.config.type})`);
+  }
+
+  /** Leaves an MCP server out until OpenCode restarts or reloads its config. */
+  async removeMcp(name: string): Promise<void> {
+    const dir = this.directory;
+    if (!dir) return;
+    await this.client.removeMcp(dir, name);
+    this.mcpAdded.get(dir)?.delete(name);
+    this.log.info(`Removed MCP server ${name} for this OpenCode run`);
+  }
+
+  /**
+   * Signs in to an MCP server that needs it: OpenCode lists the server with the integration
+   * it signs in through, so this is the providers' OAuth flow (open the page OpenCode
+   * returns, poll until done). Then the server is connected again and its state polled
+   * until it settles. `failed` when the server has no sign-in OpenCode offers.
+   */
+  async authenticateMcp(name: string, ui: ConnectUi): Promise<ConnectOutcome> {
+    const dir = this.directory;
+    if (!dir) return { kind: "failed", message: "Open a folder first." };
+    const server = (await this.client.listMcpServers(dir)).find((m) => m.name === name);
+    if (!server) return { kind: "failed", message: `OpenCode no longer lists ${name}.` };
+    if (!server.integrationID) return { kind: "failed", message: `OpenCode offers no sign-in for ${name}.` };
+    let integration: IntegrationInfo;
+    try {
+      integration = await this.client.getIntegration(dir, server.integrationID);
+    } catch (e) {
+      return { kind: "failed", message: friendlyError(e, "OpenCode could not start the sign-in") };
+    }
+    const outcome = await connectIntegration(this.client, dir, integration, ui);
+    if (outcome.kind !== "connected") return outcome;
+    try {
+      await this.client.connectMcp(dir, name);
+    } catch (e) {
+      this.log.warn(
+        `Connecting ${name} after its sign-in failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    const every = this.timing.mcpPollMs ?? 500;
+    let status: McpServerInfo["status"] | undefined;
+    for (let i = 0; i < 20 && !this.disposed; i++) {
+      const now = (await this.client.listMcpServers(dir).catch(() => [])).find((m) => m.name === name);
+      status = now?.status;
+      if (status === "connected") break;
+      if (status === "failed") return { kind: "failed", message: now?.error ?? "It could not connect." };
+      await delay(every);
+    }
+    if (status === "needs_auth")
+      return { kind: "failed", message: "OpenCode still reports that it needs a sign-in." };
+    this.log.info(`Signed in to MCP server ${name}`);
+    return outcome;
   }
 
   /** OpenCode's integrations for the open folder (every provider it can connect). */
@@ -2516,6 +2610,7 @@ export class SessionController {
   handleRawEvent(raw: unknown): void {
     if (this.disposed) return;
     if (isCatalogEvent(raw)) this.scheduleCatalogRefresh();
+    if (isMcpEvent(raw, this.directory)) this.sink.onMcpChanged?.();
     const env = this.normalizer.normalize(raw);
     if (!env) return;
     if (env.sessionsChanged && (env.directory === null || sameDirectory(env.directory, this.directory)))
@@ -3109,6 +3204,15 @@ const CATALOG_EVENTS = new Set([
   "model.updated",
   "models-dev.refreshed",
 ]);
+
+/** `mcp.status.changed` for `directory` (the event carries the server's folder). */
+function isMcpEvent(raw: unknown, directory: string | null): boolean {
+  const e =
+    raw && typeof raw === "object" ? (raw as { type?: unknown; location?: { directory?: unknown } }) : null;
+  if (e?.type !== "mcp.status.changed" || !directory) return false;
+  const at = e.location?.directory;
+  return typeof at !== "string" || sameDirectory(at, directory);
+}
 
 /** A session deleted or archived (in Sidecar or another client): it leaves the strip. */
 function isRemovalEvent(raw: unknown): boolean {

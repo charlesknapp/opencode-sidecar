@@ -37,6 +37,8 @@ export interface IntegrationInfo {
   name: string;
   methods: IntegrationMethod[];
   connections: IntegrationConnection[];
+  /** An MCP server's sign-in (`metadata.source: "mcp"`): the MCP panel's, not a provider. */
+  mcp?: true;
 }
 
 export interface ProviderEntry {
@@ -101,6 +103,7 @@ export function parseIntegration(raw: unknown): IntegrationInfo | null {
     connections: list(i.connections)
       .map(parseConnection)
       .filter((c): c is IntegrationConnection => c !== null),
+    ...(rec(i.metadata).source === "mcp" ? { mcp: true as const } : {}),
   };
 }
 
@@ -215,7 +218,7 @@ export function deriveProviders(input: ProvidersInput): ProvidersView {
   const connected: ProviderRow[] = [];
   const shown = new Set<string>();
   for (const i of integrations) {
-    if (!i.connections.length) continue;
+    if (!i.connections.length || i.mcp) continue;
     shown.add(i.id);
     const ok = i.connections.filter((c) => !c.needsAuth);
     const stale = i.connections.find((c) => c.needsAuth);
@@ -258,7 +261,7 @@ export function deriveProviders(input: ProvidersInput): ProvidersView {
 
   const available: ProviderChoice[] = [];
   for (const i of integrations) {
-    if (shown.has(i.id)) continue;
+    if (shown.has(i.id) || i.mcp) continue;
     const popular = POPULAR_PROVIDERS.includes(i.id);
     available.push({ id: i.id, name: i.name, methods: methodSummary(i), ...(popular ? { popular } : {}) });
   }

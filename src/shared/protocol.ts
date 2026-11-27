@@ -23,6 +23,7 @@ import type {
   FormAnswer,
   ImportPreview,
   InboxDelivery,
+  McpBusy,
   McpServerInfo,
   MentionCandidate,
   SavedPermission,
@@ -155,7 +156,9 @@ export type HostMessage =
   /** The open folder's "always allow" rules; null with `error` when OpenCode could not list them. */
   | { type: "savedPermissions"; items: SavedPermission[] | null; error?: string }
   /** The folder's MCP servers; null with `error` when OpenCode could not list them. */
-  | { type: "mcpServers"; items: McpServerInfo[] | null; error?: string }
+  | { type: "mcpServers"; items: McpServerInfo[] | null; error?: string; busy?: McpBusy | null }
+  /** How adding an MCP server for this OpenCode run went (the panel's form). */
+  | { type: "mcpAddResult"; ok: boolean; error?: string }
   /** Open the Providers panel (the Manage Providers command). */
   | { type: "showProviders" }
   /** The Providers panel; null with `error` when OpenCode could not list them. */
@@ -201,6 +204,17 @@ export type WebviewMessage =
   | { type: "deleteSession"; id: string }
   | { type: "exportSession" }
   | { type: "loadMcpServers" }
+  /** Connect an MCP server (also Retry for one that failed), or disconnect it, for this OpenCode run. */
+  | { type: "mcpConnect"; name: string }
+  | { type: "mcpDisconnect"; name: string }
+  /** Sign in to an MCP server that needs it, through OpenCode's OAuth. */
+  | { type: "mcpAuth"; name: string }
+  /** Add an MCP server for this OpenCode run: `target` is a command line or an http(s) URL. */
+  | { type: "mcpAdd"; name: string; target: string }
+  /** Leave an MCP server out until OpenCode restarts or reloads its config (the webview asked first). */
+  | { type: "mcpRemove"; name: string }
+  /** Have OpenCode reload its config from the MCP panel. */
+  | { type: "reloadMcp" }
   /** The Providers panel opened (or wants a fresh list). */
   | { type: "loadProviders" }
   /** Connect a provider through OpenCode's sign-in (`id`: OpenCode's integration). */
@@ -473,6 +487,12 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   deleteSession: (m) => isStr(m.id),
   exportSession: () => true,
   loadMcpServers: () => true,
+  mcpConnect: (m) => isStr(m.name, 200),
+  mcpDisconnect: (m) => isStr(m.name, 200),
+  mcpAuth: (m) => isStr(m.name, 200),
+  mcpAdd: (m) => isStr(m.name, 200) && isStr(m.target, 4000),
+  mcpRemove: (m) => isStr(m.name, 200),
+  reloadMcp: () => true,
   loadProviders: () => true,
   providerConnect: (m) => isProviderId(m.id),
   providerReauth: (m) => isProviderId(m.id),
@@ -609,6 +629,11 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   setSessionRules: ["rules"],
   allowLike: ["requestId", "patterns", "scope"],
   deleteSession: ["id"],
+  mcpConnect: ["name"],
+  mcpDisconnect: ["name"],
+  mcpAuth: ["name"],
+  mcpAdd: ["name", "target"],
+  mcpRemove: ["name"],
   providerConnect: ["id"],
   providerReauth: ["id"],
   providerDisconnect: ["id"],

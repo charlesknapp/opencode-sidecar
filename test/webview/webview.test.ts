@@ -14,6 +14,7 @@ import type {
   AsideTurn,
   AsideView,
   ImportPreview,
+  McpServerInfo,
   ProvidersView,
   StripTab,
   SubagentView,
@@ -1730,25 +1731,9 @@ describe(
       await page.click('[data-testid="commands-button"]');
       await page.click('[data-testid="mcp-servers"]');
       assert.ok(await lastSent("loadMcpServers"));
-      await host({
-        type: "mcpServers",
-        items: [
-          { name: "github", title: "GitHub", status: "connected" },
-          { name: "db", status: "failed", error: "spawn ENOENT" },
-        ],
-      });
-      const rows = await page.$$eval('[data-testid="menu"] .menu-stat', (els) =>
-        els.map((e) =>
-          Array.from(e.children)
-            .map((c) => c.textContent)
-            .join(": "),
-        ),
-      );
-      assert.deepEqual(rows, ["GitHub: ● connected", "db: ✕ failed"]);
-      assert.match(await text('[data-testid="menu"]'), /spawn ENOENT/);
-      await host({ type: "mcpServers", items: [] });
-      assert.match(await text('[data-testid="menu"]'), /No MCP servers are configured/);
+      assert.ok(await page.$('[data-testid="mcp-panel"]'), "the MCP panel opens");
       await page.keyboard.press("Escape");
+      assert.equal(await page.$('[data-testid="mcp-panel"]'), null);
       await host({ type: "showHistory" });
       assert.equal(await page.$eval(".sessions", (s) => (s as HTMLElement).hidden), false, "History is open");
     });
@@ -2832,6 +2817,186 @@ describe(
           };
         });
         assert.deepEqual(fit, { inside: true, scroll: true, rows: true, doc: true });
+      });
+
+    // ------------------------------------------------------------- MCP panel
+
+    const MCP: McpServerInfo[] = [
+      { name: "github", title: "GitHub", status: "connected" },
+      { name: "db", status: "failed", error: "Connection closed: MCP server process exited with code 3" },
+      { name: "remo", status: "needs_auth", error: "Unauthorized", integrationID: "mcp_3643" },
+      { name: "plain", status: "needs_auth", error: "Unauthorized" },
+      { name: "off", status: "disabled" },
+      { name: "slow", status: "pending" },
+      { name: "tiny", status: "connected", runtime: true },
+    ];
+    const mcpRows = () =>
+      page.$$eval('[data-testid="mcp-panel"] [data-testid="mcp-row"]', (els) =>
+        els.map((e) => (e as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
+      );
+    const openMcp = async () => {
+      await page.click('[data-testid="commands-button"]');
+      await clearSent();
+      await page.click('[data-testid="mcp-servers"]');
+    };
+
+    it("the MCP panel lists each server's state with the action it allows", async () => {
+      await openMcp();
+      assert.deepEqual(await sent(), [{ type: "loadMcpServers" }]);
+      assert.match(await text('[data-testid="mcp-panel"]'), /Loading…/);
+      await host({ type: "mcpServers", items: MCP });
+      assert.deepEqual(await mcpRows(), [
+        "GitHub Connected github Disconnect",
+        "db Failed Connection closed: MCP server process exited with code 3 Retry",
+        "remo Needs sign-in Unauthorized Authenticate",
+        "plain Needs sign-in Unauthorized Retry",
+        "off Disabled Connect",
+        "slow Connecting…",
+        "tiny Connected added for this OpenCode run Disconnect Remove",
+      ]);
+      assert.match(await text('[data-testid="mcp-panel"]'), /OpenCode's config is not changed/);
+      await clearSent();
+      await page.click('[data-name="github"] [data-testid="mcp-disconnect"]');
+      await page.click('[data-name="db"] [data-testid="mcp-retry"]');
+      await page.click('[data-name="remo"] [data-testid="mcp-auth"]');
+      await page.click('[data-name="plain"] [data-testid="mcp-retry"]');
+      await page.click('[data-name="off"] [data-testid="mcp-connect"]');
+      await page.click('[data-testid="mcp-reload"]');
+      assert.deepEqual(await sent(), [
+        { type: "mcpDisconnect", name: "github" },
+        { type: "mcpConnect", name: "db" },
+        { type: "mcpAuth", name: "remo" },
+        { type: "mcpConnect", name: "plain" },
+        { type: "mcpConnect", name: "off" },
+        { type: "reloadMcp" },
+      ]);
+      await page.click('[data-testid="mcp-close"]');
+      assert.equal(await page.$('[data-testid="mcp-panel"]'), null);
+    });
+
+    it("the MCP panel removes a server added for this run only after confirming", async () => {
+      await openMcp();
+      await host({ type: "mcpServers", items: MCP });
+      await clearSent();
+      await page.click('[data-name="tiny"] [data-testid="mcp-remove"]');
+      assert.match(await text('[data-testid="dialog"]'), /Remove tiny\?/);
+      await page.keyboard.press("Escape");
+      assert.deepEqual(await sent(), [], "cancelled: nothing sent");
+      assert.ok(await page.$('[data-testid="mcp-panel"]'), "Escape in the dialog keeps the panel");
+      await page.click('[data-name="tiny"] [data-testid="mcp-remove"]');
+      await page.click('[data-testid="mcp-remove-confirm"]');
+      assert.deepEqual(await sent(), [{ type: "mcpRemove", name: "tiny" }]);
+      await page.keyboard.press("Escape");
+    });
+
+    it("the MCP panel waits while a change runs, and shows what it waits for on the row", async () => {
+      await openMcp();
+      await host({
+        type: "mcpServers",
+        items: MCP,
+        busy: { name: "remo", text: "Finish signing in in your browser." },
+      });
+      assert.equal(await text('[data-testid="mcp-busy"]'), "remo: Finish signing in in your browser.");
+      assert.equal(
+        await text('[data-name="remo"] [data-testid="mcp-state"]'),
+        "Finish signing in in your browser.",
+      );
+      const disabled = await page.$$eval('[data-testid="mcp-panel"] [data-testid="mcp-row"] button', (bs) =>
+        bs.every((b) => (b as HTMLButtonElement).disabled),
+      );
+      assert.equal(disabled, true);
+      for (const id of ["mcp-reload", "mcp-add"])
+        assert.equal(
+          await page.$eval(`[data-testid="${id}"]`, (b) => (b as HTMLButtonElement).disabled),
+          true,
+          id,
+        );
+      await host({ type: "mcpServers", items: MCP, busy: null });
+      assert.equal(await page.$eval('[data-testid="mcp-busy"]', (b) => (b as HTMLElement).hidden), true);
+      await host({ type: "mcpServers", items: null, error: "OpenCode could not list them." });
+      assert.match(
+        await text('[data-testid="mcp-note"]'),
+        /Couldn't load them: OpenCode could not list them\./,
+      );
+      await host({ type: "mcpServers", items: [] });
+      assert.match(await text('[data-testid="mcp-note"]'), /No MCP servers for this folder/);
+      await page.keyboard.press("Escape");
+    });
+
+    it("the MCP panel adds a server for this run: checked first, the result kept or cleared", async () => {
+      await openMcp();
+      await host({ type: "mcpServers", items: MCP });
+      await clearSent();
+      await page.click('[data-testid="mcp-add-name"]');
+      await page.keyboard.type("github");
+      await page.click('[data-testid="mcp-add-target"]');
+      await page.keyboard.type("npx -y x");
+      await page.keyboard.press("Enter");
+      assert.match(await text('[data-testid="mcp-add-error"]'), /already exists/);
+      await page.click('[data-testid="mcp-add-name"]', { count: 3 });
+      await page.keyboard.type("git");
+      await page.click('[data-testid="mcp-add-target"]', { count: 3 });
+      await page.keyboard.type("ws://host");
+      await page.click('[data-testid="mcp-add"]');
+      assert.match(await text('[data-testid="mcp-add-error"]'), /must start with http/);
+      assert.deepEqual(await sent(), [], "nothing is sent until it checks out");
+      await page.click('[data-testid="mcp-add-target"]', { count: 3 });
+      await page.keyboard.type('uvx "mcp server git"');
+      await page.keyboard.press("Enter");
+      assert.deepEqual(await sent(), [{ type: "mcpAdd", name: "git", target: 'uvx "mcp server git"' }]);
+      assert.equal(await page.$eval('[data-testid="mcp-add-error"]', (e) => (e as HTMLElement).hidden), true);
+      assert.equal(
+        await page.$eval('[data-testid="mcp-add"]', (b) => (b as HTMLButtonElement).disabled),
+        true,
+      );
+      // OpenCode refused it: the fields stay for another try.
+      await host({ type: "mcpAddResult", ok: false, error: "spawn uvx ENOENT" });
+      assert.equal(await text('[data-testid="mcp-add-error"]'), "spawn uvx ENOENT");
+      assert.equal(
+        await page.$eval('[data-testid="mcp-add-name"]', (i) => (i as HTMLInputElement).value),
+        "git",
+      );
+      // The list redrawn keeps what was typed; a success clears it.
+      await host({ type: "mcpServers", items: MCP });
+      assert.equal(
+        await page.$eval('[data-testid="mcp-add-target"]', (i) => (i as HTMLInputElement).value),
+        'uvx "mcp server git"',
+      );
+      await host({ type: "mcpAddResult", ok: true });
+      assert.equal(
+        await page.$eval('[data-testid="mcp-add-name"]', (i) => (i as HTMLInputElement).value),
+        "",
+      );
+      assert.equal(
+        await page.$eval('[data-testid="mcp-add"]', (b) => (b as HTMLButtonElement).disabled),
+        false,
+      );
+      // Focus stays inside the panel with Tab.
+      for (let i = 0; i < 20; i++) {
+        await page.keyboard.press("Tab");
+        assert.ok(await page.evaluate(() => !!document.activeElement?.closest('[data-testid="mcp-panel"]')));
+      }
+      await page.keyboard.press("Escape");
+      assert.equal(await page.$('[data-testid="mcp-panel"]'), null);
+    });
+
+    for (const width of [300, 520])
+      it(`the MCP panel fits ${width} px without sideways scrolling`, async () => {
+        await page.setViewport({ width, height: 700 });
+        await openMcp();
+        await host({ type: "mcpServers", items: MCP });
+        const fit = await page.$eval('[data-testid="mcp-panel"]', (el) => {
+          const r = el.getBoundingClientRect();
+          const rows = Array.from(el.querySelectorAll<HTMLElement>('[data-testid="mcp-row"], .rule-form'));
+          return {
+            inside: r.left >= 0 && r.right <= window.innerWidth,
+            scroll: el.scrollWidth <= el.clientWidth + 1,
+            rows: rows.every((x) => x.scrollWidth <= x.clientWidth + 1),
+            doc: document.documentElement.scrollWidth <= window.innerWidth,
+          };
+        });
+        assert.deepEqual(fit, { inside: true, scroll: true, rows: true, doc: true });
+        await page.keyboard.press("Escape");
       });
 
     // ------------------------------------------------------------- agents

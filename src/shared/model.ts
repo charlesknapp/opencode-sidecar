@@ -379,6 +379,19 @@ export interface McpServerInfo {
   status: "connected" | "pending" | "disabled" | "failed" | "needs_auth";
   /** Why it failed or needs sign-in. */
   error?: string;
+  /** The integration OpenCode signs in to it with (a remote server that uses OAuth). */
+  integrationID?: string;
+  /** Added from Sidecar for this OpenCode run only (gone after a restart or a config reload). */
+  runtime?: boolean;
+}
+
+/** An MCP server added at runtime: a local command (argv) or a remote URL. */
+export type McpConfig = { type: "local"; command: string[] } | { type: "remote"; url: string };
+
+/** What the MCP panel is doing to one server ("" for the whole list, as for Reload config). */
+export interface McpBusy {
+  name: string;
+  text: string;
 }
 
 /**

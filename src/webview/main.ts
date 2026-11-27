@@ -23,6 +23,7 @@ import type {
   FormField,
   ImportPreview,
   InboxDelivery,
+  McpBusy,
   McpServerInfo,
   MentionCandidate,
   ModelOption,
@@ -47,6 +48,7 @@ import {
   type RuleEffect,
 } from "../shared/approval";
 import { validateAgentName } from "../shared/agentName";
+import { mcpNameError, parseMcpTarget } from "../shared/mcp";
 import type { HostMessage, OfficialLink, ViewState, WebviewMessage } from "../shared/protocol";
 import { formatRate, ThroughputMeter } from "../shared/throughput";
 import { Transcript } from "../shared/transcript";
@@ -2486,7 +2488,7 @@ function commandsMenu(): MenuEntry[] {
     heading("Settings"),
     item("MCP servers…", () => openMcpServers(), {
       icon: "server",
-      sub: "The folder's MCP servers and their state",
+      sub: "Their state; connect, sign in or add one for this OpenCode run",
       testid: "mcp-servers",
       disabled: state?.connection.kind !== "connected",
     }),
@@ -2524,44 +2526,263 @@ function commandsMenu(): MenuEntry[] {
 
 // ----------------------------------------------------------- MCP servers
 //
-// The MCP servers OpenCode has for the open folder and how each is doing (read-only).
+// The MCP panel: the MCP servers OpenCode has for the open folder, how each is doing, and
+// Connect / Disconnect / Retry / Authenticate for this OpenCode run. A server can be added
+// for this run only; servers in OpenCode's config are never changed. OpenCode does not
+// list a server's tools, so their count and context cost are not shown.
 
 /** undefined while loading; null when OpenCode could not list them. */
 let mcpList: McpServerInfo[] | null | undefined;
 let mcpError = "";
+let mcpBusy: McpBusy | null = null;
+let mcpPanel: { paint: () => void; added: (ok: boolean, error?: string) => void } | null = null;
 
-const MCP_STATUS: Record<McpServerInfo["status"], string> = {
-  connected: "● connected",
-  pending: "◌ connecting…",
-  disabled: "○ disabled",
-  failed: "✕ failed",
-  needs_auth: "! needs sign-in",
+const MCP_STATES: Record<McpServerInfo["status"], string> = {
+  connected: "Connected",
+  pending: "Connecting…",
+  disabled: "Disabled",
+  failed: "Failed",
+  needs_auth: "Needs sign-in",
+};
+const MCP_STATE_CLASS: Record<McpServerInfo["status"], string> = {
+  connected: "s-connected",
+  pending: "s-muted",
+  disabled: "s-muted",
+  failed: "s-error",
+  needs_auth: "s-needs-auth",
 };
 
 function openMcpServers(): void {
-  mcpList = undefined;
-  showMcpServers();
-  send({ type: "loadMcpServers" });
-}
-
-function showMcpServers(): void {
-  closeMenu();
-  openMenu(slashBtn, mcpServersMenu(), { width: "box", title: "MCP servers", maxHeight: 320 });
-  if (openMenuState) openMenuState.el.dataset.view = "mcp-servers";
-}
-
-function mcpServersMenu(): MenuEntry[] {
-  if (mcpList === undefined) return [note("Loading…")];
-  if (mcpList === null) return [note(`Couldn't load them: ${mcpError || "OpenCode did not answer."}`)];
-  if (!mcpList.length)
-    return [note("No MCP servers are configured for this folder. They are set up in OpenCode's config.")];
-  const out: MenuEntry[] = [];
-  for (const m of mcpList) {
-    out.push(stat(m.title || m.name, MCP_STATUS[m.status]));
-    if (m.error) out.push(note(m.error));
+  if (mcpPanel) {
+    send({ type: "loadMcpServers" });
+    return;
   }
-  out.push(note("Shown as OpenCode reports them; manage servers in OpenCode."));
-  return out;
+  closePopovers();
+  mcpList = undefined;
+  mcpBusy = null;
+  send({ type: "loadMcpServers" });
+  const before = document.activeElement as HTMLElement | null;
+  const status = h("p", { className: "banner info", role: "status", "data-testid": "mcp-busy" });
+  const list = h("ul", { className: "rules-list", "data-testid": "mcp-list" });
+  const listNote = h("p", { className: "rules-note", "data-testid": "mcp-note" });
+  // The add form is built once, so what is typed survives the list being redrawn.
+  const nameIn = h("input", {
+    className: "rule-in",
+    "aria-label": "Server name",
+    placeholder: "Name",
+    "data-testid": "mcp-add-name",
+  }) as HTMLInputElement;
+  const targetIn = h("input", {
+    className: "rule-in grow",
+    "aria-label": "Command or URL",
+    placeholder: "npx -y some-server, or https://…",
+    "data-testid": "mcp-add-target",
+  }) as HTMLInputElement;
+  const addError = h("p", { className: "rule-error", "data-testid": "mcp-add-error", role: "alert" });
+  addError.hidden = true;
+  const showAddError = (text: string) => {
+    addError.textContent = text;
+    addError.hidden = !text;
+  };
+  let adding = false;
+  const add = () => {
+    const name = nameIn.value.trim();
+    const parsed = parseMcpTarget(targetIn.value);
+    const why =
+      mcpNameError(
+        name,
+        (mcpList ?? []).map((m) => m.name),
+      ) ?? (parsed.ok ? null : parsed.error);
+    showAddError(why ?? "");
+    if (why) return (name && !parsed.ok ? targetIn : nameIn).focus();
+    adding = true;
+    send({ type: "mcpAdd", name, target: targetIn.value.trim() });
+    paint();
+  };
+  const addBtn = h(
+    "button",
+    { className: "btn", "data-testid": "mcp-add", onclick: add },
+    "Add",
+  ) as HTMLButtonElement;
+  for (const i of [nameIn, targetIn])
+    i.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        add();
+      }
+    });
+  const reloadBtn = h(
+    "button",
+    {
+      className: "btn subtle",
+      "data-testid": "mcp-reload",
+      "data-tip": "Have OpenCode read its config and skills again (servers added here are dropped)",
+      onclick: () => send({ type: "reloadMcp" }),
+    },
+    "Reload config",
+  ) as HTMLButtonElement;
+  const close = () => {
+    mcpPanel = null;
+    document.removeEventListener("keydown", onKey, true);
+    backdrop.remove();
+    if (before?.isConnected) before.focus();
+  };
+  const doneBtn = h("button", { className: "btn", "data-testid": "mcp-close", onclick: close }, "Done");
+  const dialog = h(
+    "div",
+    {
+      className: "modal rules-editor providers-panel mcp-panel",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "mcp-title",
+      "data-testid": "mcp-panel",
+      tabindex: "-1",
+    },
+    h("h2", { id: "mcp-title" }, "MCP servers"),
+    h(
+      "p",
+      { className: "rules-note" },
+      "Changes here last for this OpenCode run. OpenCode's config is not changed.",
+    ),
+    status,
+    list,
+    listNote,
+    h("h3", {}, "Add a server for this OpenCode run"),
+    h("div", { className: "rule-form" }, nameIn, targetIn, addBtn),
+    addError,
+    h("div", { className: "modal-foot providers-foot" }, reloadBtn, doneBtn),
+  );
+  const backdrop = h(
+    "div",
+    {
+      className: "modal-backdrop",
+      onmousedown: (e: Event) => {
+        if (e.target === backdrop) close();
+      },
+    },
+    dialog,
+  );
+  const onKey = (e: KeyboardEvent) => {
+    if (dialogOpen) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    } else if (e.key === "Tab") {
+      const f = Array.from(dialog.querySelectorAll<HTMLElement>("button, input")).filter(
+        (x) => !(x as HTMLButtonElement).disabled && !x.hidden,
+      );
+      const i = f.indexOf(document.activeElement as HTMLElement);
+      e.preventDefault();
+      f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length]?.focus();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+
+  async function remove(m: McpServerInfo): Promise<void> {
+    const pick = await confirmDialog({
+      title: `Remove ${m.title || m.name}?`,
+      body: "OpenCode stops the server and leaves it out until it restarts or reloads its config.",
+      choices: [{ value: "yes", label: "Remove", danger: true, testid: "mcp-remove-confirm" }],
+    });
+    if (pick === "yes") send({ type: "mcpRemove", name: m.name });
+  }
+
+  /** The row's actions for its state; they all wait while something runs. */
+  function actions(m: McpServerInfo, busy: boolean): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    const cmd = (label: string, testid: string, type: "mcpConnect" | "mcpDisconnect" | "mcpAuth") =>
+      smallBtn(label, testid, () => send({ type, name: m.name }), busy);
+    if (m.status === "connected") out.push(cmd("Disconnect", "mcp-disconnect", "mcpDisconnect"));
+    else if (m.status === "disabled") out.push(cmd("Connect", "mcp-connect", "mcpConnect"));
+    else if (m.status === "failed") out.push(cmd("Retry", "mcp-retry", "mcpConnect"));
+    else if (m.status === "needs_auth")
+      out.push(
+        m.integrationID
+          ? cmd("Authenticate", "mcp-auth", "mcpAuth")
+          : cmd("Retry", "mcp-retry", "mcpConnect"),
+      );
+    if (m.runtime) out.push(smallBtn("Remove", "mcp-remove", () => void remove(m), busy));
+    return out;
+  }
+
+  function paint(): void {
+    const v = mcpList;
+    // A redrawn row's button had the focus: it goes to the same button of the new row.
+    const had = document.activeElement as HTMLElement | null;
+    const key =
+      had && list.contains(had)
+        ? {
+            name: had.closest<HTMLElement>("[data-name]")?.dataset.name ?? "",
+            testid: had.dataset.testid ?? "",
+          }
+        : null;
+    const busy = mcpBusy;
+    status.hidden = !busy;
+    status.textContent = busy ? (busy.name ? `${busy.name}: ${busy.text}` : busy.text) : "";
+    reloadBtn.disabled = addBtn.disabled = !!busy || adding;
+    if (!v) {
+      list.replaceChildren();
+      listNote.textContent =
+        v === undefined ? "Loading…" : `Couldn't load them: ${mcpError || "OpenCode did not answer."}`;
+      return;
+    }
+    list.replaceChildren(
+      ...v.map((m) => {
+        const acts = actions(m, !!busy);
+        const meta = [
+          m.title && m.title !== m.name ? m.name : "",
+          m.runtime ? "added for this OpenCode run" : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return h(
+          "li",
+          { className: `rule provider mcp s-${m.status}`, "data-testid": "mcp-row", "data-name": m.name },
+          h(
+            "div",
+            { className: "provider-head" },
+            h("span", { className: "provider-name", dir: "auto" }, m.title || m.name),
+            h(
+              "span",
+              { className: `provider-state ${MCP_STATE_CLASS[m.status]}`, "data-testid": "mcp-state" },
+              busy?.name === m.name ? busy.text : MCP_STATES[m.status],
+            ),
+          ),
+          meta ? h("div", { className: "provider-meta" }, meta) : null,
+          m.error
+            ? h("div", { className: "provider-error", "data-testid": "mcp-error", dir: "auto" }, m.error)
+            : null,
+          acts.length ? h("div", { className: "provider-actions" }, ...acts) : null,
+        );
+      }),
+    );
+    listNote.textContent = v.length
+      ? ""
+      : "No MCP servers for this folder. They are set up in OpenCode's config, or added below for this run.";
+    if (key)
+      queueMicrotask(() => {
+        if (had?.isConnected) return;
+        const row = dialog.querySelector<HTMLElement>(`[data-name="${CSS.escape(key.name)}"]`);
+        const same = row?.querySelector<HTMLButtonElement>(`[data-testid="${CSS.escape(key.testid)}"]`);
+        (same && !same.disabled ? same : doneBtn).focus();
+      });
+  }
+
+  document.body.append(backdrop);
+  mcpPanel = {
+    paint,
+    added: (ok, error) => {
+      adding = false;
+      if (ok) {
+        nameIn.value = targetIn.value = "";
+        showAddError("");
+      } else showAddError(error || "OpenCode could not add it.");
+      paint();
+    },
+  };
+  paint();
+  doneBtn.focus();
 }
 
 // ------------------------------------------------------- approval and rules
@@ -8953,7 +9174,11 @@ window.addEventListener("message", (e: MessageEvent) => {
     case "mcpServers":
       mcpList = msg.items;
       mcpError = msg.error ?? "";
-      if (openMenuState?.el.dataset.view === "mcp-servers") showMcpServers();
+      mcpBusy = msg.busy ?? null;
+      mcpPanel?.paint();
+      break;
+    case "mcpAddResult":
+      mcpPanel?.added(msg.ok, msg.error);
       break;
     case "savedPermissions":
       savedPerms = msg.items;

@@ -13,6 +13,7 @@ import type {
   ModelOption,
   PendingInboxItem,
   PermissionDecision,
+  McpConfig,
   McpServerInfo,
   PermissionRequest,
   QuotaMeter,
@@ -168,6 +169,14 @@ export interface OpenCodeClient {
   deleteSession(id: string): Promise<void>;
   /** The MCP servers configured for a folder and their state. */
   listMcpServers(directory: string): Promise<McpServerInfo[]>;
+  /** Connects an MCP server until OpenCode restarts (also one disabled in the config); 404 for an unknown one. */
+  connectMcp(directory: string, name: string): Promise<void>;
+  /** Disconnects an MCP server (OpenCode then lists it as disabled) until it is connected again. */
+  disconnectMcp(directory: string, name: string): Promise<void>;
+  /** Adds (or replaces) an MCP server for this OpenCode run only, and connects it. Nothing is written to the config. */
+  addMcp(directory: string, name: string, config: McpConfig): Promise<void>;
+  /** Stops an MCP server and leaves it out until OpenCode restarts or reloads its config. */
+  removeMcp(directory: string, name: string): Promise<void>;
   /** OpenCode's project for a folder (the scope of its saved permissions). */
   projectId(directory: string): Promise<string | null>;
   /** "Always allow" rules OpenCode saved for a project. */
@@ -972,9 +981,38 @@ export class HttpOpenCodeClient implements OpenCodeClient {
         ...(typeof x.title === "string" && x.title ? { title: x.title } : {}),
         status: st.status as McpServerInfo["status"],
         ...(typeof st.error === "string" && st.error ? { error: st.error } : {}),
+        ...(typeof x.integrationID === "string" && x.integrationID ? { integrationID: x.integrationID } : {}),
       });
     }
     return out;
+  }
+
+  private mcpPath(name: string, action = ""): string {
+    return `/api/experimental/mcp/${encodeURIComponent(name)}${action ? `/${action}` : ""}`;
+  }
+
+  async connectMcp(directory: string, name: string): Promise<void> {
+    // OpenCode answers once the server has connected or failed (a slow one can take a while).
+    await this.request("POST", this.mcpPath(name, "connect"), {
+      query: this.loc(directory),
+      timeoutMs: 60_000,
+    });
+  }
+
+  async disconnectMcp(directory: string, name: string): Promise<void> {
+    await this.request("POST", this.mcpPath(name, "disconnect"), { query: this.loc(directory) });
+  }
+
+  async addMcp(directory: string, name: string, config: McpConfig): Promise<void> {
+    await this.request("PUT", this.mcpPath(name), {
+      query: this.loc(directory),
+      body: { config },
+      timeoutMs: 60_000,
+    });
+  }
+
+  async removeMcp(directory: string, name: string): Promise<void> {
+    await this.request("DELETE", this.mcpPath(name), { query: this.loc(directory) });
   }
 
   async projectId(directory: string): Promise<string | null> {

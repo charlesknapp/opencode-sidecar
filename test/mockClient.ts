@@ -22,6 +22,7 @@ import type {
   ModelOption,
   PendingInboxItem,
   PermissionDecision,
+  McpConfig,
   McpServerInfo,
   PermissionRequest,
   QuotaView,
@@ -292,6 +293,47 @@ export class MockClient implements OpenCodeClient {
   async listMcpServers(directory: string) {
     this.record("listMcpServers", directory);
     return this.mcp;
+  }
+  /** States a server takes, in turn, after `connectMcp` (the last one stays); default connected. */
+  mcpAfterConnect: Array<McpServerInfo["status"]> = [];
+  private mcpServer(name: string) {
+    const m = this.mcp.find((x) => x.name === name);
+    if (!m) throw new OpenCodeHttpError(404, "McpServerNotFoundError", `MCP server not found: ${name}`);
+    return m;
+  }
+  async connectMcp(directory: string, name: string) {
+    this.record("connectMcp", directory, name);
+    this.fail("connectMcp");
+    const m = this.mcpServer(name);
+    const next =
+      this.mcpAfterConnect.length > 1
+        ? this.mcpAfterConnect.shift()!
+        : (this.mcpAfterConnect[0] ?? "connected");
+    this.mcp = this.mcp.map((x) =>
+      x === m
+        ? {
+            name: m.name,
+            ...(m.title ? { title: m.title } : {}),
+            status: next,
+            ...(m.integrationID ? { integrationID: m.integrationID } : {}),
+          }
+        : x,
+    );
+  }
+  async disconnectMcp(directory: string, name: string) {
+    this.record("disconnectMcp", directory, name);
+    const m = this.mcpServer(name);
+    this.mcp = this.mcp.map((x) => (x === m ? { name: m.name, status: "disabled" as const } : x));
+  }
+  async addMcp(directory: string, name: string, config: McpConfig) {
+    this.record("addMcp", directory, name, config);
+    this.fail("addMcp");
+    this.mcp = [...this.mcp.filter((x) => x.name !== name), { name, status: "connected" }];
+  }
+  async removeMcp(directory: string, name: string) {
+    this.record("removeMcp", directory, name);
+    this.mcpServer(name);
+    this.mcp = this.mcp.filter((x) => x.name !== name);
   }
   /** "Always allow" rules by project; `projects` maps a folder to its project. */
   projects = new Map<string, string>();

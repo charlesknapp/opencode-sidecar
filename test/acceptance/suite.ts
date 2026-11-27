@@ -4,6 +4,7 @@
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { summarizeTask } from "../../src/core/currentTask";
@@ -423,6 +424,7 @@ async function pastedText(api: TestApi): Promise<void> {
   await usageAndCosts(api);
   await providerSetup(api);
   await customAgents(api);
+  await mcpServers(api);
   await problemsAndCommit(api);
   await agentReview(api);
 }
@@ -665,6 +667,54 @@ async function providerSetup(api: TestApi): Promise<void> {
   const svc = JSON.parse(fs.readFileSync(serviceFilePath(), "utf8")) as { password?: string };
   check("Setup check reaches the service", /Reachable: OpenCode/.test(report.markdown), report.level);
   check("Setup check holds no password", !svc.password || !report.markdown.includes(svc.password));
+}
+
+// ============================================================ MCP servers
+
+/**
+ * A tiny stdio MCP server (outside the folder, run with VS Code's Node) is added for this
+ * OpenCode run through the panel's handlers, disconnected, connected again, and the model
+ * is asked to call its tool; then it is removed. OpenCode's config is never written.
+ */
+async function mcpServers(api: TestApi): Promise<void> {
+  const c = api.controller()!;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ocs-accept-mcp-"));
+  const js = path.join(tmp, "tiny-mcp.js");
+  fs.writeFileSync(
+    js,
+    [
+      'const rl = require("readline").createInterface({ input: process.stdin });',
+      'const send = (m) => process.stdout.write(JSON.stringify(m) + "\\n");',
+      'rl.on("line", (l) => { let m; try { m = JSON.parse(l); } catch { return; } if (m.id === undefined) return;',
+      '  if (m.method === "initialize") send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "tiny", version: "1" } } });',
+      '  else if (m.method === "tools/list") send({ jsonrpc: "2.0", id: m.id, result: { tools: [{ name: "shout", description: "Returns the text in capitals", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } }] } });',
+      '  else if (m.method === "tools/call") send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: String(m.params.arguments.text).toUpperCase() + "!" }] } });',
+      '  else send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "Method not found" } }); });',
+    ].join("\n"),
+  );
+  const state = async () => (await c.mcpServers()).find((m) => m.name === "accept-tiny");
+  try {
+    await api.handle({ type: "mcpAdd", name: "accept-tiny", target: `"${process.execPath}" "${js}"` });
+    const added = await state();
+    check(
+      "MCP: a server added for this run connects and is marked as such",
+      added?.status === "connected" && added.runtime === true,
+      JSON.stringify(added),
+    );
+    await api.handle({ type: "mcpDisconnect", name: "accept-tiny" });
+    check("MCP: Disconnect", (await state())?.status === "disabled");
+    await api.handle({ type: "mcpConnect", name: "accept-tiny" });
+    check("MCP: Connect again", (await state())?.status === "connected");
+    await api.handle({ type: "newSession" });
+    const mark = items(api).length;
+    await sendAndWait(api, 'Call the shout tool with the text "sidecar" and tell me what it returned.');
+    const tool = toolsSince(api, mark).find((i) => /shout/.test(JSON.stringify(i)));
+    check("MCP: the model can call the server's tool", !!tool, JSON.stringify(tool)?.slice(0, 200));
+  } finally {
+    await api.handle({ type: "mcpRemove", name: "accept-tiny" });
+    check("MCP: Remove", (await state()) === undefined);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 // ============================================================ custom agents
