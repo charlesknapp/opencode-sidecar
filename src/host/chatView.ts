@@ -63,6 +63,7 @@ import { openAgentDiffs, openAgentFileDiff, openAllDiffs, openFileDiff, type Age
 import { getGitApi, type GitAPI, type GitRepository } from "./gitApi";
 import type { Logger } from "./log";
 import { addExcerpts, documentProblems, workspaceProblems } from "./problems";
+import { AgentsHost } from "./agents";
 import { vscodeConnectUi } from "./providers";
 import type { ToolTextProvider } from "./toolText";
 import { WorkspaceTracker } from "./workspace";
@@ -127,6 +128,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   /** A provider connect, re-auth or disconnect in progress (one at a time). */
   private providerBusy: ProvidersView["busy"] = null;
   private providersPending = false;
+  /** The Agents panel's files, saves and imports. */
+  private readonly agents: AgentsHost;
+  /** Open the Agents panel (true: its import preview) once the webview is ready. */
+  private agentsPending: boolean | null = null;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -135,6 +140,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   ) {
     this.workspace = new WorkspaceTracker(context.workspaceState);
     this.disposables.push(this.workspace);
+    this.agents = new AgentsHost({
+      controller: () => this.controller,
+      folder: () => this.workspace.current.active?.path ?? null,
+      post: (m) => this.post(m),
+      log,
+      storage: context.globalStorageUri.fsPath,
+    });
     // Status Bar shortcut to the chat. It stays neutral until the sidebar has connected.
     this.statusItem = vscode.window.createStatusBarItem(
       "opencodeSidecar.status",
@@ -1113,6 +1125,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.providersPending = false;
           this.post({ type: "showProviders" });
         }
+        if (this.agentsPending !== null) {
+          this.post({ type: "showAgents", import: this.agentsPending });
+          this.agentsPending = null;
+        }
         return;
       case "send": {
         if (!c) return;
@@ -1349,6 +1365,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         return this.signIn("account");
       case "connectProvider":
         return this.signIn("provider");
+      case "loadAgents":
+        return this.agents.postView();
+      case "saveAgent":
+        return this.agents.save(msg.draft, msg.editing, msg.open);
+      case "deleteAgent":
+        return this.agents.remove(msg.id);
+      case "openAgentFile":
+        return this.agents.openFile(msg.id);
+      case "previewImport":
+        return this.agents.preview();
+      case "importModes":
+        return this.agents.importModes(msg.keys, msg.scope);
       case "loadProviders":
         return this.postProviders();
       case "providerConnect":
@@ -1440,6 +1468,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private setProviderBusy(busy: ProvidersView["busy"]): void {
     this.providerBusy = busy;
     void this.postProviders();
+  }
+
+  /** Opens the Agents panel in the chat (Manage Agents), or its import preview (Import Roo Code Modes). */
+  async showAgents(importModes = false): Promise<void> {
+    this.agentsPending = this.view && this.webviewReady ? null : importModes;
+    await this.focus();
+    if (this.agentsPending === null) this.post({ type: "showAgents", import: importModes });
   }
 
   /** Opens the Providers panel in the chat (the Manage Providers command). */
@@ -2042,6 +2077,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }),
       signInState: () => this.signInState,
       setupReport: () => this.setupReport(),
+      importItems: () => this.agents.previewItems(),
       focusPending: () => this.focusPending,
       tap: (fn: (events: UiEvent[]) => void) => {
         this.taps.add(fn);

@@ -4109,6 +4109,123 @@ body.vscode-high-contrast-light .p-approval {
   display: none;
 }
 
+/* The Agents panel: a row per agent (mode, where it is defined), the agent form and the
+   Roo Code import preview. */
+.agents-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.agents-panel .banner {
+  margin: 0;
+}
+.agents-import {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.agent-badge {
+  padding: 0 5px;
+  border: 1px solid var(--menu-border);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.agent-badge.src-project,
+.agent-badge.src-global {
+  border-color: currentColor;
+  color: var(--vscode-textLink-foreground);
+}
+.agent-desc {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.agent-row.s-error {
+  border-color: var(--vscode-inputValidation-errorBorder, var(--menu-border));
+}
+.agent-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.agent-field[hidden] {
+  display: none;
+}
+.agent-field .rule-in {
+  flex: none;
+  width: 100%;
+}
+.agent-field .rule-in[type="number"] {
+  width: 110px;
+}
+.agent-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.agent-hint {
+  color: var(--muted);
+  font-size: 11px;
+}
+.agent-perms {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 4px 12px;
+  margin: 0;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--menu-border);
+  border-radius: 5px;
+  min-width: 0;
+}
+.agent-perms legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.agent-perms .rules-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.agent-perm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+.agent-perm .rule-in {
+  width: 84px;
+  flex: none;
+}
+.rule-in.agent-prompt {
+  min-height: 120px;
+  resize: vertical;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.import-row .provider-head {
+  cursor: pointer;
+}
+.import-row input[type="checkbox"] {
+  margin: 0;
+  align-self: center;
+}
+.import-conflict {
+  color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+  font-size: 12px;
+}
+.import-notes {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* "Always allow commands like this…" under the permission dock's answers. */
 .like-link {
   align-self: flex-start;

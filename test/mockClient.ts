@@ -11,6 +11,7 @@ import type {
   ServerInfo,
 } from "../src/opencode/client";
 import type { IntegrationInfo, ProviderEntry } from "../src/core/providers";
+import type { AgentDetail, ConfigSources } from "../src/core/agents";
 import { OpenCodeHttpError } from "../src/opencode/client";
 import type { PermissionRule } from "../src/shared/approval";
 import type {
@@ -202,6 +203,22 @@ export class MockClient implements OpenCodeClient {
   async listSubagents(directory: string) {
     this.record("listSubagents", directory);
     return this.subagentOptions;
+  }
+  /**
+   * What `GET /api/agent` lists in full; a function is asked on each call (to model an
+   * agent that appears or goes once OpenCode notices its file).
+   */
+  agentDetails: AgentDetail[] | (() => AgentDetail[]) = [];
+  async listAgentDetails(directory: string) {
+    this.record("listAgentDetails", directory);
+    this.fail("listAgentDetails");
+    return typeof this.agentDetails === "function" ? this.agentDetails() : this.agentDetails;
+  }
+  config: ConfigSources = { directories: [], documentAgents: {} };
+  async configSources(directory: string) {
+    this.record("configSources", directory);
+    this.fail("configSources");
+    return this.config;
   }
   skills: SkillOption[] = [{ id: "review", name: "Review", description: "Reviews a change." }];
   async listSkills(directory: string) {

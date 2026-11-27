@@ -18,6 +18,7 @@ import {
 import { classifyError, describeForLog, type FriendlyError } from "./errors";
 import { connectIntegration, type ConnectOutcome, type ConnectUi } from "./providerConnect";
 import { deriveProviders, integrationOf, type IntegrationInfo, type ProviderEntry } from "./providers";
+import type { AgentDetail, ConfigSources } from "./agents";
 import { sessionMarkdown } from "./exportMarkdown";
 import { summarizeAnswer, validateAnswer } from "./forms";
 import { reconstructSides, type FileSides } from "./patch";
@@ -326,6 +327,9 @@ export class SessionController {
       catalogDebounceMs?: number;
       /** How long a Budget Guard stop waits for running edits to finish. */
       budgetDrainMs?: number;
+      /** How long a saved agent file may take to show in OpenCode's list, and how often to look. */
+      agentWaitMs?: number;
+      agentPollMs?: number;
       /** Clock for subagent timing (tests). */
       now?: () => number;
     } = { debounceMs: 400, stopCheckMs: 15_000, modelRetryMs: 1500 },
@@ -795,6 +799,52 @@ export class SessionController {
       await delay(this.timing.modelRetryMs);
     }
     await this.refreshCatalog();
+  }
+
+  /** Every agent OpenCode has for the open folder (hidden ones too), for the Agents panel. */
+  async agentDetails(): Promise<AgentDetail[]> {
+    if (!this.directory) throw new Error("Open a folder first.");
+    return this.client.listAgentDetails(this.directory);
+  }
+
+  /** OpenCode's config folders for the open folder, and the agents its config documents define. */
+  async configSources(): Promise<ConfigSources> {
+    if (!this.directory) throw new Error("Open a folder first.");
+    return this.client.configSources(this.directory);
+  }
+
+  /**
+   * Waits for OpenCode's agent list to show a change to an agent file (`ready`). OpenCode
+   * 2.4 watches its config folders (a `.opencode/agents` created later too) and lists a
+   * changed file within a second or two; when it has not after `agentWaitMs`, OpenCode
+   * reloads its config and the list is checked again. The catalog is refreshed either way.
+   * Returns whether the list got there.
+   */
+  async awaitAgents(ready: (list: AgentDetail[]) => boolean): Promise<boolean> {
+    const dir = this.directory;
+    if (!dir) return false;
+    const wait = this.timing.agentWaitMs ?? 6000;
+    const every = this.timing.agentPollMs ?? 300;
+    const poll = async () => {
+      for (const end = Date.now() + wait; ;) {
+        const list = await this.client.listAgentDetails(dir).catch(() => null);
+        if (list && ready(list)) return true;
+        if (Date.now() >= end || this.disposed) return false;
+        await delay(every);
+      }
+    };
+    let ok = await poll();
+    if (!ok && !this.disposed) {
+      this.log.info("OpenCode has not picked up the agent file yet; reloading its config");
+      try {
+        await this.client.reloadConfig();
+        ok = await poll();
+      } catch (e) {
+        this.log.warn(`Reloading OpenCode's config failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    await this.refreshCatalog();
+    return ok;
   }
 
   /** OpenCode's version and process id (`GET /api/info`). */
@@ -3000,6 +3050,7 @@ const PROVIDER_KINDS = new Set<FriendlyError["kind"]>(["auth", "model-not-found"
 
 /** Events after which models, providers or connections may have changed (e.g. a sign-in). */
 const CATALOG_EVENTS = new Set([
+  "agent.updated",
   "integration.updated",
   "provider.updated",
   "model.updated",

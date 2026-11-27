@@ -4,7 +4,9 @@
 
 import { isRule, type PermissionRule } from "./approval";
 import type {
+  AgentDraft,
   AgentOption,
+  AgentsView,
   ApprovalView,
   AsideView,
   BookmarkView,
@@ -17,6 +19,7 @@ import type {
   CostBreakdown,
   FileChange,
   FormAnswer,
+  ImportPreview,
   InboxDelivery,
   McpServerInfo,
   MentionCandidate,
@@ -151,6 +154,14 @@ export type HostMessage =
   | { type: "showProviders" }
   /** The Providers panel; null with `error` when OpenCode could not list them. */
   | { type: "providers"; view: ProvidersView | null; error?: string }
+  /** Open the Agents panel (Manage Agents), or its import preview (Import Roo Code Modes). */
+  | { type: "showAgents"; import?: boolean }
+  /** The Agents panel; null with `error` when OpenCode could not list them. */
+  | { type: "agents"; view: AgentsView | null; error?: string }
+  /** How a save, delete or import ended: `error` for the form; `id` of the agent saved. */
+  | { type: "agentResult"; ok: boolean; id?: string; error?: string }
+  /** The Roo Code / Kilo Code modes found; null with `error` when none could be read. */
+  | { type: "agentImport"; preview: ImportPreview | null; error?: string }
   /** For the usage menu: what fills the context, and today's usage in the folder's project. */
   | { type: "usageDetails"; context: ContextBreakdown | null; today: UsageStats | null }
   /** The side question (`/btw`) card; null when it is closed. */
@@ -198,6 +209,21 @@ export type WebviewMessage =
   | { type: "checkSetup" }
   /** The usage menu opened: send what fills the context and today's usage. */
   | { type: "loadUsageDetails" }
+  /** The Agents panel opened (or wants a fresh list). */
+  | { type: "loadAgents" }
+  /**
+   * Save the form: a new agent (`editing` null) or the custom agent `editing`. The host
+   * asks before it replaces a file or writes outside the folder. `open`: then open the file.
+   */
+  | { type: "saveAgent"; draft: AgentDraft; editing: string | null; open?: boolean }
+  /** Delete a custom agent's file (the webview has asked for confirmation). */
+  | { type: "deleteAgent"; id: string }
+  /** Open an agent's file in the editor. */
+  | { type: "openAgentFile"; id: string }
+  /** Look for Roo Code and Kilo Code modes to import. */
+  | { type: "previewImport" }
+  /** Import the checked modes of the last preview as agents. */
+  | { type: "importModes"; keys: string[]; scope: "project" | "global" }
   /** A finished code block: insert it at the cursor of the last editor, or open it in a new one. */
   | { type: "insertCode"; text: string }
   | { type: "openCode"; text: string; lang: string }
@@ -362,6 +388,54 @@ const isImageUri = (v: unknown, max: number): boolean =>
 const isDim = (v: unknown): boolean =>
   v === undefined || (typeof v === "number" && Number.isInteger(v) && v > 0 && v < 100_000);
 
+/** An agent id OpenCode listed: a file name under `agents/`, perhaps in a subfolder (`team/review`). */
+const isAgentId = (v: unknown): boolean =>
+  isStr(v, 200) &&
+  !/(^|\/)\.\.?(\/|$)|\\|^\//.test(v as string) &&
+  ![...(v as string)].some((c) => c.charCodeAt(0) < 32);
+
+const EFFECTS = ["allow", "ask", "deny"];
+const ACTIONS = ["read", "edit", "shell", "webfetch", "websearch", "subagent", "skill"];
+const DRAFT_KEYS = [
+  "name",
+  "description",
+  "mode",
+  "model",
+  "variant",
+  "temperature",
+  "permissions",
+  "prompt",
+  "scope",
+];
+const optStr = (v: unknown, max: number): boolean => v === null || (typeof v === "string" && v.length <= max);
+/** The agent form: bounded strings, a known mode and scope, and switches for known actions only. */
+const isDraft = (v: unknown): boolean => {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const d = v as Record<string, unknown>;
+  const perms = d.permissions as Record<string, unknown>;
+  return (
+    Object.keys(d).every((k) => DRAFT_KEYS.includes(k)) &&
+    isStr(d.name, 200) &&
+    typeof d.description === "string" &&
+    d.description.length <= 2000 &&
+    (d.mode === "primary" || d.mode === "subagent" || d.mode === "all") &&
+    optStr(d.model, 400) &&
+    optStr(d.variant, 100) &&
+    (d.temperature === null ||
+      (typeof d.temperature === "number" &&
+        Number.isFinite(d.temperature) &&
+        d.temperature >= 0 &&
+        d.temperature <= 2)) &&
+    !!perms &&
+    typeof perms === "object" &&
+    !Array.isArray(perms) &&
+    Object.entries(perms).every(([k, e]) => ACTIONS.includes(k) && EFFECTS.includes(e as string)) &&
+    typeof d.prompt === "string" &&
+    d.prompt.length <= 200_000 &&
+    (d.scope === "project" || d.scope === "global")
+  );
+};
+
 /** OpenCode's integration and provider ids: `anthropic`, `302ai`, `amazon-bedrock`, … */
 const isProviderId = (v: unknown): boolean => isStr(v, 200) && /^[\w.:@/-]+$/.test(v as string);
 
@@ -396,6 +470,19 @@ const VALIDATORS: Record<WebviewMessage["type"], Validator> = {
   reloadProviders: () => true,
   checkSetup: () => true,
   loadUsageDetails: () => true,
+  loadAgents: () => true,
+  saveAgent: (m) =>
+    isDraft(m.draft) &&
+    (m.editing === null || isAgentId(m.editing)) &&
+    (m.open === undefined || typeof m.open === "boolean"),
+  deleteAgent: (m) => isAgentId(m.id),
+  openAgentFile: (m) => isAgentId(m.id),
+  previewImport: () => true,
+  importModes: (m) =>
+    Array.isArray(m.keys) &&
+    m.keys.length <= 500 &&
+    m.keys.every((k) => isStr(k, 300)) &&
+    (m.scope === "project" || m.scope === "global"),
   insertCode: (m) => typeof m.text === "string" && m.text.length <= MAX_COPY,
   openCode: (m) =>
     typeof m.text === "string" &&
@@ -513,6 +600,10 @@ const ALLOWED_KEYS: Partial<Record<WebviewMessage["type"], string[]>> = {
   providerConnect: ["id"],
   providerReauth: ["id"],
   providerDisconnect: ["id"],
+  saveAgent: ["draft", "editing", "open"],
+  deleteAgent: ["id"],
+  openAgentFile: ["id"],
+  importModes: ["keys", "scope"],
   insertCode: ["text"],
   openCode: ["text", "lang"],
   resolveRevert: ["action"],

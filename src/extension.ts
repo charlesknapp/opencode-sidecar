@@ -29,6 +29,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("opencodeSidecar.refreshConnection", () => provider.refreshConnection()),
     vscode.commands.registerCommand("opencodeSidecar.signIn", () => provider.signIn("account")),
     vscode.commands.registerCommand("opencodeSidecar.manageProviders", () => provider.showProviders()),
+    vscode.commands.registerCommand("opencodeSidecar.manageAgents", () => provider.showAgents()),
+    vscode.commands.registerCommand("opencodeSidecar.importModes", () => provider.showAgents(true)),
     vscode.commands.registerCommand("opencodeSidecar.checkSetup", () => provider.checkSetup()),
     vscode.commands.registerCommand("opencodeSidecar.newSession", () => provider.newSession()),
     vscode.commands.registerCommand("opencodeSidecar.addCurrentFile", () => provider.addCurrentFile()),

@@ -29,6 +29,7 @@ interface TestApi {
   signInState(): string;
   focusPending(): boolean;
   setupReport(): Promise<{ markdown: string; level: string }>;
+  importItems(): import("../../src/shared/model").ImportItem[];
 }
 
 /**
@@ -420,6 +421,7 @@ async function pastedText(api: TestApi): Promise<void> {
   await approvalModes(api);
   await usageAndCosts(api);
   await providerSetup(api);
+  await customAgents(api);
   await problemsAndCommit(api);
 }
 
@@ -539,6 +541,82 @@ async function providerSetup(api: TestApi): Promise<void> {
   const svc = JSON.parse(fs.readFileSync(serviceFilePath(), "utf8")) as { password?: string };
   check("Setup check reaches the service", /Reachable: OpenCode/.test(report.markdown), report.level);
   check("Setup check holds no password", !svc.password || !report.markdown.includes(svc.password));
+}
+
+// ============================================================ custom agents
+
+/**
+ * A fixture .roomodes is imported as OpenCode agents through the panel's handlers, the
+ * imported agent is picked and a tiny prompt runs on it: OpenCode records that agent on
+ * the reply. The mode file and the agent files are removed afterwards.
+ */
+async function customAgents(api: TestApi): Promise<void> {
+  const root = api.workspace().active!.path;
+  const modes = path.join(root, ".roomodes");
+  const agentsDir = path.join(root, ".opencode");
+  const hadConfig = fs.existsSync(agentsDir);
+  fs.writeFileSync(
+    modes,
+    JSON.stringify({
+      customModes: [
+        {
+          slug: "accept-terse",
+          name: "✂️ Terse",
+          roleDefinition: "You answer in as few words as possible.",
+          whenToUse: "Short answers",
+          groups: ["read"],
+        },
+        {
+          slug: "accept-orchestrator",
+          name: "Orchestrator",
+          roleDefinition: "You coordinate complex work by delegating it with new_task.",
+          groups: [],
+        },
+      ],
+    }),
+  );
+  const c = () => api.controller()!;
+  try {
+    await api.handle({ type: "previewImport" });
+    const items = api.importItems().filter((i) => i.source === ".roomodes");
+    check(
+      "Agents: the import preview lists the fixture's modes",
+      items.length === 2 &&
+        items.find((i) => i.name === "accept-terse")?.mode === "all" &&
+        items.find((i) => i.name === "accept-orchestrator")?.mode === "primary",
+      JSON.stringify(items),
+    );
+    await api.handle({ type: "importModes", keys: items.map((i) => i.key), scope: "project" });
+    check(
+      "Agents: the modes are written as agent files",
+      fs.existsSync(path.join(agentsDir, "agents", "accept-terse.md")) &&
+        fs.existsSync(path.join(agentsDir, "agents", "accept-orchestrator.md")),
+    );
+    await waitFor("imported agents", () => c().agents?.some((a) => a.id === "accept-terse"), 20_000);
+    check(
+      "Agents: the agent picker offers them without a restart",
+      !!c().agents?.some((a) => a.id === "accept-orchestrator"),
+      (c().agents ?? []).map((a) => a.id).join(", "),
+    );
+    await api.handle({ type: "selectAgent", id: "accept-terse" });
+    await api.handle({ type: "newSession" });
+    const r = await sendAndWait(api, "Reply with the single word OK. Do not use any tools.");
+    const sid = c().current?.id;
+    const stored = sid ? await storedMessages(sid) : [];
+    const reply = stored.find((m) => m.type === "assistant");
+    check(
+      "Agents: OpenCode records the imported agent on the reply",
+      reply?.agent === "accept-terse",
+      `${r.outcome}; agent ${String(reply?.agent)}`,
+    );
+  } finally {
+    fs.rmSync(modes, { force: true });
+    for (const n of ["accept-terse", "accept-orchestrator"])
+      fs.rmSync(path.join(agentsDir, "agents", `${n}.md`), { force: true });
+    if (!hadConfig) fs.rmSync(agentsDir, { recursive: true, force: true });
+    await c().awaitAgents((l) => !l.some((a) => a.id.startsWith("accept-")));
+    await api.handle({ type: "selectAgent", id: "build" });
+  }
 }
 
 // ============================================================ usage and costs

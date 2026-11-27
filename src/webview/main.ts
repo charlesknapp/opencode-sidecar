@@ -3,6 +3,11 @@
 // innerHTML, no eval.
 
 import type {
+  AgentAction,
+  AgentDraft,
+  AgentMode,
+  AgentRow,
+  AgentsView,
   AsideView,
   BudgetLevel,
   CheckState,
@@ -14,9 +19,11 @@ import type {
   FileDiff,
   FormAnswer,
   FormField,
+  ImportPreview,
   InboxDelivery,
   McpServerInfo,
   MentionCandidate,
+  ModelOption,
   SavedPermission,
   PromptMention,
   ProviderRow,
@@ -37,6 +44,7 @@ import {
   type ApprovalMode,
   type RuleEffect,
 } from "../shared/approval";
+import { validateAgentName } from "../shared/agentName";
 import type { HostMessage, OfficialLink, ViewState, WebviewMessage } from "../shared/protocol";
 import { formatRate, ThroughputMeter } from "../shared/throughput";
 import { Transcript } from "../shared/transcript";
@@ -573,6 +581,13 @@ modeBtn.addEventListener("click", () =>
     title: "Agent",
     keys: ["⇧", "Tab"],
     keysText: "to switch",
+    footer: [
+      item("Manage agents…", () => openAgents(), {
+        icon: "agent",
+        testid: "manage-agents",
+        disabled: state?.connection.kind !== "connected",
+      }),
+    ],
   }),
 );
 
@@ -2396,6 +2411,12 @@ function commandsMenu(): MenuEntry[] {
       testid: "permission-rules",
       disabled: state?.connection.kind !== "connected",
     }),
+    item("Agents…", () => openAgents(), {
+      icon: "agent",
+      sub: "Create, edit or import agents with their own prompt, model and permissions",
+      testid: "agents",
+      disabled: state?.connection.kind !== "connected",
+    }),
     item("Providers…", () => openProviders(), {
       icon: "plug",
       sub: "Connect, sign in again or disconnect model providers",
@@ -3145,6 +3166,684 @@ function openProviders(): void {
   providersPanel = { el: backdrop, paint };
   paint();
   search.focus();
+}
+
+// ----------------------------------------------------------------- agents
+//
+// The Agents panel: OpenCode's agents for the folder (built-in ones read-only), a form
+// that creates or edits a custom agent's Markdown file, and the import of Roo Code and
+// Kilo Code modes. The host reads and writes the files and asks before it replaces one
+// or writes outside the folder; the webview only sends the form's fields.
+
+/** undefined while loading; null when OpenCode could not list them. */
+let agentsView: AgentsView | null | undefined;
+let agentsError = "";
+let agentsPanel: {
+  paint: () => void;
+  result: (r: { ok: boolean; error?: string }) => void;
+  preview: (p: ImportPreview | null, error?: string) => void;
+  showImport: () => void;
+} | null = null;
+
+const AGENT_MODES: Record<AgentMode, string> = {
+  primary: "Primary",
+  subagent: "Subagent",
+  all: "Primary and subagent",
+};
+const AGENT_SOURCES: Record<AgentRow["source"], string> = {
+  "built-in": "Built-in",
+  project: "This project",
+  global: "Global",
+  config: "Config file",
+};
+const AGENT_SWITCHES: Array<[AgentAction, string]> = [
+  ["read", "Read files"],
+  ["edit", "Edit files"],
+  ["shell", "Run commands"],
+  ["webfetch", "Fetch web pages"],
+  ["websearch", "Search the web"],
+  ["subagent", "Start subagents"],
+  ["skill", "Use skills"],
+];
+
+function blankDraft(): AgentDraft {
+  return {
+    name: "",
+    description: "",
+    mode: "primary",
+    model: null,
+    variant: null,
+    temperature: null,
+    permissions: {},
+    prompt: "",
+    scope: "project",
+  };
+}
+
+function openAgents(o: { import?: boolean } = {}): void {
+  if (agentsPanel) {
+    send({ type: "loadAgents" });
+    if (o.import) agentsPanel.showImport();
+    return;
+  }
+  closePopovers();
+  agentsView = undefined;
+  send({ type: "loadAgents" });
+  const before = document.activeElement as HTMLElement | null;
+  let page: "list" | "form" | "import" = "list";
+  let saving = false;
+  const title = h("h2", { id: "agents-title" }, "Agents");
+  const body = h("div", { className: "agents-body" });
+  const foot = h("div", { className: "modal-foot providers-foot" });
+  const close = () => {
+    agentsPanel = null;
+    document.removeEventListener("keydown", onKey, true);
+    backdrop.remove();
+    if (before?.isConnected) before.focus();
+  };
+  const dialog = h(
+    "div",
+    {
+      className: "modal rules-editor agents-panel",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "agents-title",
+      "data-testid": "agents-panel",
+      tabindex: "-1",
+    },
+    title,
+    body,
+    foot,
+  );
+  const backdrop = h(
+    "div",
+    {
+      className: "modal-backdrop",
+      onmousedown: (e: Event) => {
+        if (e.target === backdrop && page === "list") close();
+      },
+    },
+    dialog,
+  );
+  const onKey = (e: KeyboardEvent) => {
+    if (dialogOpen) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (page !== "list" && !saving) showList();
+      else if (page === "list") close();
+    } else if (e.key === "Tab") {
+      const f = Array.from(dialog.querySelectorAll<HTMLElement>("button, input, select, textarea")).filter(
+        (x) => !(x as HTMLButtonElement).disabled && !x.hidden && x.offsetParent !== null,
+      );
+      const i = f.indexOf(document.activeElement as HTMLElement);
+      e.preventDefault();
+      f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length]?.focus();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+
+  // ------------------------------------------------------------ the list
+
+  async function remove(a: AgentRow): Promise<void> {
+    const pick = await confirmDialog({
+      title: `Delete ${a.name}?`,
+      body: `${a.file ?? "Its file"} is deleted, and OpenCode stops offering this agent. This can't be undone.`,
+      choices: [{ value: "yes", label: "Delete", danger: true, testid: "agent-delete-confirm" }],
+    });
+    if (pick === "yes") send({ type: "deleteAgent", id: a.id });
+  }
+
+  function agentRow(a: AgentRow): HTMLElement {
+    const busy = !!agentsView?.busy;
+    const custom = a.source === "project" || a.source === "global";
+    const meta = [
+      a.model ? agentModelName(a.model) : "",
+      a.file ?? (a.source === "built-in" ? "Built into OpenCode" : ""),
+    ].filter(Boolean);
+    return h(
+      "li",
+      {
+        className: `rule provider agent-row${a.problem ? " s-error" : ""}`,
+        "data-testid": "agent-row",
+        "data-id": a.id,
+      },
+      h(
+        "div",
+        { className: "provider-head" },
+        h("span", { className: "provider-name", dir: "auto" }, a.name),
+        h("span", { className: "agent-badge", "data-testid": "agent-mode" }, AGENT_MODES[a.mode]),
+        h(
+          "span",
+          { className: `agent-badge src-${a.source}`, "data-testid": "agent-source" },
+          AGENT_SOURCES[a.source] + (custom ? "" : " · read-only"),
+        ),
+      ),
+      a.description ? h("div", { className: "agent-desc", dir: "auto" }, a.description) : null,
+      meta.length
+        ? h("div", { className: "provider-meta", "data-testid": "agent-meta" }, meta.join(" · "))
+        : null,
+      a.problem
+        ? h("div", { className: "provider-error", "data-testid": "agent-problem", dir: "auto" }, a.problem)
+        : null,
+      a.editable || a.file
+        ? h(
+            "div",
+            { className: "provider-actions" },
+            a.editable ? smallBtn("Edit", "agent-edit", () => showForm(a), busy) : null,
+            a.file
+              ? smallBtn("Open file", "agent-open", () => send({ type: "openAgentFile", id: a.id }))
+              : null,
+            custom ? smallBtn("Delete", "agent-delete", () => void remove(a), busy) : null,
+          )
+        : null,
+    );
+  }
+
+  function showList(): void {
+    page = "list";
+    title.textContent = "Agents";
+    paint();
+    dialog.focus();
+  }
+
+  function paint(): void {
+    if (page !== "list") {
+      const status = dialog.querySelector<HTMLElement>("[data-testid=agents-busy]");
+      if (status) status.textContent = agentsView?.busy ?? "";
+      return;
+    }
+    const v = agentsView;
+    const had = document.activeElement as HTMLElement | null;
+    const key =
+      had && body.contains(had)
+        ? `${had.closest<HTMLElement>("[data-id]")?.dataset.id ?? ""} ${had.dataset.testid ?? ""}`
+        : null;
+    const list = h("ul", { className: "rules-list", "data-testid": "agents-list" });
+    const note = h("p", { className: "rules-note", "data-testid": "agents-note" });
+    const parts: Node[] = [
+      h(
+        "p",
+        { className: "rules-note" },
+        "Custom agents are Markdown files: the frontmatter sets the mode, model and permissions, the text is the system prompt.",
+      ),
+    ];
+    if (v?.busy)
+      parts.push(h("p", { className: "banner info", role: "status", "data-testid": "agents-busy" }, v.busy));
+    if (v?.importable) {
+      const n = v.importable.count;
+      parts.push(
+        h(
+          "div",
+          { className: "banner info agents-import", "data-testid": "agents-import-banner" },
+          h(
+            "span",
+            {},
+            `Found ${n} Roo Code mode${n === 1 ? "" : "s"} in ${v.importable.sources.join(", ")}.`,
+          ),
+          smallBtn(
+            `Import ${n} mode${n === 1 ? "" : "s"} as agents…`,
+            "agents-import-open",
+            () => showImport(),
+            !!v.busy,
+          ),
+        ),
+      );
+    }
+    if (v === undefined) note.textContent = "Loading…";
+    else if (v === null)
+      note.textContent = `Couldn't load them: ${agentsError || "OpenCode did not answer."}`;
+    else {
+      list.append(...v.agents.map(agentRow));
+      if (!v.agents.length) note.textContent = "OpenCode reports no agents for this folder.";
+    }
+    parts.push(list, note);
+    body.replaceChildren(...parts);
+    foot.replaceChildren(
+      h(
+        "button",
+        {
+          className: "btn primary",
+          "data-testid": "agents-new",
+          disabled: !v || !!v.busy,
+          onclick: () => showForm(null),
+        },
+        "New agent",
+      ),
+      h(
+        "button",
+        {
+          className: "btn subtle",
+          "data-testid": "agents-import",
+          disabled: !v || !!v.busy,
+          onclick: () => showImport(),
+        },
+        "Import modes…",
+      ),
+      h("button", { className: "btn", "data-testid": "agents-close", onclick: close }, "Done"),
+    );
+    if (key)
+      queueMicrotask(() => {
+        const [id, testid] = key.split(" ");
+        const row = dialog.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`);
+        const same = row?.querySelector<HTMLButtonElement>(`[data-testid="${CSS.escape(testid)}"]`);
+        (same && !same.disabled ? same : dialog).focus();
+      });
+  }
+
+  // ------------------------------------------------------------ the form
+
+  function showForm(a: AgentRow | null): void {
+    page = "form";
+    saving = false;
+    const d: AgentDraft = a?.draft ? structuredClone(a.draft) : blankDraft();
+    title.textContent = a ? `Edit ${a.name}` : "New agent";
+    const field = (label: string, input: HTMLElement, hint?: string) =>
+      h(
+        "label",
+        { className: "agent-field" },
+        h("span", { className: "agent-label" }, label),
+        input,
+        hint ? h("span", { className: "agent-hint" }, hint) : null,
+      );
+    const nameIn = h("input", {
+      className: "rule-in grow",
+      type: "text",
+      dir: "ltr",
+      spellcheck: "false",
+      maxlength: "64",
+      placeholder: "docs-writer",
+      "data-testid": "agent-name",
+      disabled: !!a,
+    }) as HTMLInputElement;
+    nameIn.value = a ? a.id : d.name;
+    const descIn = h("input", {
+      className: "rule-in grow",
+      type: "text",
+      maxlength: "500",
+      placeholder: "What it does, and when to use it",
+      "data-testid": "agent-description",
+    }) as HTMLInputElement;
+    descIn.value = d.description;
+    const modeIn = h(
+      "select",
+      { className: "rule-in grow", "data-testid": "agent-mode-select" },
+      h("option", { value: "primary" }, "Primary: you pick it for a session"),
+      h("option", { value: "subagent" }, "Subagent: other agents start it"),
+      h("option", { value: "all" }, "Both"),
+    ) as HTMLSelectElement;
+    modeIn.value = d.mode;
+    const models = state?.models ?? [];
+    const byProvider = new Map<string, ModelOption[]>();
+    for (const m of models) byProvider.set(m.providerName, [...(byProvider.get(m.providerName) ?? []), m]);
+    const modelIn = h(
+      "select",
+      { className: "rule-in grow", "data-testid": "agent-model" },
+      h("option", { value: "" }, "The session's model"),
+      ...[...byProvider].map(([provider, list]) =>
+        h("optgroup", { label: provider }, ...list.map((m) => h("option", { value: m.key }, m.name))),
+      ),
+    ) as HTMLSelectElement;
+    if (d.model && !models.some((m) => m.key === d.model))
+      modelIn.append(h("option", { value: d.model }, `${d.model} (not offered now)`));
+    modelIn.value = d.model ?? "";
+    const variantIn = h("select", {
+      className: "rule-in",
+      "data-testid": "agent-variant",
+    }) as HTMLSelectElement;
+    const paintVariants = () => {
+      const m = models.find((x) => x.key === modelIn.value);
+      const list = m?.variants ?? [];
+      variantIn.replaceChildren(
+        h("option", { value: "" }, "Default"),
+        ...list.map((x) => h("option", { value: x }, x)),
+      );
+      if (d.variant && !list.includes(d.variant) && modelIn.value === d.model)
+        variantIn.append(h("option", { value: d.variant }, d.variant));
+      variantIn.value = modelIn.value === d.model ? (d.variant ?? "") : "";
+      variantField.hidden = variantIn.options.length < 2;
+    };
+    const tempIn = h("input", {
+      className: "rule-in",
+      type: "number",
+      min: "0",
+      max: "2",
+      step: "0.1",
+      placeholder: "Default",
+      "data-testid": "agent-temperature",
+    }) as HTMLInputElement;
+    tempIn.value = d.temperature === null ? "" : String(d.temperature);
+    const switches = AGENT_SWITCHES.map(([action, label]) => {
+      const sel = h(
+        "select",
+        { className: "rule-in", "aria-label": label, "data-testid": `agent-perm-${action}` },
+        h("option", { value: "" }, "Inherit"),
+        h("option", { value: "allow" }, "Allow"),
+        h("option", { value: "ask" }, "Ask"),
+        h("option", { value: "deny" }, "Deny"),
+      ) as HTMLSelectElement;
+      sel.value = d.permissions[action] ?? "";
+      return { action, sel, row: h("div", { className: "agent-perm" }, h("span", {}, label), sel) };
+    });
+    const promptIn = h("textarea", {
+      className: "rule-in agent-prompt",
+      rows: "8",
+      placeholder: "You are a careful technical writer. …",
+      "data-testid": "agent-prompt",
+    }) as HTMLTextAreaElement;
+    promptIn.value = d.prompt;
+    const scopeIn = h(
+      "select",
+      { className: "rule-in grow", "data-testid": "agent-scope" },
+      h("option", { value: "project" }, `This project (${agentsView?.projectDir ?? ".opencode/agents"})`),
+      agentsView?.globalDir ? h("option", { value: "global" }, `Global (${agentsView.globalDir})`) : null,
+    ) as HTMLSelectElement;
+    scopeIn.value = d.scope;
+    const error = h("div", { className: "rule-error", role: "alert", "data-testid": "agent-error" });
+    const status = h("p", { className: "rules-note", role: "status", "data-testid": "agents-busy" });
+    const variantField = field("Variant", variantIn);
+    modelIn.addEventListener("change", paintVariants);
+    const taken = (agentsView?.agents ?? []).map((x) => x.id);
+
+    const collect = (): AgentDraft | null => {
+      error.textContent = "";
+      const name = nameIn.value.trim();
+      const problem = a ? null : validateAgentName(name, taken);
+      if (problem) {
+        error.textContent = problem;
+        nameIn.focus();
+        return null;
+      }
+      const t = tempIn.value.trim();
+      const temperature = t === "" ? null : Number(t);
+      if (temperature !== null && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
+        error.textContent = "Temperature is a number from 0 to 2, or empty for the model's default.";
+        tempIn.focus();
+        return null;
+      }
+      const permissions: AgentDraft["permissions"] = {};
+      for (const s of switches)
+        if (s.sel.value) permissions[s.action] = s.sel.value as "allow" | "ask" | "deny";
+      return {
+        name: a ? a.id : name,
+        description: descIn.value.trim(),
+        mode: modeIn.value as AgentMode,
+        model: modelIn.value || null,
+        variant: modelIn.value ? variantIn.value || null : null,
+        temperature,
+        permissions,
+        prompt: promptIn.value,
+        scope: a ? d.scope : (scopeIn.value as AgentDraft["scope"]),
+      };
+    };
+    const save = (open: boolean) => {
+      const draft = collect();
+      if (!draft) return;
+      saving = true;
+      saveBtn.disabled = openBtn.disabled = true;
+      status.textContent = "Saving…";
+      send({ type: "saveAgent", draft, editing: a ? a.id : null, ...(open ? { open: true } : {}) });
+    };
+    const saveBtn = h(
+      "button",
+      { className: "btn primary", "data-testid": "agent-save", onclick: () => save(false) },
+      "Save",
+    );
+    const openBtn = h(
+      "button",
+      {
+        className: "btn subtle",
+        "data-testid": "agent-open-editor",
+        "data-tip": "Save, then edit the Markdown file itself",
+        onclick: () => save(true),
+      },
+      "Save and open in editor",
+    );
+    nameIn.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        save(false);
+      }
+    });
+    body.replaceChildren(
+      ...nonNull([
+        field(
+          "Name",
+          nameIn,
+          a
+            ? "The file name; it can't be changed here."
+            : "Letters, digits, - and _. It is the file name and how you @mention it.",
+        ),
+        field("Description", descIn, "OpenCode shows it, and agents read it to pick a subagent."),
+        field("Mode", modeIn),
+        field("Model", modelIn),
+        variantField,
+        field(
+          "Temperature",
+          tempIn,
+          "Stored in the agent's request settings; OpenCode 2.4 does not send it to the model yet.",
+        ),
+        h(
+          "fieldset",
+          { className: "agent-perms", "data-testid": "agent-perms" },
+          h("legend", {}, "Permissions"),
+          h("p", { className: "rules-note" }, "Inherit keeps OpenCode's default, which allows most things."),
+          ...switches.map((s) => s.row),
+          a?.otherRules
+            ? h(
+                "p",
+                { className: "rules-note", "data-testid": "agent-other-rules" },
+                `${a.otherRules} more rule${a.otherRules === 1 ? "" : "s"} in the file ${a.otherRules === 1 ? "is" : "are"} kept as ${a.otherRules === 1 ? "it is" : "they are"}.`,
+              )
+            : null,
+        ),
+        a?.legacy
+          ? h(
+              "p",
+              { className: "banner info", "data-testid": "agent-legacy" },
+              "This file uses OpenCode 1's tools, permission and temperature fields. Changing a permission or the temperature rewrites them as OpenCode 2's permissions and request.",
+            )
+          : null,
+        field("System prompt", promptIn),
+        a ? null : field("Save in", scopeIn),
+        error,
+        status,
+      ]),
+    );
+    foot.replaceChildren(
+      h(
+        "button",
+        { className: "btn subtle", "data-testid": "agent-cancel", onclick: () => showList() },
+        "Cancel",
+      ),
+      openBtn,
+      saveBtn,
+    );
+    paintVariants();
+    (a ? descIn : nameIn).focus();
+    formResult = (r) => {
+      saving = false;
+      saveBtn.disabled = openBtn.disabled = false;
+      status.textContent = "";
+      if (r.ok) showList();
+      else error.textContent = r.error ?? "Not saved.";
+    };
+  }
+
+  let formResult: ((r: { ok: boolean; error?: string }) => void) | null = null;
+
+  // ------------------------------------------------------------ import
+
+  let preview: ImportPreview | null | undefined;
+  let previewError = "";
+  let importScope: AgentDraft["scope"] = "project";
+  const checked = new Set<string>();
+
+  function showImport(): void {
+    page = "import";
+    saving = false;
+    preview = undefined;
+    previewError = "";
+    title.textContent = "Import Roo Code modes";
+    send({ type: "previewImport" });
+    paintImport();
+    dialog.focus();
+  }
+
+  function paintImport(): void {
+    if (page !== "import") return;
+    const list = h("ul", { className: "rules-list", "data-testid": "import-list" });
+    const note = h("p", { className: "rules-note", "data-testid": "import-note" });
+    const error = h(
+      "div",
+      { className: "rule-error", role: "alert", "data-testid": "import-error" },
+      previewError,
+    );
+    const items = preview?.items ?? [];
+    if (preview === undefined)
+      note.textContent = "Looking for .roomodes, .kilocodemodes and global custom modes…";
+    else if (preview === null) note.textContent = previewError || "No modes found.";
+    else
+      list.append(
+        ...items.map((it) => {
+          const box = h("input", { type: "checkbox", "data-testid": "import-check" }) as HTMLInputElement;
+          box.checked = checked.has(it.key);
+          box.addEventListener("change", () => {
+            if (box.checked) checked.add(it.key);
+            else checked.delete(it.key);
+            runBtn.disabled = !checked.size || saving;
+            runBtn.textContent = runLabel();
+          });
+          return h(
+            "li",
+            { className: "rule provider import-row", "data-testid": "import-row", "data-id": it.key },
+            h(
+              "label",
+              { className: "provider-head" },
+              box,
+              h("span", { className: "provider-name", dir: "auto" }, it.name),
+              h("span", { className: "agent-badge" }, AGENT_MODES[it.mode]),
+              h("span", { className: "provider-meta" }, `${it.label} · ${it.source}`),
+            ),
+            it.description ? h("div", { className: "agent-desc", dir: "auto" }, it.description) : null,
+            it.conflict
+              ? h("div", { className: "import-conflict", "data-testid": "import-conflict" }, it.conflict)
+              : null,
+            it.notes.length
+              ? h(
+                  "ul",
+                  { className: "import-notes", "data-testid": "import-notes" },
+                  ...it.notes.map((n) => h("li", {}, n)),
+                )
+              : null,
+          );
+        }),
+      );
+    const scopeIn = h(
+      "select",
+      { className: "rule-in grow", "data-testid": "import-scope" },
+      h("option", { value: "project" }, `This project (${agentsView?.projectDir ?? ".opencode/agents"})`),
+      agentsView?.globalDir ? h("option", { value: "global" }, `Global (${agentsView.globalDir})`) : null,
+    ) as HTMLSelectElement;
+    scopeIn.value = importScope;
+    scopeIn.addEventListener("change", () => (importScope = scopeIn.value as AgentDraft["scope"]));
+    const runLabel = () => `Import ${checked.size} mode${checked.size === 1 ? "" : "s"}`;
+    const runBtn = h(
+      "button",
+      {
+        className: "btn primary",
+        "data-testid": "import-run",
+        disabled: !checked.size || saving,
+        onclick: () => {
+          if (!checked.size) return;
+          saving = true;
+          runBtn.disabled = true;
+          status.textContent = "Importing…";
+          send({
+            type: "importModes",
+            keys: items.filter((i) => checked.has(i.key)).map((i) => i.key),
+            scope: importScope,
+          });
+        },
+      },
+      runLabel(),
+    );
+    const status = h("p", { className: "rules-note", role: "status", "data-testid": "agents-busy" });
+    body.replaceChildren(
+      ...nonNull([
+        h(
+          "p",
+          { className: "rules-note" },
+          "Each mode becomes an agent file. Its role and instructions become the prompt, its tool groups permissions. An orchestrator becomes a primary agent that can start the others as subagents.",
+        ),
+        list,
+        note,
+        preview
+          ? h(
+              "label",
+              { className: "agent-field" },
+              h("span", { className: "agent-label" }, "Save in"),
+              scopeIn,
+            )
+          : null,
+        error,
+        status,
+      ]),
+    );
+    foot.replaceChildren(
+      ...nonNull([
+        h(
+          "button",
+          { className: "btn subtle", "data-testid": "import-back", onclick: () => showList() },
+          "Back",
+        ),
+        preview ? runBtn : null,
+      ]),
+    );
+    importResult = (r) => {
+      saving = false;
+      status.textContent = "";
+      runBtn.disabled = !checked.size;
+      if (r.ok) showList();
+      else {
+        previewError = r.error ?? "Not imported.";
+        error.textContent = previewError;
+      }
+    };
+  }
+
+  let importResult: ((r: { ok: boolean; error?: string }) => void) | null = null;
+
+  document.body.append(backdrop);
+  agentsPanel = {
+    paint,
+    result: (r) => {
+      if (page === "form") formResult?.(r);
+      else if (page === "import") importResult?.(r);
+      else if (!r.ok && r.error) {
+        const note = dialog.querySelector<HTMLElement>("[data-testid=agents-note]");
+        if (note) note.textContent = r.error;
+      }
+    },
+    preview: (p, err) => {
+      preview = p;
+      previewError = err ?? "";
+      checked.clear();
+      for (const it of p?.items ?? []) if (it.checked) checked.add(it.key);
+      paintImport();
+    },
+    showImport,
+  };
+  if (o.import) showImport();
+  else paint();
+  dialog.focus();
+}
+
+/** A model's name from the catalog, with its variant (`provider/model#variant`), for an agent's row. */
+function agentModelName(key: string): string {
+  const [base, variant] = key.split("#");
+  const m = state?.models?.find((x) => x.key === base);
+  return `${m?.name ?? base}${variant ? ` (${variant})` : ""}`;
 }
 
 function modelMenuOptions(): MenuOptions {
@@ -8176,6 +8875,20 @@ window.addEventListener("message", (e: MessageEvent) => {
       break;
     case "showProviders":
       openProviders();
+      break;
+    case "showAgents":
+      openAgents({ import: msg.import });
+      break;
+    case "agents":
+      agentsView = msg.view;
+      agentsError = msg.error ?? "";
+      agentsPanel?.paint();
+      break;
+    case "agentResult":
+      agentsPanel?.result(msg);
+      break;
+    case "agentImport":
+      agentsPanel?.preview(msg.preview, msg.error);
       break;
     case "providers":
       providersView = msg.view;

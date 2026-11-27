@@ -10,8 +10,10 @@ import * as path from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import type { Browser, Page } from "puppeteer-core" with { "resolution-mode": "import" };
 import type {
+  AgentsView,
   AsideTurn,
   AsideView,
+  ImportPreview,
   ProvidersView,
   StripTab,
   SubagentView,
@@ -2754,6 +2756,440 @@ describe(
           };
         });
         assert.deepEqual(fit, { inside: true, scroll: true, rows: true, doc: true });
+      });
+
+    // ------------------------------------------------------------- agents
+
+    const DOCS_DRAFT = {
+      name: "docs",
+      description: "Writes docs",
+      mode: "all" as const,
+      model: "opencode-go/qwen3.7-plus",
+      variant: "high",
+      temperature: 0.3,
+      permissions: { edit: "deny" as const, webfetch: "allow" as const },
+      prompt: "You write docs.",
+      scope: "project" as const,
+    };
+    const AGENTS: AgentsView = {
+      agents: [
+        {
+          id: "docs",
+          name: "docs",
+          description: "Writes docs",
+          mode: "all",
+          model: "opencode-go/qwen3.7-plus#high",
+          source: "project",
+          file: ".opencode/agents/docs.md",
+          editable: true,
+          problem: null,
+          draft: DOCS_DRAFT,
+          otherRules: 2,
+        },
+        {
+          id: "old",
+          name: "old",
+          description: "",
+          mode: "primary",
+          model: null,
+          source: "global",
+          file: "C:\\Users\\me\\.config\\opencode\\agent\\old.md",
+          editable: true,
+          problem: null,
+          draft: {
+            ...DOCS_DRAFT,
+            name: "old",
+            description: "",
+            mode: "primary",
+            model: null,
+            variant: null,
+            temperature: null,
+            permissions: {},
+            prompt: "Old.",
+            scope: "global",
+          },
+          legacy: true,
+        },
+        {
+          id: "broken",
+          name: "broken",
+          description: "",
+          mode: "primary",
+          model: null,
+          source: "project",
+          file: ".opencode/agents/broken.md",
+          editable: false,
+          problem: "OpenCode did not load it: Unclosed flow collection (line 2)",
+        },
+        {
+          id: "build",
+          name: "Build",
+          description: "The default agent.",
+          mode: "primary",
+          model: null,
+          source: "built-in",
+          file: null,
+          editable: false,
+          problem: null,
+        },
+      ],
+      importable: { count: 3, sources: [".roomodes", "Roo Code (global)"] },
+      projectDir: ".opencode/agents",
+      globalDir: "C:\\Users\\me\\.config\\opencode\\agents",
+      busy: null,
+    };
+    const PREVIEW: ImportPreview = {
+      items: [
+        {
+          key: "C:\\repo\\.roomodes#docs-writer",
+          name: "docs-writer",
+          label: "📝 Documentation Writer",
+          description: "Use this mode for writing documentation.",
+          mode: "all",
+          source: ".roomodes",
+          conflict: null,
+          notes: ["Roo Code's browser became web fetch and search; OpenCode's own browser stays off."],
+          checked: true,
+        },
+        {
+          key: "C:\\repo\\.roomodes#orchestrator",
+          name: "orchestrator",
+          label: "🪃 Orchestrator",
+          description: "Coordinates work",
+          mode: "primary",
+          source: ".roomodes",
+          conflict: null,
+          notes: [],
+          checked: true,
+        },
+        {
+          key: "G#docs",
+          name: "docs",
+          label: "Docs",
+          description: "Docs",
+          mode: "all",
+          source: "Roo Code (global)",
+          conflict: "Replaces .opencode/agents/docs.md",
+          notes: [],
+          checked: false,
+        },
+      ],
+    };
+    const agentRows = () =>
+      page.$$eval('[data-testid="agents-panel"] [data-testid="agent-row"]', (els) =>
+        els.map((e) => (e as HTMLElement).innerText.replace(/\s+/g, " ").trim()),
+      );
+    const openAgentsPanel = async (view: AgentsView = AGENTS) => {
+      await page.click('[data-testid="commands-button"]');
+      await clearSent();
+      await page.click('[data-testid="agents"]');
+      await host({ type: "agents", view });
+    };
+    const value = (testid: string) =>
+      page.$eval(`[data-testid="${testid}"]`, (e) => (e as HTMLInputElement).value);
+    const setValue = async (testid: string, v: string) => {
+      await page.$eval(
+        `[data-testid="${testid}"]`,
+        (e, x) => {
+          (e as HTMLInputElement).value = x as string;
+          e.dispatchEvent(new Event("input", { bubbles: true }));
+          e.dispatchEvent(new Event("change", { bubbles: true }));
+        },
+        v,
+      );
+    };
+
+    it("the Agents panel opens from the / menu: custom agents editable, built-in ones read-only", async () => {
+      await page.click('[data-testid="commands-button"]');
+      await clearSent();
+      await page.click('[data-testid="agents"]');
+      assert.deepEqual(await sent(), [{ type: "loadAgents" }]);
+      assert.match(await text('[data-testid="agents-panel"]'), /Loading…/);
+      await host({ type: "agents", view: AGENTS });
+      assert.deepEqual(await agentRows(), [
+        "docs Primary and subagent This project Writes docs Qwen3.7 Plus (high) · .opencode/agents/docs.md Edit Open file Delete",
+        "old Primary Global C:\\Users\\me\\.config\\opencode\\agent\\old.md Edit Open file Delete",
+        "broken Primary This project .opencode/agents/broken.md OpenCode did not load it: Unclosed flow collection (line 2) Open file Delete",
+        "Build Primary Built-in · read-only The default agent. Built into OpenCode",
+      ]);
+      assert.match(
+        await text('[data-testid="agents-import-banner"]'),
+        /Found 3 Roo Code modes in \.roomodes, Roo Code \(global\)\./,
+      );
+      await clearSent();
+      await page.click('[data-id="docs"] [data-testid="agent-open"]');
+      assert.deepEqual(await sent(), [{ type: "openAgentFile", id: "docs" }]);
+      await page.click('[data-testid="agents-close"]');
+      assert.equal(await page.$('[data-testid="agents-panel"]'), null);
+    });
+
+    it("the agent switcher's Manage agents… and the host open the Agents panel", async () => {
+      await page.click('[data-testid="mode-button"]');
+      await clearSent();
+      await page.click('[data-testid="manage-agents"]');
+      assert.deepEqual(await sent(), [{ type: "loadAgents" }]);
+      await host({ type: "agents", view: null, error: "OpenCode could not list them." });
+      assert.match(
+        await text('[data-testid="agents-panel"]'),
+        /Couldn't load them: OpenCode could not list them\./,
+      );
+      await page.keyboard.press("Escape");
+      assert.equal(await page.$('[data-testid="agents-panel"]'), null);
+      await clearSent();
+      await host({ type: "showAgents", import: true });
+      assert.deepEqual(await sent(), [{ type: "loadAgents" }, { type: "previewImport" }]);
+      assert.match(await text('[data-testid="agents-panel"] h2'), /Import Roo Code modes/);
+    });
+
+    it("New agent checks the name and temperature, then sends the form's fields", async () => {
+      await openAgentsPanel();
+      await page.click('[data-testid="agents-new"]');
+      assert.equal(
+        await page.evaluate(() => (document.activeElement as HTMLElement).dataset.testid),
+        "agent-name",
+      );
+      await clearSent();
+      await page.click('[data-testid="agent-save"]');
+      assert.match(await text('[data-testid="agent-error"]'), /Give the agent a name/);
+      for (const [bad, why] of [
+        ["has space", /letters, digits/],
+        ["Build", /exists/],
+        ["con", /Windows/],
+      ] as const) {
+        await setValue("agent-name", bad);
+        await page.click('[data-testid="agent-save"]');
+        assert.match(await text('[data-testid="agent-error"]'), why, bad);
+      }
+      assert.deepEqual(await sent(), [], "nothing is sent while the form has a problem");
+      await setValue("agent-name", "reviewer");
+      await setValue("agent-description", "Reviews changes");
+      await setValue("agent-mode-select", "subagent");
+      // The model list is the catalog, by provider; a model with variants offers them.
+      const groups = await page.$$eval('[data-testid="agent-model"] optgroup', (g) =>
+        g.map((x) => (x as HTMLOptGroupElement).label),
+      );
+      assert.deepEqual(groups, ["OpenCode Go", "Personal / OpenCode"]);
+      assert.equal(
+        await page.$eval('[data-testid="agent-variant"]', (e) => (e.closest("label") as HTMLElement).hidden),
+        true,
+      );
+      await setValue("agent-model", "opencode-go/qwen3.7-plus");
+      assert.equal(
+        await page.$eval('[data-testid="agent-variant"]', (e) => (e.closest("label") as HTMLElement).hidden),
+        false,
+      );
+      await setValue("agent-variant", "max");
+      await setValue("agent-temperature", "3");
+      await page.click('[data-testid="agent-save"]');
+      assert.match(await text('[data-testid="agent-error"]'), /0 to 2/);
+      await setValue("agent-temperature", "0.5");
+      await setValue("agent-perm-edit", "deny");
+      await setValue("agent-perm-shell", "ask");
+      await setValue("agent-prompt", "Review the diff.\nBe brief.");
+      await setValue("agent-scope", "global");
+      await page.click('[data-testid="agent-save"]');
+      assert.deepEqual(await sent(), [
+        {
+          type: "saveAgent",
+          draft: {
+            name: "reviewer",
+            description: "Reviews changes",
+            mode: "subagent",
+            model: "opencode-go/qwen3.7-plus",
+            variant: "max",
+            temperature: 0.5,
+            permissions: { edit: "deny", shell: "ask" },
+            prompt: "Review the diff.\nBe brief.",
+            scope: "global",
+          },
+          editing: null,
+        },
+      ]);
+      assert.equal(
+        await page.$eval('[data-testid="agent-save"]', (b) => (b as HTMLButtonElement).disabled),
+        true,
+      );
+      // The host refused (it asked about writing outside the folder): the form stays.
+      await host({ type: "agentResult", ok: false, error: "Not saved." });
+      assert.equal(await text('[data-testid="agent-error"]'), "Not saved.");
+      assert.equal(await value("agent-name"), "reviewer");
+      await clearSent();
+      await page.click('[data-testid="agent-open-editor"]');
+      assert.equal((await lastSent("saveAgent"))?.open, true);
+      await host({ type: "agentResult", ok: true, id: "reviewer" });
+      assert.ok(await page.$('[data-testid="agents-list"]'), "saved: back to the list");
+    });
+
+    it("Edit fills the form from the file, keeps the name and says what saving keeps or converts", async () => {
+      await openAgentsPanel();
+      await page.click('[data-id="docs"] [data-testid="agent-edit"]');
+      assert.match(await text('[data-testid="agents-panel"] h2'), /Edit docs/);
+      assert.equal(
+        await page.$eval('[data-testid="agent-name"]', (e) => (e as HTMLInputElement).disabled),
+        true,
+      );
+      assert.deepEqual(
+        await Promise.all(
+          [
+            "agent-name",
+            "agent-description",
+            "agent-mode-select",
+            "agent-model",
+            "agent-variant",
+            "agent-temperature",
+            "agent-perm-edit",
+            "agent-perm-webfetch",
+            "agent-perm-shell",
+            "agent-prompt",
+          ].map(value),
+        ),
+        [
+          "docs",
+          "Writes docs",
+          "all",
+          "opencode-go/qwen3.7-plus",
+          "high",
+          "0.3",
+          "deny",
+          "allow",
+          "",
+          "You write docs.",
+        ],
+      );
+      assert.match(await text('[data-testid="agent-other-rules"]'), /2 more rules in the file are kept/);
+      assert.equal(await page.$('[data-testid="agent-scope"]'), null, "an existing file stays where it is");
+      await clearSent();
+      await setValue("agent-perm-edit", "");
+      await page.click('[data-testid="agent-save"]');
+      const s = await lastSent("saveAgent");
+      assert.equal(s?.editing, "docs");
+      assert.deepEqual((s?.draft as { permissions: unknown }).permissions, { webfetch: "allow" });
+      await host({ type: "agentResult", ok: true, id: "docs" });
+      // OpenCode 1 files say that a permission change rewrites them.
+      await page.click('[data-id="old"] [data-testid="agent-edit"]');
+      assert.match(
+        await text('[data-testid="agent-legacy"]'),
+        /OpenCode 1's tools, permission and temperature/,
+      );
+      await page.keyboard.press("Escape");
+      assert.ok(await page.$('[data-testid="agents-list"]'), "Escape goes back to the list");
+      await page.keyboard.press("Escape");
+      assert.equal(await page.$('[data-testid="agents-panel"]'), null);
+    });
+
+    it("Delete asks first and sends nothing when cancelled", async () => {
+      await openAgentsPanel();
+      await clearSent();
+      await page.click('[data-id="docs"] [data-testid="agent-delete"]');
+      assert.match(await text('[data-testid="dialog"]'), /Delete docs\?.*\.opencode\/agents\/docs\.md/s);
+      await page.keyboard.press("Escape");
+      assert.deepEqual(await sent(), []);
+      assert.ok(await page.$('[data-testid="agents-panel"]'));
+      await page.click('[data-id="docs"] [data-testid="agent-delete"]');
+      await page.click('[data-testid="agent-delete-confirm"]');
+      assert.deepEqual(await sent(), [{ type: "deleteAgent", id: "docs" }]);
+      // While the host works, the panel says so and the actions wait.
+      await host({ type: "agents", view: { ...AGENTS, busy: "Deleting…" } });
+      assert.equal(await text('[data-testid="agents-busy"]'), "Deleting…");
+      assert.equal(
+        await page.$eval(
+          '[data-id="docs"] [data-testid="agent-edit"]',
+          (b) => (b as HTMLButtonElement).disabled,
+        ),
+        true,
+      );
+      assert.equal(
+        await page.$eval('[data-testid="agents-new"]', (b) => (b as HTMLButtonElement).disabled),
+        true,
+      );
+    });
+
+    it("the import preview lists each mode with its notes, leaves conflicts unchecked and imports the checked ones", async () => {
+      await openAgentsPanel();
+      await clearSent();
+      await page.click('[data-testid="agents-import-open"]');
+      assert.deepEqual(await sent(), [{ type: "previewImport" }]);
+      assert.match(await text('[data-testid="import-note"]'), /Looking for/);
+      await host({ type: "agentImport", preview: PREVIEW });
+      const rows = await page.$$eval('[data-testid="import-row"]', (els) =>
+        els.map((e) => [
+          (e.querySelector("input") as HTMLInputElement).checked,
+          (e as HTMLElement).innerText.replace(/\s+/g, " ").trim(),
+        ]),
+      );
+      assert.deepEqual(rows, [
+        [
+          true,
+          "docs-writer Primary and subagent 📝 Documentation Writer · .roomodes Use this mode for writing documentation. Roo Code's browser became web fetch and search; OpenCode's own browser stays off.",
+        ],
+        [true, "orchestrator Primary 🪃 Orchestrator · .roomodes Coordinates work"],
+        [false, "docs Primary and subagent Docs · Roo Code (global) Docs Replaces .opencode/agents/docs.md"],
+      ]);
+      assert.equal(await text('[data-testid="import-run"]'), "Import 2 modes");
+      await page.click('[data-id="C:\\\\repo\\\\.roomodes#orchestrator"] input');
+      assert.equal(await text('[data-testid="import-run"]'), "Import 1 mode");
+      await setValue("import-scope", "global");
+      await clearSent();
+      await page.click('[data-testid="import-run"]');
+      assert.deepEqual(await sent(), [
+        { type: "importModes", keys: ["C:\\repo\\.roomodes#docs-writer"], scope: "global" },
+      ]);
+      await host({ type: "agentResult", ok: false, error: "Not imported." });
+      assert.equal(await text('[data-testid="import-error"]'), "Not imported.");
+      await host({ type: "agentResult", ok: true });
+      assert.ok(await page.$('[data-testid="agents-list"]'));
+      // Nothing to import: the reason, and no Import button.
+      await page.click('[data-testid="agents-import"]');
+      await host({ type: "agentImport", preview: null, error: "No Roo Code or Kilo Code modes found." });
+      assert.match(await text('[data-testid="import-note"]'), /No Roo Code or Kilo Code modes found/);
+      assert.equal(await page.$('[data-testid="import-run"]'), null);
+      await page.click('[data-testid="import-back"]');
+      assert.ok(await page.$('[data-testid="agents-list"]'));
+    });
+
+    it("focus stays inside the Agents panel with Tab, in the list and the form", async () => {
+      await openAgentsPanel();
+      for (let i = 0; i < 20; i++) {
+        await page.keyboard.press("Tab");
+        assert.ok(
+          await page.evaluate(() => !!document.activeElement?.closest('[data-testid="agents-panel"]')),
+        );
+      }
+      await page.click('[data-testid="agents-new"]');
+      for (let i = 0; i < 30; i++) {
+        await page.keyboard.press("Tab");
+        assert.ok(
+          await page.evaluate(() => !!document.activeElement?.closest('[data-testid="agents-panel"]')),
+        );
+      }
+    });
+
+    for (const width of [300, 520])
+      it(`the Agents panel, its form and the import preview fit ${width} px`, async () => {
+        await page.setViewport({ width, height: 700 });
+        const fits = () =>
+          page.$eval('[data-testid="agents-panel"]', (el) => {
+            const r = el.getBoundingClientRect();
+            const rows = Array.from(
+              el.querySelectorAll<HTMLElement>("li, label, fieldset, select, textarea"),
+            );
+            return {
+              inside: r.left >= 0 && r.right <= window.innerWidth,
+              scroll: el.scrollWidth <= el.clientWidth + 1,
+              rows: rows.every((x) => x.getBoundingClientRect().right <= r.right + 1),
+              doc: document.documentElement.scrollWidth <= window.innerWidth,
+            };
+          });
+        const ok = { inside: true, scroll: true, rows: true, doc: true };
+        await host({ type: "showAgents" });
+        await host({ type: "agents", view: AGENTS });
+        assert.deepEqual(await fits(), ok, "list");
+        await page.click('[data-id="docs"] [data-testid="agent-edit"]');
+        assert.deepEqual(await fits(), ok, "form");
+        await page.keyboard.press("Escape");
+        await page.click('[data-testid="agents-import"]');
+        await host({ type: "agentImport", preview: PREVIEW });
+        assert.deepEqual(await fits(), ok, "import");
       });
 
     it("the / menu runs the setup check", async () => {

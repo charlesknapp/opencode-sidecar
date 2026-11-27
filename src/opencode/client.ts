@@ -24,6 +24,7 @@ import type {
 } from "../shared/model";
 import type { PromptPayload } from "../core/context";
 import { parseIntegration, parseProvider, type IntegrationInfo, type ProviderEntry } from "../core/providers";
+import { parseAgentDetail, parseConfigSources, type AgentDetail, type ConfigSources } from "../core/agents";
 import { parseRules, type PermissionRule } from "../shared/approval";
 import { modelKey, toPermissionRequest } from "./events";
 import { SseParser } from "./sse";
@@ -100,6 +101,10 @@ export interface OpenCodeClient {
   listAgents(directory: string): Promise<AgentOption[]>;
   /** Subagents (not hidden), which a prompt can mention as `@name`. */
   listSubagents(directory: string): Promise<AgentOption[]>;
+  /** Every agent OpenCode has for a folder, hidden ones included, with its mode, model and rules. */
+  listAgentDetails(directory: string): Promise<AgentDetail[]>;
+  /** OpenCode's config folders for a folder and the agents its config documents define. */
+  configSources(directory: string): Promise<ConfigSources>;
   /** OpenCode's skills for a folder. */
   listSkills(directory: string): Promise<SkillOption[]>;
   /** Files and folders matching `query`, ranked by OpenCode (paths relative to the folder). */
@@ -568,6 +573,16 @@ export class HttpOpenCodeClient implements OpenCodeClient {
       out.push(description ? { id, name: str(r.name) ?? id, description } : { id, name: str(r.name) ?? id });
     }
     return out;
+  }
+
+  async listAgentDetails(directory: string): Promise<AgentDetail[]> {
+    const d = rec(await this.request("GET", "/api/agent", { query: this.loc(directory) }));
+    if (!Array.isArray(d.data)) throw new Error("Unexpected agent list");
+    return d.data.map(parseAgentDetail).filter((a): a is AgentDetail => a !== null);
+  }
+
+  async configSources(directory: string): Promise<ConfigSources> {
+    return parseConfigSources(await this.request("GET", "/api/config", { query: this.loc(directory) }));
   }
 
   async listSkills(directory: string): Promise<SkillOption[]> {

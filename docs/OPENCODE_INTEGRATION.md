@@ -22,6 +22,8 @@ Workspace-scoped calls pass the open folder as `location[directory]`. OpenCode c
 | Health / version ✓           | `GET /api/info`                                                                                                       |
 | Models, providers, default ✓ | `GET /api/model`, `GET /api/provider`, `GET /api/model/default`                                                       |
 | Agents ✓                     | `GET /api/agent` (primary, non-hidden; with OpenCode's descriptions)                                                  |
+| Agents panel ✓               | `GET /api/agent` (every agent: mode, model, `system`, `request.body.temperature`, rules), `GET /api/config` (folders) |
+| Agent file changes ✓         | none: OpenCode watches its config folders; `agent.updated` follows, `POST /api/location/reload` only as a fallback    |
 | Commands ✓                   | `GET /api/command`; run one with `POST /api/session/{id}/command` `{ name, text, delivery? }`                         |
 | Account and provider state ✓ | `GET /api/integration` (connection states only)                                                                       |
 | Providers panel ✓            | `GET /api/integration`, `GET /api/integration/{id}`, `GET /api/provider` (`integrationID`, `settings.baseURL` host)   |
@@ -87,6 +89,17 @@ Checked against the live service (2.4.2), its OpenAPI document and its build, wi
 - **Subagents** go in `agents: [{ name, mention }]` and **skills** in `skills: [{ id, mention }]`.
 - **Problems** (Fix with OpenCode) and **selections** are part of `text`: a heading OpenCode's model reads as context and Sidecar's transcript folds back into a chip (`Problems from VS Code (1 error in src/a.ts):` or `Selected code from …`), then one fenced block. Problems name the file relative to the folder with `/`, `line L:C` or `lines A-B`, the severity, `source(code)` and the message, each with the code around it and `>` on its lines. The editor context (`autoContext`) is an ordinary file or selection attachment, added at send time only while its chip is there.
 
+### Custom agents
+
+Checked against the live service (2.4.2), its documentation and its OpenAPI document. Agents are Markdown files: YAML frontmatter, and the body as the system prompt.
+
+- **Where.** A config folder's `agents/` (the documented name) or `agent/` (still read); a subfolder gives an id with a slash (`agents/team/review.md` → `team/review`). `GET /api/config?location[directory]=` lists the config folders, lowest priority first: the global one, `%USERPROFILE%\.config\opencode` on Windows too (not `%APPDATA%`), then the folder's `.opencode` when it existed as OpenCode loaded the folder. A `.opencode` made later is not listed there, but its agents are picked up, so Sidecar also scans `<folder>/.opencode` itself. Agents defined in an `opencode.json` (`agents`) show as read-only; only those ids are read from the config documents, which can hold provider keys.
+- **Fields.** `description`, `mode` (`primary`, `subagent` or `all`; any other value and OpenCode drops the agent without an error), `model` (`provider/model#variant`, or `{ providerID, model, variant }`), `permissions` (rules, put between OpenCode's defaults and its final browser rules), `request` (`body.temperature` and other overlays, which OpenCode 2.4 stores but does not send yet), `steps`, `hidden`, `color`, `disabled`. A non-empty body wins over a `system` key. Unknown keys are ignored; a YAML error drops the file silently.
+- **OpenCode 1 fields** still load: `tools` (`write`, `patch`, `multiedit` → `edit`; `bash` → `shell`; `task` → `subagent`; true allows, false denies), `permission` (an effect, or patterns with effects), `temperature`, `top_p` (into `request.body`) and `maxSteps` (→ `steps`), converted in that order with repeats dropped. Once a file has `permissions`, `request`, `system` or `disabled`, OpenCode ignores every OpenCode 1 field, so Sidecar converts them (to the same rules, checked live) before it writes one of those.
+- **Picking up a change.** OpenCode watches the config folders: a new, changed or deleted file shows in `GET /api/agent` within a second or two and emits `agent.updated` with the folder's `location`. The first request for a folder OpenCode has not loaded lists only the built-in agents. Sidecar polls the list until it shows the change and only after 6 s calls `POST /api/location/reload`, which rebuilds every folder and cancels pending permissions and questions.
+- **Built-in agents** are those with no file: `build`, `plan`, `general`, `explore`, and the hidden `compaction`, `title` and `summary`. Build also allows OpenCode's `question` tool; a custom agent does not get that rule.
+- **Roo Code and Kilo Code** keep custom modes in `.roomodes` / `.kilocodemodes` (JSON or YAML, `customModes`) and globally in `<globalStorage>/rooveterinaryinc.roo-cline/settings/custom_modes.yaml` (older: `cline_custom_modes.json`) and `<globalStorage>/kilocode.kilo-code/settings/`, where `globalStorage` is `%APPDATA%\Code\User\globalStorage` on Windows (Insiders, Cursor and VSCodium beside it). Groups map to rules on top of OpenCode's defaults: no `read` → `read`, `glob`, `grep` denied; no `edit` → `edit` denied, `edit` with `fileRegex` → `edit * deny` then `allow` per glob (regular expressions that globs cannot express make every edit ask); no `command` → `shell` denied; `browser` → `webfetch` and `websearch` allowed (otherwise denied; OpenCode's own browser stays off). MCP tools are named per tool in OpenCode's rules, so the `mcp` group is not mapped.
+
 ### Commit messages
 
 "Write commit message with OpenCode" uses `POST /api/experimental/generate/text`, which runs one generation from the server's base configuration and stores nothing, with the chat's selected model as `model: { providerID, id, variant? }`. `POST /api/session/{id}/generate` would also leave the history alone, but its tokens and cost count toward the session, so it is not used. The diff comes from VS Code's Git extension (`repository.diff(true)`, the staged changes), or from the agent's patches in OpenCode's session diff when nothing is staged; the style examples from `repository.log`. The message goes into `repository.inputBox.value`; nothing is committed. Checked live (2.4.2): an unknown model is `404 ModelNotFoundError` with `providerID` and `modelID`; a missing `prompt` is `400 InvalidRequestError`; the free limit is `502 ProviderRequestError` with `reason: "rate_limit"`, `status: 429` and `retryAfterMs`, which Sidecar reports as the model's usage limit.
@@ -99,25 +112,25 @@ A rewind can be staged without being applied (OpenCode's `/undo`). The session t
 
 The stream is global, so the controller filters by `sessionID`.
 
-| OpenCode event                                                                     | Sidecar                                                |
-| ---------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `session.inbox.enqueued/delivered/cancelled/delivery.changed`                      | pending items; a delivered user item becomes a prompt  |
-| `session.execution.started/succeeded/failed/interrupted`                           | running state, end of a task, readable errors          |
-| `session.text.*`, `session.reasoning.*`                                            | streamed text and thinking (with "Thought for Ns")     |
-| `session.tool.*`, `shell.created`                                                  | tool rows (command, working directory, output, diffs)  |
-| `session.shell.started/ended` ✓                                                    | `!command` as a Shell row                              |
-| `session.synthetic` with `metadata.source: "subagent"`                             | a subagent's report, handed back to its parent         |
-| `permission.asked/replied`, `form.created/replied/cancelled`                       | the permission and question docks                      |
-| `session.permissions` ✓                                                            | the approval badge and the session's rules             |
-| `session.step.started/ended/failed`, `session.usage.updated`                       | context, cost, steps, Budget Guard, cache estimate     |
-| `session.step.first-token/streamed` ✓                                              | a step's stream time, for its tokens a second          |
-| `session.revert.staged/committed/cleared` ✓                                        | reload the open session; a staged rewind shows its bar |
-| `session.agent.selected`, `session.model.selected`                                 | follow an agent or model chosen in another client      |
-| `session.compaction.started/ended/failed`                                          | notices                                                |
-| `session.skill.activated`                                                          | a notice naming the skill                              |
-| `session.retry.scheduled`                                                          | a retry notice                                         |
-| `session.created/deleted/renamed/archived/unarchived/forked/moved`                 | the session list; `parentID` marks a subagent          |
-| `integration.updated`, `provider.updated`, `model.updated`, `models-dev.refreshed` | reload models, agents and account state (debounced)    |
+| OpenCode event                                                                                      | Sidecar                                                |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `session.inbox.enqueued/delivered/cancelled/delivery.changed`                                       | pending items; a delivered user item becomes a prompt  |
+| `session.execution.started/succeeded/failed/interrupted`                                            | running state, end of a task, readable errors          |
+| `session.text.*`, `session.reasoning.*`                                                             | streamed text and thinking (with "Thought for Ns")     |
+| `session.tool.*`, `shell.created`                                                                   | tool rows (command, working directory, output, diffs)  |
+| `session.shell.started/ended` ✓                                                                     | `!command` as a Shell row                              |
+| `session.synthetic` with `metadata.source: "subagent"`                                              | a subagent's report, handed back to its parent         |
+| `permission.asked/replied`, `form.created/replied/cancelled`                                        | the permission and question docks                      |
+| `session.permissions` ✓                                                                             | the approval badge and the session's rules             |
+| `session.step.started/ended/failed`, `session.usage.updated`                                        | context, cost, steps, Budget Guard, cache estimate     |
+| `session.step.first-token/streamed` ✓                                                               | a step's stream time, for its tokens a second          |
+| `session.revert.staged/committed/cleared` ✓                                                         | reload the open session; a staged rewind shows its bar |
+| `session.agent.selected`, `session.model.selected`                                                  | follow an agent or model chosen in another client      |
+| `session.compaction.started/ended/failed`                                                           | notices                                                |
+| `session.skill.activated`                                                                           | a notice naming the skill                              |
+| `session.retry.scheduled`                                                                           | a retry notice                                         |
+| `session.created/deleted/renamed/archived/unarchived/forked/moved`                                  | the session list; `parentID` marks a subagent          |
+| `agent.updated`, `integration.updated`, `provider.updated`, `model.updated`, `models-dev.refreshed` | reload models, agents and account state (debounced)    |
 
 Stored history replays `user`, `assistant` (text, thinking, tool parts), `shell`, `synthetic`, `compaction` and `idle` messages through the same model, with OpenCode's stored times.
 

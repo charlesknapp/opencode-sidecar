@@ -384,6 +384,84 @@ export interface ProvidersView {
   busy: { id: string; text: string } | null;
 }
 
+/** OpenCode's agent modes: picked for a session, started as a subagent, or both. */
+export type AgentMode = "primary" | "subagent" | "all";
+
+/** The permission actions the agent form has a switch for. */
+export type AgentAction = "read" | "edit" | "shell" | "webfetch" | "websearch" | "subagent" | "skill";
+
+/** The agent form's fields. A missing permission inherits OpenCode's default. */
+export interface AgentDraft {
+  name: string;
+  description: string;
+  mode: AgentMode;
+  /** `provider/model`; null runs on the session's model. */
+  model: string | null;
+  variant: string | null;
+  temperature: number | null;
+  permissions: Partial<Record<AgentAction, "allow" | "ask" | "deny">>;
+  /** The system prompt (the Markdown body). */
+  prompt: string;
+  /** Where a new agent's file goes: this folder's `.opencode/agents`, or OpenCode's global config. */
+  scope: "project" | "global";
+}
+
+/** An agent in the Agents panel. */
+export interface AgentRow {
+  id: string;
+  name: string;
+  description: string;
+  mode: AgentMode;
+  /** `provider/model`, with `#variant` when it has one; null for the session's model. */
+  model: string | null;
+  source: "built-in" | "project" | "global" | "config";
+  /** Its file: relative to the folder for this project's, otherwise the full path. */
+  file: string | null;
+  /** A custom agent in a Markdown file Sidecar can edit. */
+  editable: boolean;
+  /** Why OpenCode does not list an agent whose file is there (its frontmatter, mostly). */
+  problem: string | null;
+  /** The form's fields, for an editable agent. */
+  draft?: AgentDraft;
+  /** Rules the form has no switch for, which saving keeps. */
+  otherRules?: number;
+  /** The file uses OpenCode 1's fields (tools, permission, temperature), which saving rewrites. */
+  legacy?: boolean;
+}
+
+export interface AgentsView {
+  agents: AgentRow[];
+  /** Roo Code and Kilo Code modes found to import, and where. */
+  importable: { count: number; sources: string[] } | null;
+  /** Where new agents are saved, as shown: `.opencode/agents` and the global folder. */
+  projectDir: string | null;
+  globalDir: string | null;
+  /** A save, delete or import in progress. */
+  busy: string | null;
+}
+
+/** A Roo Code or Kilo Code mode in the import preview. */
+export interface ImportItem {
+  key: string;
+  /** The agent it becomes (its file name). */
+  name: string;
+  /** The mode's own name, as Roo Code showed it. */
+  label: string;
+  description: string;
+  mode: AgentMode;
+  /** Where it was found: `.roomodes`, `Roo Code (global)`, … */
+  source: string;
+  /** What importing it would replace or override; such modes start unchecked. */
+  conflict: string | null;
+  /** What does not carry over exactly. */
+  notes: string[];
+  checked: boolean;
+}
+
+export interface ImportPreview {
+  items: ImportItem[];
+}
+
 /** An OpenCode skill, which a prompt can mention as `@id`. */
 export interface SkillOption {
   id: string;

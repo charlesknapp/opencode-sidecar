@@ -111,6 +111,16 @@
         "category": "Sidecar"
       },
       {
+        "command": "opencodeSidecar.manageAgents",
+        "title": "Manage Agents",
+        "category": "Sidecar"
+      },
+      {
+        "command": "opencodeSidecar.importModes",
+        "title": "Import Roo Code Modes as Agents",
+        "category": "Sidecar"
+      },
+      {
         "command": "opencodeSidecar.checkSetup",
         "title": "Check OpenCode Setup",
         "category": "Sidecar"
@@ -207,6 +217,10 @@
         },
         {
           "command": "opencodeSidecar.fixWorkspaceProblems",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "opencodeSidecar.importModes",
           "when": "workspaceFolderCount > 0"
         },
         {
