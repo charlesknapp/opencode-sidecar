@@ -2230,6 +2230,30 @@ th {
     max-width: 100%;
   }
 }
+/* Stacked (set by the webview when the tools would push Send onto a line of its own): the
+   tools keep the first line; the model pill, shrinking as needed, shares the second with
+   the delivery switch, the agent and Send. */
+.box-tools.stack .brk {
+  display: block;
+  flex-basis: 100%;
+  height: 0;
+  order: 0;
+}
+.box-tools.stack .pill.model,
+.box-tools.stack .grow,
+.box-tools.stack .delivery,
+.box-tools.stack .mode,
+.box-tools.stack .sq {
+  order: 1;
+}
+.box-tools.stack .pill.model {
+  flex: 1 1 0;
+  max-width: max-content;
+}
+/* The model's name before its variant (which stays in the tooltip and the model menu). */
+.box-tools.stack .pill .v {
+  display: none;
+}
 .box-tools .ico {
   width: 22px;
   height: 22px;
@@ -2938,8 +2962,14 @@ kbd {
 }
 .chip.paste .chip-detail,
 .paste-ref .chip-detail {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* In a narrow panel the size gives way first: the number ties the chip to its token. */
+.chip.paste .chip-label,
+.paste-ref .chip-label {
+  flex: none;
 }
 .chip.paste.open,
 .paste-ref.open {
@@ -4035,7 +4065,8 @@ body.vscode-high-contrast-light .submit {
 
 /* ------------------------------------------------------- approval and rules */
 
-/* The approval mode badge in the header: always shown; Auto in the theme's warning color. */
+/* The approval mode badge in the header: always shown (Default as the shield alone); Auto
+   in the theme's warning color. */
 .p-approval {
   display: inline-flex;
   align-items: center;
@@ -4054,6 +4085,11 @@ body.vscode-high-contrast-light .submit {
 .p-approval .i {
   width: 12px;
   height: 12px;
+}
+.p-approval[data-mode="default"] {
+  justify-content: center;
+  width: 22px;
+  padding: 0;
 }
 .p-approval:hover:not(:disabled) {
   background: var(--vscode-toolbar-hoverBackground);

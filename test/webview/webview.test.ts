@@ -1283,7 +1283,13 @@ describe(
 
     it("shows the approval mode in the header, Auto in its own color, at every width", async () => {
       const badge = '[data-testid="approval-badge"]';
-      assert.equal(await text(badge), "Default");
+      // Default is the shield alone; its tooltip and label still name it.
+      assert.equal(await text(badge), "");
+      assert.match(
+        String(await page.$eval(badge, (b) => b.getAttribute("aria-label"))),
+        /^Approval: Default/,
+      );
+      assert.ok((await page.$eval(badge, (b) => b.getBoundingClientRect().width)) <= 24, "icon-sized");
       await host({ type: "state", state: baseState({ approval: { ...APPROVAL, mode: "balanced" } }) });
       assert.equal(await text(badge), "Balanced");
       assert.match(
@@ -6870,5 +6876,147 @@ describe(
         "dot-breathe",
       );
     });
+
+    // ------------------------------------------------- everything at once
+
+    for (const width of [300, 400, 520]) {
+      it(`fits everything at once at ${width}px: strip, goal, aside, limits chip, pastes, Send beside the agent`, async () => {
+        await page.setViewport({ width, height: 760 });
+        await host({
+          type: "state",
+          state: baseState({
+            busy: true,
+            strip: [
+              ...["Test session", "Refactor the auth middleware", "Docs", "Flaky test", "Spike", "Deps"].map(
+                (title, i) => ({
+                  id: `ses_${i + 1}`,
+                  title,
+                  status: (["running", "waiting", "done", "failed", "idle", "idle"] as const)[i],
+                  current: i === 0,
+                }),
+              ),
+            ],
+            goal: {
+              objective: "All checkout tests pass and totals match the receipts to the cent",
+              status: "active",
+              reason: null,
+              rounds: 2,
+              maxRounds: 10,
+            },
+            approval: { ...baseState().approval, mode: "auto" },
+            // The prompt-cache clock shows too: every tool of the footer is there.
+            usage: {
+              contextTokens: 42000,
+              contextLimit: 262144,
+              cost: 0.08,
+              cached: true,
+              lastStepAt: Date.now() - 60_000,
+            },
+            quota: {
+              workspace: null,
+              meters: [
+                {
+                  id: "go",
+                  label: "OpenCode Go · 5-hour window",
+                  percent: 92,
+                  used: null,
+                  limited: false,
+                  resetsAt: null,
+                },
+              ],
+            },
+            selectedModel: "opencode-go/qwen3.7-plus",
+            selectedVariant: "high",
+            attachments: [{ id: "a", label: "cart.ts:40-58", detail: "src/cart.ts lines 40-58" }],
+            agentChanges: {
+              status: "ok",
+              files: [{ path: "src/cart.ts", additions: 7, deletions: 4, status: "modified" }],
+            },
+            pending: [{ id: "q", text: "Then run only the cart tests.", attachments: [], delivery: "queue" }],
+          }),
+        });
+        await host({
+          type: "transcript",
+          items: [
+            { kind: "user", id: "u", text: "Fix it.", attachments: [] },
+            {
+              kind: "stuck",
+              id: "stuck:1",
+              sessionID: "ses_1",
+              stuck: { reason: "repeat", calls: ["edit src/cart.ts"], count: 4, minutes: 0 },
+              resolved: null,
+            },
+          ],
+        });
+        await host({
+          type: "aside",
+          aside: {
+            status: "idle",
+            error: null,
+            activity: null,
+            turns: [
+              {
+                question: "what does round() do?",
+                answer: "It rounds half away from zero.",
+                error: null,
+                done: true,
+              },
+            ],
+          },
+        });
+        await page.evaluate(
+          (t) => {
+            const box = document.querySelector("textarea")!;
+            box.focus();
+            const dt = new DataTransfer();
+            dt.setData("text/plain", t);
+            box.dispatchEvent(
+              new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+            );
+          },
+          Array.from({ length: 40 }, (_, i) => `at frame ${i} (src/cart.ts:${i}:5)`).join("\n"),
+        );
+        const m = await page.evaluate(() => {
+          const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
+          const label = document.querySelector<HTMLElement>('[data-testid="paste-chip"] .chip-label')!;
+          const visible = (sel: string) => {
+            const e = document.querySelector<HTMLElement>(sel);
+            return !!e && !e.hidden && e.getBoundingClientRect().width > 0;
+          };
+          return {
+            overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            sendTop: r('[data-testid="stop"], [data-testid="send"]').top,
+            modeTop: r('[data-testid="mode-button"]').top,
+            switchTop: r(".delivery").top,
+            // Rows of the box's footer (visible controls by their top).
+            rows: Array.from(document.querySelectorAll<HTMLElement>(".box-tools > *"))
+              .map((e) => e.getBoundingClientRect())
+              .filter((b) => b.width > 0 && b.height > 0)
+              .map((b) => b.top + b.height / 2)
+              .sort((x, y) => x - y)
+              .filter((c, i, all) => i === 0 || c - all[i - 1] > 6).length,
+            sendRight: r('[data-testid="stop"], [data-testid="send"]').right,
+            boxRight: r(".box").right,
+            labelCut: label.scrollWidth > label.clientWidth,
+            shown: [
+              "session-strip",
+              "goal-bar",
+              "aside",
+              "quota-chip",
+              "approval-badge",
+              "stuck-card",
+              "paste-chip",
+            ].filter((t) => !visible(`[data-testid="${t}"]`)),
+          };
+        });
+        assert.deepEqual(m.shown, [], "every part is on screen");
+        assert.ok(m.overflow <= 0, `horizontal overflow ${m.overflow}px`);
+        assert.ok(Math.abs(m.sendTop - m.modeTop) <= 4, "Send stays on the agent's line");
+        assert.ok(Math.abs(m.sendTop - m.switchTop) <= 4, "and on the steer/queue switch's");
+        assert.ok(m.rows <= 2, `the footer takes ${m.rows} rows`);
+        assert.ok(m.sendRight <= m.boxRight, "Send inside the box");
+        assert.equal(m.labelCut, false, "the paste chip keeps its name and number");
+      });
+    }
   },
 );

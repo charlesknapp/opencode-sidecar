@@ -522,7 +522,21 @@ function paintDelivery(): void {
     }
   }
 }
-new ResizeObserver(() => paintDelivery()).observe(app);
+new ResizeObserver(() => {
+  paintDelivery();
+  fitTools();
+}).observe(app);
+/**
+ * When the tools do not fit beside Send (the limits chip, a long model name), the row
+ * would push Send onto a line of its own. Stacked, the tools keep the first line and the
+ * model pill shares the second with the delivery switch, the agent and Send.
+ */
+function fitTools(): void {
+  if (boxTools.hidden) return;
+  boxTools.classList.remove("stack");
+  const top = (e: HTMLElement) => e.getBoundingClientRect().top;
+  boxTools.classList.toggle("stack", top(sendBtn) - top(plusBtn) > 4);
+}
 const boxTools = h(
   "div",
   { className: "box-tools" },
@@ -3118,7 +3132,11 @@ function paintApproval(s: ViewState): void {
   approvalBtn.dataset.mode = ap.mode;
   approvalBtn.disabled = s.connection.kind !== "connected";
   approvalBtn.classList.toggle("busy", ap.busy);
-  approvalBtn.replaceChildren(icon("allowed"), h("span", { className: "pa-label" }, MODE_LABELS[ap.mode]));
+  // Default (no Sidecar rules) is just the shield: the header names a mode only once one is picked.
+  approvalBtn.replaceChildren(
+    icon("allowed"),
+    ap.mode === "default" ? "" : h("span", { className: "pa-label" }, MODE_LABELS[ap.mode]),
+  );
   const what = ap.mode === "default" || ap.mode === "custom" ? "" : ` · ${MODE_LINES[ap.mode]}`;
   const tip = `Approval: ${MODE_LABELS[ap.mode]}${ap.session ? "" : " (next session)"}${what}`;
   approvalBtn.dataset.tip = tip;
@@ -9954,6 +9972,7 @@ function renderComposer(s: ViewState) {
       : "Send message (Enter)";
   sendBtn.dataset.tip = sendLabel;
   sendBtn.setAttribute("aria-label", sendLabel);
+  fitTools();
 }
 
 // ------------------------------------------------------------------ render
