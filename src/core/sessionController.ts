@@ -1659,9 +1659,12 @@ export class SessionController {
     this.selectedModel = key;
     // Restore this model's last valid variant for the workspace.
     this.selectedVariant = this.rememberedVariant(key);
+    // Sent (and its echo expected) before anything is awaited: an echo of an earlier switch
+    // arriving meanwhile must not count as the latest choice and undo this one.
+    const pushed = this.pushModel("Model unavailable");
     if (this.directory) await this.store.update(this.key("model"), key);
     this.sink.onStateChanged();
-    await this.pushModel("Model unavailable");
+    await pushed;
   }
 
   /** Selects a model variant (null = model default). Only variants OpenCode lists are accepted. */
@@ -1671,9 +1674,10 @@ export class SessionController {
     if (variant !== null && !model.variants.includes(variant)) return;
     this.selectionVersion++;
     this.selectedVariant = variant;
+    const pushed = this.pushModel("Could not switch the model variant");
     if (this.directory) await this.store.update(this.variantKey(model.key), variant ?? undefined);
     this.sink.onStateChanged();
-    await this.pushModel("Could not switch the model variant");
+    await pushed;
   }
 
   /**
@@ -1745,13 +1749,15 @@ export class SessionController {
     if (!this.agents?.some((a) => a.id === id)) return;
     this.selectionVersion++;
     this.selectedAgent = id;
+    // Expected before anything is awaited (see selectModel).
+    const session = this.current;
+    const echo = session ? SessionController.echoKey(session.id, { agent: id }) : null;
+    if (echo) this.expectEcho(echo);
     if (this.directory) await this.store.update(this.key("agent"), id);
     this.sink.onStateChanged();
-    if (this.current) {
-      const echo = SessionController.echoKey(this.current.id, { agent: id });
-      this.expectEcho(echo);
+    if (session && echo) {
       try {
-        await this.client.switchAgent(this.current.id, id);
+        await this.client.switchAgent(session.id, id);
       } catch (e) {
         this.dropEcho(echo);
         this.log.error("Switching agent failed", e);

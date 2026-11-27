@@ -573,6 +573,51 @@ describe("model variants", () => {
     });
   });
 
+  it("keeps an agent picked right after another when the first one's echo arrives while it is saved", async () => {
+    const { c, client, store } = await running();
+    await c.selectAgent("plan");
+    const update = store.update.bind(store);
+    store.update = async (key: string, value: unknown) => {
+      if (value === "build")
+        c.handleRawEvent(raw("session.agent.selected", { sessionID: "ses_1", agent: "plan" }));
+      await update(key, value);
+    };
+    await c.selectAgent("build");
+    assert.equal(c.selectedAgent, "build");
+    assert.deepEqual(client.callsTo("switchAgent").at(-1)?.args, ["ses_1", "build"]);
+  });
+
+  it("keeps a variant picked right after the model when the model's echo arrives while it is saved", async () => {
+    const { c, client, store } = await running();
+    await c.selectModel("vast/qwen");
+    // The model switch's echo (no variant, "default") arrives while the variant is being
+    // saved, before its own switch went out: seen live, the variant was lost.
+    const update = store.update.bind(store);
+    store.update = async (key: string, value: unknown) => {
+      if (value === "high")
+        c.handleRawEvent(
+          raw("session.model.selected", {
+            sessionID: "ses_1",
+            model: { providerID: "vast", id: "qwen", variant: "default" },
+          }),
+        );
+      await update(key, value);
+    };
+    await c.selectVariant("high");
+    assert.equal(c.selectedVariant, "high");
+    assert.deepEqual(client.callsTo("switchModel").at(-1)?.args[1], {
+      providerID: "vast",
+      id: "qwen",
+      variant: "high",
+    });
+    await c.newSession();
+    await c.send("next", []);
+    assert.equal(
+      (client.callsTo("createSession").at(-1)?.args[0] as { model: { variant?: string } }).model.variant,
+      "high",
+    );
+  });
+
   it("ignores the earlier echo when OpenCode sends the echoes out of order", async () => {
     const { c } = await running();
     await c.selectModel("vast/qwen");
