@@ -368,6 +368,50 @@ describe("ask aside", () => {
     assert.equal((s.client.callsTo("prompt").at(-1)!.args[1] as PromptInput).delivery, undefined);
   });
 
+  it("sends the answer to the session it was asked from, not the one open now", async () => {
+    const s = await opened();
+    s.client.sessions.push(session("ses_other", { title: "Other" }));
+    const fork = await ask(s, "Which test covers login?");
+    s.c.handleRawEvent(
+      raw("session.text.ended", {
+        sessionID: fork,
+        assistantMessageID: "m1",
+        ordinal: 0,
+        text: "auth.test.ts",
+      }),
+    );
+    s.c.handleRawEvent(raw("session.execution.succeeded", { sessionID: fork }));
+    await s.c.openSession("ses_other");
+    assert.equal(s.c.current?.id, "ses_other");
+    // The main session works in the background: the note waits for its task to end.
+    s.c.handleRawEvent(raw("session.execution.started", { sessionID: "ses_main" }));
+    assert.equal(await s.c.asideToMain(), true);
+    const [id, input] = s.client.callsTo("prompt").at(-1)!.args as [string, PromptInput];
+    assert.equal(id, "ses_main");
+    assert.equal(input.delivery, "queue");
+    assert.match(input.text, /auth\.test\.ts/);
+    assert.equal(s.c.asideView()?.turns[0].sent, true);
+  });
+
+  it("says so in the card when the session it was asked from was deleted", async () => {
+    const s = await opened();
+    s.client.sessions.push(session("ses_other", { title: "Other" }));
+    const fork = await ask(s);
+    s.c.handleRawEvent(
+      raw("session.text.ended", { sessionID: fork, assistantMessageID: "m1", ordinal: 0, text: "Two." }),
+    );
+    s.c.handleRawEvent(raw("session.execution.succeeded", { sessionID: fork }));
+    await s.c.openSession("ses_other");
+    s.client.promptError = new OpenCodeHttpError(404, "SessionNotFoundError", "Session not found");
+    assert.equal(await s.c.asideToMain(), false);
+    assert.match(s.c.asideView()?.error ?? "", /was deleted/);
+    assert.equal(s.c.asideView()?.turns[0].sent, undefined);
+    assert.ok(
+      !s.client.callsTo("prompt").some((c) => c.args[0] === "ses_other"),
+      "never sent to the open one",
+    );
+  });
+
   it("closes with the folder", async () => {
     const s = await opened();
     const fork = await ask(s);

@@ -228,9 +228,12 @@ export class SessionController {
   private deferred: UiEvent[] = [];
   /**
    * The side question (`/btw`): a copy of the open session (or a new one) that only the
-   * aside card shows. `parts` holds the current answer's text parts in order.
+   * aside card shows. `parts` holds the current answer's text parts in order; `main` is
+   * the session it was asked from (null for a new session not created yet).
    */
-  private aside: (AsideView & { id: string | null; token: number; parts: Map<string, string> }) | null = null;
+  private aside:
+    | (AsideView & { id: string | null; main: string | null; token: number; parts: Map<string, string> })
+    | null = null;
   private asideToken = 0;
   /** Side-question sessions (and their subagents) not deleted yet: never listed in History. */
   private readonly asideIds = new Set<string>();
@@ -1321,6 +1324,7 @@ export class SessionController {
     if (!a || !a.id) {
       a = {
         id: null,
+        main: this.current?.id ?? null,
         token: ++this.asideToken,
         status: "starting",
         turns: [],
@@ -1427,20 +1431,44 @@ export class SessionController {
   }
 
   /**
-   * Sends the latest side answer to the main session as a short note: queued while the
-   * agent works, so its task is not steered off course. Returns false when nothing was sent.
+   * Sends the latest side answer to the session it was asked from, as a short note: queued
+   * while the agent works, so its task is not steered off course. That session may no
+   * longer be the open one. Returns false when nothing was sent.
    */
   async asideToMain(): Promise<boolean> {
-    const turn = [...(this.aside?.turns ?? [])].reverse().find((t) => t.done && t.answer.trim());
-    if (!turn) return false;
+    const a = this.aside;
+    const turn = [...(a?.turns ?? [])].reverse().find((t) => t.done && t.answer.trim());
+    if (!a || !turn) return false;
     const answer =
       turn.answer.length > ASIDE_MAX_ANSWER ? `${turn.answer.slice(0, ASIDE_MAX_ANSWER)}…` : turn.answer;
     const text = `For context, I asked a side question.\n\nQuestion: ${turn.question}\n\nAnswer:\n${answer.trim()}`;
-    const sent = await this.send(text, [], this.busy ? "queue" : undefined);
+    let sent: boolean;
+    if (!a.main || a.main === this.current?.id)
+      sent = await this.send(text, [], this.busy ? "queue" : undefined);
+    else {
+      const main = a.main;
+      try {
+        await this.client.prompt(main, {
+          text,
+          files: [],
+          ...(this.running.has(main) ? { delivery: "queue" as const } : {}),
+        });
+        this.log.info(`Side answer sent to ${main} (${text.length} chars)`);
+        sent = true;
+      } catch (e) {
+        this.log.error("Sending the side answer failed", e);
+        a.error =
+          e instanceof OpenCodeHttpError && e.status === 404
+            ? "The session this side question was asked from was deleted."
+            : friendlyError(e, "Could not send the answer");
+        sent = false;
+      }
+    }
     if (sent) {
       turn.sent = true;
-      this.asideChanged();
+      a.error = null;
     }
+    this.asideChanged();
     return sent;
   }
 
