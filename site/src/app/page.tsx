@@ -9,16 +9,19 @@ import { extensionTests, roundedCount } from "@/lib/stats"
 import { buildStructuredData } from "@/lib/structured-data"
 import { ButtonLink } from "@/components/button-link"
 import { CountUp } from "@/components/count-up"
+import { CtaLines } from "@/components/cta-lines"
 import { DemoVideo } from "@/components/demo-video"
 import { FeatureArt } from "@/components/feature-art"
 import { FeatureCard } from "@/components/feature-card"
 import { FeatureCell } from "@/components/feature-cell"
+import { GridSpotlight } from "@/components/grid-spotlight"
 import { HeroLines } from "@/components/hero-lines"
 import { InstallCommand } from "@/components/install-command"
 import { LazyFrame } from "@/components/lazy-frame"
 import { Mark } from "@/components/mark"
 import { Cross, Section } from "@/components/section"
 import { SiteFooter, SiteNav } from "@/components/site-chrome"
+import { StepTimeline } from "@/components/step-timeline"
 
 const jsonLd = JSON.stringify(buildStructuredData({ site, faq })).replace(
   /</g,
@@ -219,7 +222,7 @@ export default function Home() {
                 beside your code, built on OpenCode&apos;s own API.
               </p>
             </div>
-            <ul className="mt-14 grid overflow-hidden rounded-media border border-line md:grid-cols-2 lg:mt-16 lg:grid-cols-3">
+            <GridSpotlight className="mt-14 grid gap-px overflow-hidden rounded-media p-px md:grid-cols-2 lg:mt-16 lg:grid-cols-3">
               {features.map((feature, index) => (
                 <FeatureCard
                   key={feature.title}
@@ -227,7 +230,13 @@ export default function Home() {
                   index={index}
                 />
               ))}
-            </ul>
+              {features.length % 2 === 1 && (
+                <li
+                  aria-hidden="true"
+                  className="hatch hidden md:block lg:hidden"
+                />
+              )}
+            </GridSpotlight>
           </div>
         </Section>
 
@@ -371,46 +380,27 @@ export default function Home() {
                   </li>
                 ))}
               </ul>
-              <ol className="mt-12">
-                {steps.map((step, index) => (
-                  <li
-                    key={step.title}
-                    className="relative flex gap-6 pb-10 last:pb-0"
-                  >
-                    {index < steps.length - 1 && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute top-9 bottom-1 left-[13px] w-px bg-line-strong"
-                      />
-                    )}
-                    <span className="relative grid size-7 shrink-0 place-items-center border border-line-strong bg-background font-mono text-xs text-muted-foreground tabular-nums">
-                      {String(index + 1).padStart(2, "0")}
-                    </span>
-                    <div className="min-w-0 flex-1 pt-0.5">
-                      <h3 className="text-[17px] font-medium">{step.title}</h3>
-                      <p className="mt-1.5 max-w-[34rem] leading-relaxed text-muted-foreground">
-                        {step.text}
-                      </p>
-                      {index === 0 && (
-                        <div className="mt-5 max-w-[34rem]">
-                          <InstallCommand />
-                          <div className="mt-4 flex flex-wrap gap-x-4 gap-y-3">
-                            <ButtonLink
-                              href={site.links.marketplace}
-                              variant="primary"
-                            >
-                              Install for VS Code
-                            </ButtonLink>
-                            <ButtonLink href={site.links.openVsx}>
-                              Open VSX
-                            </ButtonLink>
-                          </div>
-                        </div>
-                      )}
+              <StepTimeline
+                steps={steps}
+                extra={{
+                  0: (
+                    <div className="mt-5 max-w-[34rem]">
+                      <InstallCommand />
+                      <div className="mt-4 flex flex-wrap gap-x-4 gap-y-3">
+                        <ButtonLink
+                          href={site.links.marketplace}
+                          variant="primary"
+                        >
+                          Install for VS Code
+                        </ButtonLink>
+                        <ButtonLink href={site.links.openVsx}>
+                          Open VSX
+                        </ButtonLink>
+                      </div>
                     </div>
-                  </li>
-                ))}
-              </ol>
+                  ),
+                }}
+              />
             </div>
             <FeatureCell
               as="figure"
@@ -475,7 +465,7 @@ export default function Home() {
             </Link>
           </div>
           <ul className="mt-12 grid overflow-hidden rounded-media border border-line md:grid-cols-3">
-            {releases.slice(0, 3).map((release) => {
+            {releases.slice(0, 3).map((release, index) => {
               const items = [
                 ...release.intro,
                 ...release.sections.flatMap((section) => section.items),
@@ -485,6 +475,26 @@ export default function Home() {
                   key={release.version}
                   className="relative -mr-px -mb-px flex flex-col border-r border-b border-line p-7 transition-[background-color] duration-200 hover:bg-raised"
                 >
+                  {/* A release line through the cards, newest first, like a commit graph. */}
+                  <span
+                    aria-hidden="true"
+                    className={`rule-in absolute top-[31px] right-0 hidden h-px bg-line-strong md:block ${
+                      index === 0 ? "left-7" : "left-0"
+                    }`}
+                  />
+                  <span
+                    aria-hidden="true"
+                    className="relative mb-5 block size-[7px] rounded-full"
+                  >
+                    {index === 0 ? (
+                      <>
+                        <span className="absolute inset-0 animate-ping rounded-full bg-[#73c991] opacity-60 [animation-duration:2.4s] motion-reduce:hidden" />
+                        <span className="absolute inset-0 rounded-full bg-[#73c991]" />
+                      </>
+                    ) : (
+                      <span className="absolute inset-0 rounded-full border border-line-hover bg-background" />
+                    )}
+                  </span>
                   <Link
                     href={`/changelog#v${release.version}`}
                     className="text-[1.75rem] leading-none font-medium tracking-[-0.03em] after:absolute after:inset-0"
@@ -553,8 +563,11 @@ export default function Home() {
         </Section>
 
         <Section id="cta">
-          <div className="flex flex-col items-center text-center">
-            <Mark className="size-14" />
+          <div className="relative isolate flex flex-col items-center text-center">
+            <CtaLines target="cta-mark" />
+            <span id="cta-mark" className="block">
+              <Mark className="size-14" />
+            </span>
             <h2 id="cta" className="mt-8 text-h2">
               Try it in your editor.
             </h2>

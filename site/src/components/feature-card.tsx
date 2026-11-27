@@ -11,7 +11,7 @@ export function FeatureCard({
 }) {
   const fromBottom = feature.art.anchor === "bottom"
   return (
-    <FeatureCell className="-mr-px -mb-px flex flex-col border-r border-b border-line bg-background transition-[background-color] duration-200 hover:bg-raised">
+    <FeatureCell className="flex flex-col bg-background transition-[background-color] duration-200 hover:bg-raised">
       <div className="flex items-baseline gap-3 px-7 pt-7">
         <span className="font-mono text-xs text-subtle-foreground tabular-nums">
           {String(index + 1).padStart(2, "0")}

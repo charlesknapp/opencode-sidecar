@@ -244,6 +244,58 @@
   }
 }
 
+/* Features: the grid's lines are its 1px gaps, and they brighten under the mouse. */
+.grid-spotlight {
+  position: relative;
+  background: var(--line);
+}
+.grid-spotlight::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    circle 280px at var(--spot-x, -999px) var(--spot-y, -999px),
+    rgb(237 237 239 / 0.6),
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 250ms ease-out;
+}
+.grid-spotlight[data-lit="true"]::before {
+  opacity: 1;
+}
+.grid-spotlight > * {
+  position: relative;
+}
+
+/* An empty grid cell, hatched like the buttons and the footer wordmark. */
+.hatch {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--line) 0 1px,
+    var(--background) 1px 7px
+  );
+}
+
+/* Get started: a step's marker changes colour, and the line to the next one fills. */
+.step-box {
+  transition:
+    color 300ms ease-out,
+    border-color 300ms ease-out,
+    background-color 300ms ease-out;
+}
+.step-fill {
+  transition: transform 700ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .grid-spotlight::before,
+  .step-box,
+  .step-fill {
+    transition: none;
+  }
+}
+
 /* "Works in" below desktop width: a slow ticker, fading at both edges. */
 @media (width < 64rem) {
   .ticker {
